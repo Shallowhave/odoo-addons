@@ -34,7 +34,25 @@ class ProductTemplate(models.Model):
     def _compute_o_note(self):
         for product in self:
             quants = self.env['stock.quant'].sudo().search([('product_id.product_tmpl_id','=',product.id),('location_id.usage','=','internal')])
-            product.o_note = f"{', '.join([i for i in quants.mapped('o_note1')+quants.mapped('o_note2') if i])}"
+            # 收集所有备注1和备注2的内容
+            all_notes = []
+            for quant in quants:
+                if quant.o_note1:
+                    all_notes.append(quant.o_note1)
+                if quant.o_note2:
+                    all_notes.append(quant.o_note2)
+            
+            # 统计相同备注内容的数量
+            note_counts = {}
+            for note in all_notes:
+                if note:  # 确保备注不为空
+                    note_counts[note] = note_counts.get(note, 0) + 1
+            
+            # 生成统计结果字符串，格式：数量1, 数量2, ...
+            if note_counts:
+                product.o_note = ', '.join([str(count) for count in note_counts.values()])
+            else:
+                product.o_note = ''
 
     def _compute_is_safty(self):
         for product in self:
