@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <data>
+    <!-- 质检标签：独立成文件 -->
+    <template id="mrp_qc_label_document">
+      <t t-call="web.html_container">
+        <t t-foreach="docs" t-as="o">
+          <t t-set="doc" t-value="o"/>
+          <t t-call="xq_mrp_label.external_layout_mrp_label">
+            <style>
+              * {
+                font-family: 'Calibri','DejaVu Sans','Noto Sans CJK SC','Source Han Sans SC','WenQuanYi Micro Hei','Noto Sans SC','Microsoft YaHei','SimSun',sans-serif !important;
+                font-size: 10pt;
+              }
+              .page { margin: 0; padding: 0; }
+              html, body { margin: 0; padding: 0; }
+              .o_report_layout_standard { padding: 0 !important; }
+              .header, .footer, .o_standard_footer { display: none !important; height: 0 !important; padding: 0 !important; border: 0 !important; }
+              table { width: 100%; border-collapse: collapse; }
+              /* 学习 mrp_label 的写法：统一给 table/th/td 边线 */
+              table, th, td { border: 1px solid black; }
+              /* 与 mrp_label 相同：合并边线 */
+              table.label-table { width: 100%; height: 100%; margin: 0; border-collapse: collapse; }
+              th, td { padding: 5px; }
+              .no-border { border: none !important; }
+              .main-title { font-size: 18pt; font-weight: bold; }
+              .section-title { font-size: 12pt; font-weight: bold; background-color: rgb(192,192,192); color: black; padding: 5px; }
+              td, th { font-size: 10pt; }
+              strong { font-size: 10pt; font-weight: bold; }
+              .label-page { width: 100mm; height: 100mm; box-sizing: border-box; }
+              .label-table { width: 100%; height: 100%; box-sizing: border-box; }
+              .company-table, .company-table td { border: 1px solid black; }
+              .label-table td, .label-table th { text-align: center; vertical-align: middle; }
+              .sub-en { color:#666; font-size:9pt; display:block; }
+              /* 按 mrp_label.xml 的公司名称写法（仅控制字号/加粗/padding，不额外设置行高和边线） */
+              .header-cell { text-align: center; font-weight: bold; font-size: 16pt; padding: 4px 8px; line-height: normal; height: 20mm; }
+              .product-name { position: absolute; left: 8px; right: 8px; top: 2px; text-align: center; font-size: 12pt; font-weight: bold; }
+              .body-cell { position: relative; height: 80mm; border-top: none !important; }
+              .bottom-left { position: absolute; left: 8px; bottom: 8px; text-align: left; }
+              .top-content { position: absolute; left: 8px; right: 8px; top: 22px; text-align: left; }
+            </style>
+
+            <div class="page">
+              <div class="label-page">
+                <table class="label-table">
+                  <t t-set="lot_from_mo" t-value="('lot_producing_id' in o._fields) and o.lot_producing_id or False"/>
+                  <t t-set="move_lines" t-value="o.move_finished_ids and o.move_finished_ids.move_line_ids or []"/>
+                  <t t-set="lot_from_moves" t-value="(move_lines and move_lines[0].lot_id) or False"/>
+                  <t t-set="lot" t-value="lot_from_mo or lot_from_moves"/>
+                  <t t-set="alerts" t-value="lot and o.env['quality.alert'].sudo().search([('lot_id','=',lot.id)], order='id asc') or o.env['quality.alert'].browse([])"/>
+                  <t t-set="descs" t-value="[a.description for a in alerts if a.description]"/>
+                  <t t-set="testers_list" t-value="[a.user_id.name for a in alerts if a.user_id]"/>
+                  <t t-set="testers_dedup" t-value="list(dict.fromkeys(testers_list))"/>
+                  <t t-set="testers_text" t-value="', '.join(testers_dedup)"/>
+
+                  <tr>
+                    <td colspan="4" class="header-cell" style="text-align: center; font-weight: bold; font-size: 16pt; padding: 4px 8px;">江西鑫桥新材料科技有限公司</td>
+                  </tr>
+                  <tr>
+                    <td colspan="4" class="body-cell" style="border-left: 1px solid black; border-right: 1px solid black; border-bottom: 1px solid black; border-top: none !important;">
+                      <div class="product-name"><span t-esc="o.product_id.display_name"/></div>
+                      <div class="top-content">
+                        <t t-if="descs">
+                          <t t-foreach="descs" t-as="d">
+                            <div t-esc="d"/>
+                          </t>
+                        </t>
+                        <t t-else="else">
+                          <div>-</div>
+                        </t>
+                      </div>
+                      <div class="bottom-left">
+                        <t t-set="tmpl" t-value="o.product_id.product_tmpl_id"/>
+                        <t t-set="spec_list" t-value="[tmpl.product_thickness, tmpl.product_width, (o.qty_producing or 0.0)]"/>
+                        <t t-set="spec_vals" t-value="[str(v) for v in spec_list if v]"/>
+                        <t t-set="spec_text" t-value="spec_vals and '*'.join(spec_vals) or ''"/>
+                        <div>规格：<span t-esc="spec_text or (o.product_id.default_code or '')"/>m</div>
+                        <div>批号：<span t-esc="(lot and lot.name) or '-'"/></div>
+                        <t t-if="lot">
+                          <div style="margin-top:4px;">
+                            <span t-field="lot.name" t-options-widget="'barcode'" t-options-width="200" t-options-height="30" t-options-type="'Code128'"/>
+                          </div>
+                        </t>
+                        <!-- <div>检测人：<span t-esc="testers_text or '-'"/></div> -->
+                        <div>检测人：<span t-esc="o.user_id.name or '-'"/></div>
+                      </div>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+            </div>
+          </t>
+        </t>
+      </t>
+    </template>
+
+    <!-- 质检标签报表动作 -->
+    <record id="action_report_mrp_qc_label" model="ir.actions.report">
+      <field name="name">质检标签</field>
+      <field name="model">mrp.production</field>
+      <field name="report_type">qweb-pdf</field>
+      <field name="report_name">xq_mrp_label.mrp_qc_label_document</field>
+      <field name="report_file">xq_mrp_label.mrp_qc_label_document</field>
+      <field name="paperformat_id" ref="xq_mrp_label.paperformat_100x100"/>
+      <field name="print_report_name">(object.name or 'MO') + '-qc-label'</field>
+      <field name="binding_model_id" ref="mrp.model_mrp_production"/>
+      <field name="binding_type">report</field>
+    </record>
+  </data>
+</odoo>
+
+
+

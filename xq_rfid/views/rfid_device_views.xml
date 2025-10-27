@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    
+    <!-- RFID 设备配置表单视图 -->
+    <record id="rfid_device_config_form_view" model="ir.ui.view">
+        <field name="name">rfid.device.config.form</field>
+        <field name="model">rfid.device.config</field>
+        <field name="arch" type="xml">
+            <form string="RFID 设备配置">
+                <header>
+                    <button name="action_test_connection" 
+                            type="object" 
+                            string="测试连接"
+                            class="oe_highlight"/>
+                    <button name="action_write_test_tag" 
+                            type="object" 
+                            string="测试写入"
+                            invisible="connection_status != 'connected'"/>
+                    <button name="action_read_test_tag" 
+                            type="object" 
+                            string="测试读取"
+                            invisible="connection_status != 'connected'"/>
+                    <field name="connection_status" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="action_view_write_logs" 
+                                class="oe_stat_button" 
+                                type="object" 
+                                icon="fa-edit">
+                            <field name="write_count" widget="statinfo" string="写入"/>
+                        </button>
+                        <button name="action_view_read_logs" 
+                                class="oe_stat_button" 
+                                type="object" 
+                                icon="fa-search">
+                            <field name="read_count" widget="statinfo" string="读取"/>
+                        </button>
+                    </div>
+                    
+                    <widget name="web_ribbon" title="已禁用" bg_color="bg-danger" 
+                            invisible="active"/>
+                    
+                    <div class="oe_title">
+                        <h1>
+                            <field name="name" placeholder="设备名称..." required="1"/>
+                        </h1>
+                    </div>
+                    
+                    <group>
+                        <group string="基本信息">
+                            <field name="active"/>
+                            <field name="sequence"/>
+                            <field name="device_type"/>
+                        </group>
+                        <group string="连接参数">
+                            <field name="connection_string" 
+                                   invisible="device_type == 'simulation'"/>
+                            <field name="port" 
+                                   invisible="device_type not in ['serial', 'usb']"/>
+                            <field name="baudrate" 
+                                   invisible="device_type != 'serial'"/>
+                            <field name="timeout"/>
+                        </group>
+                    </group>
+                    
+                    <group>
+                        <group string="高级配置">
+                            <field name="auto_connect"/>
+                            <field name="retry_times"/>
+                        </group>
+                        <group string="状态信息">
+                            <field name="last_connected" readonly="1"/>
+                            <field name="error_message" readonly="1" 
+                                   invisible="not error_message"/>
+                        </group>
+                    </group>
+                    
+                    <notebook>
+                        <page string="备注" name="notes">
+                            <field name="notes" placeholder="设备备注信息..."/>
+                        </page>
+                        <page string="使用说明" name="help">
+                            <div class="alert alert-info" role="alert">
+                                <h4>设备类型说明</h4>
+                                <ul>
+                                    <li><strong>模拟设备</strong>：用于测试，不连接实际硬件</li>
+                                    <li><strong>USB 读写器</strong>：通过 USB 接口连接的 RFID 读写器</li>
+                                    <li><strong>串口读写器</strong>：通过串口（COM口）连接的设备</li>
+                                    <li><strong>网络读写器</strong>：通过网络（TCP/IP）连接的设备</li>
+                                    <li><strong>自定义设备</strong>：其他类型的设备，需要自定义驱动</li>
+                                </ul>
+                                
+                                <h4>连接字符串示例</h4>
+                                <ul>
+                                    <li>串口：<code>COM3</code> 或 <code>/dev/ttyUSB0</code></li>
+                                    <li>网络：<code>192.168.1.100:8080</code></li>
+                                    <li>USB：<code>USB0</code></li>
+                                </ul>
+                                
+                                <h4>开发集成</h4>
+                                <p>
+                                    要对接实际的 RFID 硬件设备，请继承 <code>rfid.device.service</code> 模型，
+                                    并实现具体的读写方法。详见模块文档。
+                                </p>
+                            </div>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    
+    <!-- RFID 设备配置树视图 -->
+    <record id="rfid_device_config_tree_view" model="ir.ui.view">
+        <field name="name">rfid.device.config.tree</field>
+        <field name="model">rfid.device.config</field>
+        <field name="arch" type="xml">
+            <list string="RFID 设备">
+                <field name="sequence" widget="handle"/>
+                <field name="name"/>
+                <field name="device_type"/>
+                <field name="connection_string"/>
+                <field name="connection_status" widget="badge" 
+                       decoration-success="connection_status == 'connected'"
+                       decoration-danger="connection_status == 'error'"
+                       decoration-muted="connection_status == 'disconnected'"/>
+                <field name="write_count"/>
+                <field name="read_count"/>
+                <field name="last_connected"/>
+                <field name="active" widget="boolean_toggle"/>
+            </list>
+        </field>
+    </record>
+    
+    <!-- RFID 设备配置搜索视图 -->
+    <record id="rfid_device_config_search_view" model="ir.ui.view">
+        <field name="name">rfid.device.config.search</field>
+        <field name="model">rfid.device.config</field>
+        <field name="arch" type="xml">
+            <search string="RFID 设备">
+                <field name="name"/>
+                <field name="device_type"/>
+                <filter string="启用" name="active" domain="[('active', '=', True)]"/>
+                <filter string="已连接" name="connected" domain="[('connection_status', '=', 'connected')]"/>
+                <filter string="连接错误" name="error" domain="[('connection_status', '=', 'error')]"/>
+                <separator/>
+                <filter string="已归档" name="inactive" domain="[('active', '=', False)]"/>
+                <group expand="0" string="分组">
+                    <filter string="设备类型" name="group_by_type" context="{'group_by': 'device_type'}"/>
+                    <filter string="连接状态" name="group_by_status" context="{'group_by': 'connection_status'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+    
+    <!-- RFID 设备配置操作 -->
+    <record id="rfid_device_config_action" model="ir.actions.act_window">
+        <field name="name">RFID 设备配置</field>
+        <field name="res_model">rfid.device.config</field>
+        <field name="view_mode">list,form</field>
+        <field name="context">{'search_default_active': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                创建第一个 RFID 设备配置
+            </p>
+            <p>
+                配置 RFID 读写器设备，用于生产过程中的标签写入和读取操作。
+            </p>
+        </field>
+    </record>
+    
+    <!-- 添加到 RFID 菜单 -->
+    <menuitem id="menu_rfid_device_config"
+              name="设备配置"
+              parent="xq_rfid.menu_rfid_config"
+              action="rfid_device_config_action"
+              sequence="30"/>
+
+</odoo>
+

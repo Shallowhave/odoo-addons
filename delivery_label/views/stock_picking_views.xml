@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 扩展发货单表单视图 -->
+    <record id="view_picking_form_inherit_delivery_label" model="ir.ui.view">
+        <field name="name">stock.picking.form.inherit.delivery.label</field>
+        <field name="model">stock.picking</field>
+        <field name="inherit_id" ref="stock.view_picking_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//header" position="inside">
+                <button name="action_create_delivery_label" string="创建发货标签" type="object" class="btn-primary" invisible="state not in ['assigned', 'done']"/>
+                <button name="action_view_delivery_labels" string="查看标签" type="object" class="btn-secondary" invisible="delivery_label_count == 0"/>
+                <button name="action_print_all_labels" string="打印所有标签" type="object" class="btn-info" invisible="delivery_label_count == 0"/>
+            </xpath>
+            <xpath expr="//field[@name='move_ids_without_package']" position="after">
+                <field name="delivery_label_count" invisible="1"/>
+                <field name="has_delivery_labels" invisible="1"/>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- NOTE: List/tree view inherit removed.
+         Different Odoo/stock versions expose different list/tree view external ids
+         (for example `stock.view_picking_list` or `stock.view_picking_tree`).
+         Referencing them directly can cause module install to fail if the
+         external id does not exist in the target database. If you need the
+         column in list/tree views in your environment, re-add an inherit
+         targeting the correct external id that exists in that database. -->
+</odoo>

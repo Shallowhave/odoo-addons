@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="ps_multi_image_mrp_qc.extended_mrp_quality_check_confirmation_dialog"
+              t-inherit="mrp_workorder.MrpQualityCheckConfirmationDialog"  t-inherit-mode="extension" owl="1">
+        <xpath expr="//t/div/Dialog" position="inside">
+            <div t-if="recordData.test_type === 'multipic'" class="workorder_picture">
+                <TabletImageFieldMulti t-props="multipicInfo"/>
+            </div>
+        </xpath>
+        <!-- <xpath expr="//button[@t-on-click='validate']" position="attributes">
+            <attribute name="t-if">(recordData.test_type !== 'passfail' || recordData.quality_state !== 'none') and recordData.test_type !== 'multipic'</attribute>
+        </xpath> -->
+    </t>
+</templates>
+
+

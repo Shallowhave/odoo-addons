@@ -1,0 +1,4 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+rfid.tag.access,rfid.tag.access,model_rfid_tag,base.group_user,1,1,1,1
+rfid.device.config.access,rfid.device.config.access,model_rfid_device_config,base.group_user,1,1,1,1
+rfid.device.service.access,rfid.device.service.access,model_rfid_device_service,base.group_user,1,1,1,0

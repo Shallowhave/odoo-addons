@@ -1,0 +1,35 @@
+<odoo>
+
+    <record id="view_quality_check_wizard_form" model="ir.ui.view">
+        <field name="name">quality.check.wizard.form</field>
+        <field name="model">quality.check.wizard</field>
+        <field name="inherit_id" ref="quality_control.view_quality_check_wizard"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='measure_on']" position="after">
+                <label for="multi_picture" invisible="1"/>
+                <div invisible="test_type != 'multipic'">
+                    <field name="multi_picture" widget="many2many_binary" readonly="quality_state != 'none'"/>
+                </div>
+            </xpath>
+            <xpath expr="//button[@name='do_pass']" position="attributes">
+                <attribute name="invisible">quality_state != 'none' or test_type not in ('picture', 'instructions','multipic', 'test')</attribute>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_quality_check_form" model="ir.ui.view">
+        <field name="name">quality.check.form</field>
+        <field name="model">quality.check</field>
+        <field name="inherit_id" ref="quality_control.quality_check_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='measure_on']" position="after">
+                <label for="multi_picture" invisible="1"/>
+                <field name="multi_picture" widget="many2many_binary" readonly="quality_state != 'none'" invisible="test_type != 'multipic'"/>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>
+
+
+

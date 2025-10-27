@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- 默认返回原因 -->
+        <record id="return_reason_quality_issue" model="mrp.return.reason">
+            <field name="name">质量不合格</field>
+            <field name="code">QUALITY_ISSUE</field>
+            <field name="description">产品不符合质量标准，需要返回至不良品仓</field>
+            <field name="return_strategy">defective</field>
+            <field name="sequence">10</field>
+        </record>
+        
+        <record id="return_reason_over_production" model="mrp.return.reason">
+            <field name="name">生产过剩</field>
+            <field name="code">OVER_PRODUCTION</field>
+            <field name="description">生产数量超过需求，返回至主仓库</field>
+            <field name="return_strategy">main</field>
+            <field name="sequence">20</field>
+        </record>
+        
+        <record id="return_reason_equipment_failure" model="mrp.return.reason">
+            <field name="name">设备故障</field>
+            <field name="code">EQUIPMENT_FAILURE</field>
+            <field name="description">生产设备出现故障，产品可能存在问题</field>
+            <field name="return_strategy">defective</field>
+            <field name="sequence">30</field>
+        </record>
+        
+        <record id="return_reason_material_issue" model="mrp.return.reason">
+            <field name="name">材料问题</field>
+            <field name="code">MATERIAL_ISSUE</field>
+            <field name="description">原材料存在问题，产品需要报废</field>
+            <field name="return_strategy">scrap</field>
+            <field name="sequence">40</field>
+        </record>
+        
+        <record id="return_reason_process_adjustment" model="mrp.return.reason">
+            <field name="name">工艺调整</field>
+            <field name="code">PROCESS_ADJUSTMENT</field>
+            <field name="description">生产工艺需要调整，产品返回至指定位置</field>
+            <field name="return_strategy">custom</field>
+            <field name="sequence">50</field>
+        </record>
+        
+        <record id="return_reason_customer_change" model="mrp.return.reason">
+            <field name="name">客户变更</field>
+            <field name="code">CUSTOMER_CHANGE</field>
+            <field name="description">客户需求变更，产品需要重新处理</field>
+            <field name="return_strategy">main</field>
+            <field name="sequence">60</field>
+        </record>
+    </data>
+</odoo>

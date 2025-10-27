@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 演示数据：发货标签 -->
+    <record id="demo_delivery_label_1" model="delivery.label">
+        <field name="name">DL000001</field>
+        <field name="picking_id" ref="stock_picking_delivery_1"/>
+        <field name="template_id" ref="template_standard"/>
+        <field name="state">printed</field>
+        <field name="print_date" eval="datetime.datetime.now()"/>
+        <field name="print_user_id" ref="base.user_admin"/>
+        <field name="tracking_number">TRK123456789</field>
+        <field name="weight">2.5</field>
+        <field name="notes">易碎品，请小心轻放</field>
+    </record>
+
+    <record id="demo_delivery_label_2" model="delivery.label">
+        <field name="name">DL000002</field>
+        <field name="picking_id" ref="stock_picking_delivery_2"/>
+        <field name="template_id" ref="template_small"/>
+        <field name="state">shipped</field>
+        <field name="print_date" eval="datetime.datetime.now()"/>
+        <field name="print_user_id" ref="base.user_admin"/>
+        <field name="tracking_number">TRK987654321</field>
+        <field name="weight">1.2</field>
+        <field name="notes">加急配送</field>
+    </record>
+
+    <record id="demo_delivery_label_3" model="delivery.label">
+        <field name="name">DL000003</field>
+        <field name="picking_id" ref="stock_picking_delivery_3"/>
+        <field name="template_id" ref="template_batch"/>
+        <field name="state">delivered</field>
+        <field name="print_date" eval="datetime.datetime.now()"/>
+        <field name="print_user_id" ref="base.user_admin"/>
+        <field name="tracking_number">TRK456789123</field>
+        <field name="weight">5.8</field>
+        <field name="notes">已确认收货</field>
+    </record>
+
+</odoo>

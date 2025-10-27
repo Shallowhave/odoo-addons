@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 组件行视图 -->
+    <record id="mrp_production_return_wizard_line_view_tree" model="ir.ui.view">
+        <field name="name">mrp.production.return.wizard.line.tree</field>
+        <field name="model">mrp.production.return.wizard.line</field>
+        <field name="arch" type="xml">
+            <list editable="bottom">
+                <field name="product_id" readonly="1"/>
+                <field name="product_uom_id" readonly="1"/>
+                <field name="expected_qty" readonly="1"/>
+                <field name="consumed_qty" readonly="1"/>
+                <field name="remaining_qty" readonly="1"/>
+                <field name="return_qty"/>
+            </list>
+        </field>
+    </record>
+</odoo>

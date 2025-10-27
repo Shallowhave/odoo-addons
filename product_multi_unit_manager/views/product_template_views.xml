@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 扩展产品模板表单视图 -->
+    <record id="product_template_form_view_multi_unit" model="ir.ui.view">
+        <field name="name">product.template.form.multi.unit</field>
+        <field name="model">product.template</field>
+        <field name="inherit_id" ref="product.product_template_form_view"/>
+        <field name="arch" type="xml">
+            <!-- 在header部分添加快速单位设置按钮 -->
+            <xpath expr="//header" position="inside">
+                <button name="action_quick_unit_setup" 
+                        type="object" 
+                        string="单位设置向导" 
+                        class="btn-primary"
+                        icon="fa-magic"
+                        help="快速设置薄膜计量单位"/>
+            </xpath>
+            <!-- 在内部说明字段之前添加产品属性管理部分 -->
+            <xpath expr="//group[@name='internal_notes']" position="before">
+                <!-- 产品类型选择 -->
+                <group string="产品类型" name="product_type_group">
+                    <field name="product_type" widget="radio"/>
+                </group>
+                
+                <!-- 将产品属性和计算结果分两个group显示 -->
+                <div class="row">
+                    <div class="col-6">
+                        <!-- 原膜显示长度、宽度、厚度和发货重量系数 -->
+                        <group string="产品尺寸与材料属性" name="product_dimensions_group" 
+                               invisible="product_type != 'raw_material'">
+                            <field name="product_length"/>
+                            <field name="product_width"/>
+                            <field name="product_thickness"/>
+                                                <div class="oe_inline">
+                        <label for="shipping_weight_coefficient"/>
+                        <span class="oe_inline">
+                            <field name="shipping_weight_coefficient" class="oe_inline"/> 克/平方米
+                        </span>
+                    </div>
+                        </group>
+                        
+                        <!-- 成品膜需要宽度、厚度和材料密度 -->
+                        <group string="产品尺寸与材料属性" name="finished_product_dimensions_group" 
+                               invisible="product_type != 'finished_product'">
+                            <field name="product_width"/>
+                            <field name="product_thickness"/>
+                            <field name="finished_density"/>
+                            <div class="oe_inline">
+                                <label for="shipping_weight_coefficient"/>
+                                <span class="oe_inline">
+                                    <field name="shipping_weight_coefficient" class="oe_inline"/> 克/平方米
+                                </span>
+                            </div>
+                        </group>
+                        
+                        <!-- 配液原料需要重量和固含量 -->
+                        <group string="配液原料属性" name="solution_material_group" 
+                               invisible="product_type != 'solution_material'">
+                            <field name="solution_weight"/>
+                            <field name="solution_solid_content"/>
+                        </group>
+                        
+                    </div>
+                    <div class="col-6">
+                        <!-- 原膜显示所有计算结果 -->
+                        <group string="计算结果" name="calculation_results_group" 
+                               invisible="product_type != 'raw_material'">
+                            <field name="product_area" readonly="1"/>
+                            <field name="product_volume" readonly="1"/>
+                        </group>
+                        
+                        <!-- 成品膜显示面积和每米重量 -->
+                        <group string="计算结果" name="finished_calculation_results_group" 
+                               invisible="product_type != 'finished_product'">
+                            <field name="product_area" readonly="1" string="每米面积 (㎡/m)"/>
+                            <field name="weight_per_meter" readonly="1"/>
+                        </group>
+                        
+                    </div>
+                </div>
+            </xpath>
+            <!-- 将表单中 Secondary uom 的标签改为中文 -->
+            <xpath expr="//field[@name='uom_po_id']" position="attributes">
+                <attribute name="string">平方米</attribute>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- 扩展产品模板列表视图 -->
+    <record id="product_template_tree_view_multi_unit" model="ir.ui.view">
+        <field name="name">product.template.tree.multi.unit</field>
+        <field name="model">product.template</field>
+        <field name="inherit_id" ref="product.product_template_tree_view"/>
+        <field name="arch" type="xml">
+            <!-- 在header部分添加批量单位设置按钮 -->
+            <xpath expr="//header" position="inside">
+                <button name="action_batch_unit_setup" 
+                        type="object" 
+                        string="批量单位设置" 
+                        class="btn-primary"
+                        icon="fa-cogs"
+                        help="批量设置多个产品的计量单位"/>
+            </xpath>
+            <xpath expr="//field[@name='uom_id']" position="after">
+                <field name="product_area" string="面积" optional="hide"/>
+                <field name="product_volume" string="体积" optional="hide"/>
+                <field name="uom_po_id" string="平方米" optional="hide"/>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- 批量单位设置服务器动作 -->
+    <record id="action_product_batch_unit_setup" model="ir.actions.server">
+        <field name="name">批量单位设置</field>
+        <field name="model_id" ref="product.model_product_template"/>
+        <field name="binding_model_id" ref="product.model_product_template"/>
+        <field name="binding_view_types">list</field>
+        <field name="state">code</field>
+        <field name="code">
+if records:
+    action = records[0].action_batch_unit_setup()
+    action.update({
+        'context': {
+            **action.get('context', {}),
+            'default_product_tmpl_ids': [(6, 0, records.ids)],
+        }
+    })
+        </field>
+    </record>
+</odoo>

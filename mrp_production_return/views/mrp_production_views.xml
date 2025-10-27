@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 扩展制造订单表单视图，添加剩余产品处理功能 -->
+    <record id="mrp_production_view_form_inherit_return" model="ir.ui.view">
+        <field name="name">mrp.production.view.form.inherit.return</field>
+        <field name="model">mrp.production</field>
+        <field name="inherit_id" ref="mrp.mrp_production_form_view"/>
+        <field name="arch" type="xml">
+                   <!-- 在状态栏添加剩余组件处理按钮 -->
+                   <xpath expr="//div[@name='button_box']" position="inside">
+                       <button name="action_return_components" 
+                               string="处理剩余组件" 
+                               type="object" 
+                               class="btn-primary"
+                               invisible="not has_remaining_components or state not in ['progress', 'to_close']"
+                               help="处理制造订单的剩余组件"/>
+                       <button name="action_view_return_history" 
+                               string="返回历史" 
+                               type="object" 
+                               class="btn-secondary"
+                               invisible="not return_history_ids"
+                               help="查看剩余组件返回历史"/>
+                   </xpath>
+                   
+                   <!-- 在信息页面添加剩余组件信息 -->
+                   <xpath expr="//field[@name='product_qty']" position="after">
+                       <field name="remaining_components_count" readonly="1"/>
+                       <field name="has_remaining_components" invisible="1"/>
+                   </xpath>
+            
+        </field>
+    </record>
+    
+</odoo>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- RFID 标签编号序列 -->
+        <record id="seq_rfid_tag" model="ir.sequence">
+            <field name="name">RFID 标签序列</field>
+            <field name="code">rfid.tag</field>
+            <!-- 可自定义前缀，支持日期变量 -->
+            <!-- 示例：RFID、XQ%(year)s%(month)s-、FW-%(year)s- 等 -->
+            <field name="prefix">RFID</field>
+            <!-- 流水号位数：4-8位 -->
+            <field name="padding">6</field>
+            <field name="number_increment">1</field>
+            <field name="number_next">1</field>
+            <field name="implementation">standard</field>
+        </record>
+    </data>
+</odoo>
+

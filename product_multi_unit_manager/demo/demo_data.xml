@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <!-- 演示产品1：PET薄膜（卷-平米关系） -->
+        <record id="product_pet_film" model="product.template">
+            <field name="name">PET聚酯薄膜</field>
+            <field name="type">product</field>
+            <field name="categ_id" ref="product.product_category_all"/>
+            <field name="uom_id" ref="uom_roll_base"/>
+            <field name="uom_po_id" ref="uom_sqm_dynamic"/>
+            <field name="tracking">lot</field>
+            <field name="list_price">21250.0</field>  <!-- 500平米/卷 × 42.5元/平米 -->
+            <field name="standard_price">16400.0</field>
+            <field name="product_length">1.0</field>
+            <field name="product_width">500</field>  <!-- 500mm宽，1000m长 = 500平米/卷 -->
+            <field name="product_thickness">25</field>
+            <!-- material_density removed -->
+            <field name="description">
+PET聚酯薄膜，高透明度，优异的机械性能和化学稳定性。
+
+产品规格：
+- 宽度：500mm
+- 长度：1000m/卷
+- 厚度：25μm
+- 密度：1.38 g/cm³
+- 面积：500平米/卷
+
+单位关系：
+- 基础单位：卷（factor=1.0）
+- 面积单位：平米（动态计算factor）
+- 1卷 = 500平米（根据尺寸自动计算）
+
+应用：包装胶带、电子绝缘、标签材料
+            </field>
+        </record>
+
+        <!-- 演示产品2：胶带卷装（卷-托盘关系） -->
+        <record id="product_acrylic_tape" model="product.template">
+            <field name="name">丙烯酸透明包装胶带</field>
+            <field name="type">product</field>
+            <field name="categ_id" ref="product.product_category_all"/>
+            <field name="uom_id" ref="uom_roll_base"/>
+            <field name="uom_po_id" ref="uom_pallet_rolls"/>
+            <field name="tracking">lot</field>
+            <field name="list_price">8.50</field>
+            <field name="standard_price">6.20</field>
+            <field name="product_length">0.066</field>
+            <field name="product_width">48</field>
+            <field name="product_thickness">45</field>
+            <!-- material_density removed -->
+            <field name="description">
+丙烯酸透明包装胶带，高透明度，优异的粘接性能和耐候性。
+
+产品规格：
+- 宽度：48mm
+- 长度：66m/卷
+- 厚度：45μm
+- 密度：1.15 g/cm³
+
+单位关系：
+- 基础单位：卷（factor=1.0）
+- 包装单位：托盘（factor=1/20）
+- 1托盘 = 20卷
+
+应用：包装封箱、固定物品、办公用品
+            </field>
+        </record>
+
+        <!-- 演示产品3：BOPP薄膜（卷-吨关系） -->
+        <record id="product_bopp_film" model="product.template">
+            <field name="name">BOPP双向拉伸聚丙烯薄膜</field>
+            <field name="type">product</field>
+            <field name="categ_id" ref="product.product_category_all"/>
+            <field name="uom_id" ref="uom_roll_base"/>
+            <field name="uom_po_id" ref="uom_ton_dynamic"/>
+            <field name="tracking">lot</field>
+            <field name="list_price">450.0</field>  <!-- 假设每卷450元 -->
+            <field name="standard_price">320.0</field>
+            <field name="product_length">2.0</field>
+            <field name="product_width">1000</field>  <!-- 1000mm宽，2000m长 -->
+            <field name="product_thickness">20</field>
+            <!-- material_density removed -->
+            <field name="description">
+BOPP双向拉伸聚丙烯薄膜，具有优异的透明度、光泽度和机械强度。
+
+产品规格：
+- 宽度：1000mm  
+- 长度：2000m/卷
+- 厚度：20μm
+- 密度：0.91 g/cm³
+- 面积：2000平米/卷
+- 重量：约36.4kg/卷
+
+单位关系：
+- 基础单位：卷（factor=1.0）
+- 重量单位：吨（动态计算factor）
+- 约27卷 = 1吨（根据密度和尺寸自动计算）
+
+应用：食品包装、标签材料、胶带基材
+            </field>
+        </record>
+
+        <!-- 演示产品4：特殊胶带（展示动态计算） -->
+        <record id="product_double_sided_tape" model="product.template">
+            <field name="name">双面泡棉胶带</field>
+            <field name="type">product</field>
+            <field name="categ_id" ref="product.product_category_all"/>
+            <field name="uom_id" ref="uom_roll_base"/>
+            <field name="list_price">32.50</field>
+            <field name="standard_price">24.80</field>
+            <field name="product_length">0.05</field>
+            <field name="product_width">24</field>
+            <field name="product_thickness">800</field>
+            <!-- material_density removed -->
+            <field name="description">
+双面泡棉胶带，具有优异的粘接性能和缓冲性能。
+
+产品规格：
+- 宽度：24mm
+- 长度：50m/卷  
+- 厚度：800μm
+- 密度：0.65 g/cm³
+- 面积：1.2平米/卷
+
+统一单位体系：
+- 所有单位都在同一个计量单位类别中
+- 卷为基础核心单位（factor=1.0）
+- 平米、吨的转换系数根据产品尺寸和密度动态计算
+- 支持卷↔平米、卷↔吨、卷↔托盘的灵活转换
+
+可以通过"快速单位设置"配置不同的单位组合。
+            </field>
+        </record>
+    </data>
+</odoo>

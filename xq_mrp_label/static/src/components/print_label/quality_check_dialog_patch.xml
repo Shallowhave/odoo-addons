@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+  <t t-name="xq_mrp_label.patch_mrp_quality_check_confirmation_dialog"
+     t-inherit="mrp_workorder.MrpQualityCheckConfirmationDialog" t-inherit-mode="extension" owl="1">
+    <!-- 在验证按钮后追加“打印标签”按钮（仅两种测试类型可见） -->
+    <xpath expr="//button[@t-on-click='validate']" position="after">
+      <button class="btn btn-secondary" t-if="showPrintLabel" t-on-click="onClickPrintLabel">打印标签</button>
+    </xpath>
+  </t>
+</templates>
+
+

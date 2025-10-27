@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+	<record id="rfid_tag_form_view" model="ir.ui.view">
+		<field name="name">rfid_tag_form_view.form</field>
+		<field name="model">rfid.tag</field>
+		<field name="arch" type="xml">
+			<form string="RFID 标签">
+				<sheet>
+					<div class="oe_title">
+						<label for="name"/>
+						<h1>
+							<field name="name" placeholder="RFID 标签编号"/>
+						</h1>
+					</div>
+					<group>
+						<group>
+							<field name="usage_type" />
+							<field name="picking_id"
+									invisible = "usage_type in ['product', 'stock_prod_lot'] " />
+							<field name="product_id"
+							       invisible = "usage_type in ['receipt', 'delivery', 'stock_prod_lot']" />
+							<field name="stock_prod_lot_id"
+							       invisible = "usage_type in ['receipt', 'delivery', 'product']" />
+						</group>
+						<group>
+							<field name="production_id" readonly="1"/>
+							<field name="production_date" readonly="1"/>
+						</group>
+					</group>
+				</sheet>
+			</form>
+		</field>
+	</record>
+
+	<record id="rfid_tag_tree_view" model="ir.ui.view">
+		<field name="name">rfid_tag_tree_view.list</field>
+		<field name="model">rfid.tag</field>
+		<field name="arch" type="xml">
+			<list string="RFID 标签"
+			      decoration-danger="assigned != True"
+			      decoration-success="assigned == True">
+				<field name="name"/>
+				<field name="usage_type"/>
+				<field name="usage" widget="many2one_navigation"/>
+				<field name="production_id" optional="show"/>
+				<field name="production_date" optional="show"/>
+				<field name="assigned" invisible="1" />
+			</list>
+		</field>
+	</record>
+
+	<record id="rfid_tag_search_view" model="ir.ui.view">
+		<field name="name">rfid.tag.search.view</field>
+		<field name="model">rfid.tag</field>
+		<field name="arch" type="xml">
+			<search string="RFID 标签">
+				<field name="name" />
+				<field name="usage_type" />
+				<field name="usage" />
+				<field name="picking_id" />
+				<field name="product_id" />
+				<field name="stock_prod_lot_id" />
+				<field name="production_id" />
+				<filter string="收货单" name="usage_type" domain="[('usage_type', '=', 'receipt')]"/>
+				<filter string="发货单" name="usage_type" domain="[('usage_type', '=', 'delivery')]"/>
+				<filter string="生产批次" name="usage_type_lot" domain="[('usage_type', '=', 'stock_prod_lot')]"/>
+				<separator/>
+				<filter string="有生产订单" name="has_production" domain="[('production_id', '!=', False)]"/>
+				<group expand="1" string="分组">
+					<filter string="使用类型" name="usage_type" domain="[]" context="{'group_by':'usage_type'}"/>
+					<filter string="生产订单" name="production_id" domain="[]" context="{'group_by':'production_id'}"/>
+				</group>
+			</search>
+		</field>
+	</record>
+
+	<record id="rfid_tag_view_act_window" model="ir.actions.act_window">
+		<field name="name">RFID 标签</field>
+		<field name="type">ir.actions.act_window</field>
+		<field name="res_model">rfid.tag</field>
+		<field name="view_mode">list,form</field>
+		<field name="help" type="html">
+			<p class="oe_view_nocontent_create">
+				暂无 RFID 标签，点击此处创建新标签。
+			</p>
+		</field>
+	</record>
+
+	<!-- RFID 标签菜单项 -->
+	<menuitem id="all_rfid_tag" name="RFID 标签" parent="menu_rfid"
+	          sequence="5" action="rfid_tag_view_act_window" />
+
+</odoo>

@@ -1,0 +1,5 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_product_unit_setup_wizard_user,product.unit.setup.wizard.user,model_product_unit_setup_wizard,base.group_user,1,1,1,1
+access_product_unit_setup_wizard_manager,product.unit.setup.wizard.manager,model_product_unit_setup_wizard,stock.group_stock_manager,1,1,1,1
+access_product_batch_unit_setup_wizard_user,product.batch.unit.setup.wizard.user,model_product_batch_unit_setup_wizard,base.group_user,1,1,1,1
+access_product_batch_unit_setup_wizard_manager,product.batch.unit.setup.wizard.manager,model_product_batch_unit_setup_wizard,stock.group_stock_manager,1,1,1,1

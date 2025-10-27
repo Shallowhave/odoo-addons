@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+	<data noupdate="0">
+
+		<record id="product_normal_rfid_form_view" model="ir.ui.view">
+            <field name="name">product.product.rfid.form</field>
+            <field name="model">product.product</field>
+<!--            <field name="groups_id" eval="[(4, ref('stock.group_stock_user'))]"/>-->
+            <field name="inherit_id" ref="product.product_normal_form_view"/>
+            <field name="arch" type="xml">
+	            <xpath expr="//field[@name='barcode']" position="after">
+		            <field name="rfid_tag" groups="stock.group_stock_user"/>
+	            </xpath>
+            </field>
+		</record>
+
+	</data>
+</odoo>

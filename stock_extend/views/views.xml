@@ -1,0 +1,31 @@
+<odoo>
+  <data>
+    <!-- 继承stock模块的操作视图，添加lot_weight字段 -->
+    <record id="view_stock_move_line_operation_tree_inherit_stock_extend" model="ir.ui.view">
+      <field name="name">stock.move.line.operations.list.inherit.stock_extend</field>
+      <field name="model">stock.move.line</field>
+      <field name="inherit_id" ref="stock.view_stock_move_line_operation_tree"/>
+      <field name="arch" type="xml">
+        <xpath expr="//field[@name='lot_name']" position="after">
+          <field name="lot_weight" 
+                      column_invisible="parent.has_tracking == 'none' or not parent.show_lots_text"
+                        readonly="package_level_id and parent.picking_type_entire_packs"/>
+        </xpath>
+      </field>
+    </record>
+
+    <record id="view_stock_move_tree_inherit_stock_extend" model="ir.ui.view">
+      <field name="name">stock.picking.form.inherit.stock_extend</field>
+      <field name="model">stock.picking</field>
+      <field name="inherit_id" ref="stock.view_picking_form"/>
+      <field name="arch" type="xml">
+        <!-- 定位到列表中的具体字段后插入lot_weight -->
+        <xpath expr="//field[@name='move_ids_without_package']//field[@name='picked']" position="after">
+          <field name="lot_weight" readonly="1" force_save="1"/>
+        </xpath>
+      </field>
+    </record>
+
+
+  </data>
+</odoo>

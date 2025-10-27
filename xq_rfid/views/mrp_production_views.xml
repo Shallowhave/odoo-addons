@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 扩展生产订单表单视图 - RFID 标签关联 -->
+    <record id="view_production_form_rfid" model="ir.ui.view">
+        <field name="name">mrp.production.form.rfid</field>
+        <field name="model">mrp.production</field>
+        <field name="inherit_id" ref="mrp.mrp_production_form_view"/>
+        <field name="arch" type="xml">
+            
+            <!-- 在按钮盒子中添加 RFID 标签统计 -->
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button class="oe_stat_button" 
+                        name="action_view_rfid_tags" 
+                        type="object" 
+                        icon="fa-barcode"
+                        invisible="rfid_tag_count == 0">
+                    <field name="rfid_tag_count" widget="statinfo" string="RFID 标签"/>
+                </button>
+            </xpath>
+            
+            <!-- 添加 RFID 标签页（可选） -->
+            <xpath expr="//notebook" position="inside">
+                <page string="RFID 标签" name="rfid_tags" invisible="rfid_tag_count == 0">
+                    <field name="rfid_tag_ids" nolabel="1" readonly="1">
+                        <list>
+                            <field name="name"/>
+                            <field name="stock_prod_lot_id"/>
+                            <field name="quality_check_id"/>
+                            <field name="production_date"/>
+                            <field name="usage_type"/>
+                        </list>
+                    </field>
+                </page>
+            </xpath>
+        </field>
+    </record>
+</odoo>
+

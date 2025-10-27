@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        
+        <!-- 品质报告模板 -->
+        <template id="quality_report_template">
+            <t t-call="web.html_container">
+                <t t-foreach="docs" t-as="o">
+                    <t t-call="web.external_layout">
+                        <div class="page">
+                            <!-- 报告标题 -->
+                            <div class="oe_structure"/>
+                            
+                            <div class="row">
+                                <div class="col-6">
+                                    <h2>品质报告</h2>
+                                </div>
+                                <div class="col-6 text-right">
+                                    <p><strong>发货日期：</strong><span t-field="o.scheduled_date" t-options="{'widget': 'datetime'}"/></p>
+                                </div>
+                            </div>
+
+                            <hr/>
+
+                            <!-- 品质明细表 -->
+                            <h3>品质明细</h3>
+                            <table class="table table-bordered" style="border-collapse: collapse; width: 100%;">
+                                <thead>
+                                    <tr>
+                                        <th style="border: 1px solid #000; padding: 8px; text-align: center;">序号</th>
+                                        <th style="border: 1px solid #000; padding: 8px; text-align: center;">产品名</th>
+                                        <th style="border: 1px solid #000; padding: 8px; text-align: center;">批号/序列号</th>
+                                        <th style="border: 1px solid #000; padding: 8px; text-align: center;">品质备注</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <t t-set="line_number" t-value="1"/>
+                                    <t t-foreach="o._get_quality_info()" t-as="quality">
+                                        <tr>
+                                            <td style="border: 1px solid #000; padding: 8px; text-align: center;">
+                                                <span t-out="line_number"/>
+                                            </td>
+                                            <td style="border: 1px solid #000; padding: 8px; text-align: center;">
+                                                <span t-out="quality['product']"/>
+                                            </td>
+                                            <td style="border: 1px solid #000; padding: 8px; text-align: center;">
+                                                <span t-out="quality['lot_name']"/>
+                                            </td>
+                                            <td style="border: 1px solid #000; padding: 8px; text-align: center;">
+                                                <span t-out="quality['quality_note']"/>
+                                            </td>
+                                        </tr>
+                                        <t t-set="line_number" t-value="line_number + 1"/>
+                                    </t>
+                                </tbody>
+                            </table>
+
+                            <div class="row mt-4">
+                                <div class="col-6">
+                                    <p>检验员签名：</p>
+                                    <div style="height: 50px; border-bottom: 1px solid #000;"></div>
+                                    <p>日期：</p>
+                                </div>
+                                <div class="col-6">
+                                    <p>品质主管签名：</p>
+                                    <div style="height: 50px; border-bottom: 1px solid #000;"></div>
+                                    <p>日期：</p>
+                                </div>
+                            </div>
+
+                        </div>
+                    </t>
+                </t>
+            </t>
+        </template>
+
+    </data>
+</odoo>

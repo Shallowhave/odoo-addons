@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="xq_rfid.RfidGenerationWizard">
+        <div class="o_rfid_generation_wizard">
+            <!-- 标题 -->
+            <div class="mb-3">
+                <h6 class="text-primary mb-2">
+                    <i class="fa fa-qrcode me-2"/>
+                    RFID 标签管理
+                </h6>
+            </div>
+            
+            <!-- 成品批次号显示 -->
+            <div class="row mb-3">
+                <div class="col-md-12">
+                    <div class="card border-primary">
+                        <div class="card-body p-3">
+                            <div class="d-flex align-items-center justify-content-between">
+                                <div class="flex-grow-1">
+                                    <div class="text-muted small mb-1">成品批次号</div>
+                                    <div class="h5 mb-0">
+                                        <i class="fa fa-barcode me-2 text-primary"/>
+                                        <strong t-esc="state.productionLotNumber || '(待生成批次号)'"/>
+                                    </div>
+                                </div>
+                                <div class="text-end ms-3">
+                                    <div class="text-muted small mb-1">RFID 状态</div>
+                                    <div t-if="props.record.data.rfid_tag_id" class="badge bg-success fs-6">
+                                        <i class="fa fa-check-circle me-1"/>
+                                        已生成
+                                    </div>
+                                    <div t-else="" class="badge bg-info fs-6">
+                                        <i class="fa fa-clock me-1"/>
+                                        通过后自动生成
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- RFID 信息显示 -->
+            <div t-if="props.record.data.rfid_tag_name" class="alert alert-success mb-3">
+                <div class="d-flex align-items-center">
+                    <i class="fa fa-qrcode fa-2x me-3 text-success"/>
+                    <div>
+                        <h6 class="mb-1">RFID 标签已生成</h6>
+                        <p class="mb-0">
+                            <strong>RFID 编号：</strong> 
+                            <code class="bg-white px-2 py-1 rounded fs-6" t-esc="props.record.data.rfid_tag_name"/>
+                        </p>
+                    </div>
+                </div>
+            </div>
+            
+           
+        </div>
+    </t>
+</templates>

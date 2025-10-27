@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates id="template" xml:space="preserve">
+
+    <t t-name="ps_multi_image_mrp_qc.ForMultiImages">
+        <div class="o_portal_chatter_composer">
+            <div class="alert alert-danger mb8 d-none o_portal_chatter_composer_error" role="alert">
+                Oops! Something went wrong. Try to reload the page and log in.
+            </div>
+            <div class="d-flex flex-column">
+                <!-- Attachments Section -->
+                <div class="o_portal_chatter_attachments mt-3" t-ref="attachments">
+                    <t t-foreach="state.attachments" t-as="attachment" t-key="attachment.id">
+                        <div class="o_portal_chatter_attachment d-flex justify-content-between align-items-center mb-2" t-att-data-id="attachment.id">
+                            <div class="attachment-name flex-grow-1 text-truncate me-2">
+                                <t t-if="attachment.state === 'temporary'">
+                                    <span t-esc="attachment.name"></span>
+                                </t>
+                                <t t-else="">
+                                    <a t-att-href="'/web/content/' + attachment.id + '?download=true'" t-att-download="attachment.name" t-esc="attachment.name" class="text-decoration-none text-reset"></a>
+                                </t>
+                            </div>
+                            <button class="o_portal_chatter_attachment_delete btn btn-sm btn-outline-danger" t-on-click="deleteAttachment">Delete</button>
+                        </div>
+                    </t>
+                </div>
+
+                <!-- Composer Body -->
+                <div class="o_portal_chatter_composer_body mt-3">
+                    <div class="d-flex justify-content-start">
+                        <button class="o_portal_chatter_attachment_btn btn btn-primary me-2" barcode_trigger="measure" t-on-click="triggerFileInput">Take a Picture</button>
+                        <button t-if="!state.isButtonClicked" class="o_portal_chatter_composer_btn btn btn-primary" type="submit" t-on-click="onSubmitButtonClick">Validate</button>
+                    </div>
+                </div>
+
+                <!-- File Input (Hidden) -->
+                <div class="d-none">
+                    <input type="file" class="o_portal_chatter_file_input" multiple="multiple" t-on-change="onFileInputChange"/>
+                </div>
+
+            </div>
+        </div>
+    </t>
+
+</templates>

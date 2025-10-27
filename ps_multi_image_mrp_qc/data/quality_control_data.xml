@@ -1,0 +1,8 @@
+<odoo>
+    <data noupdate="0">
+        <record id="ps_multi_image_mrp_qc.test_type_multi_picture" model="quality.point.test_type">
+            <field name="name">Take Multi Picture</field>
+            <field name="technical_name">multipic</field>
+        </record>
+    </data>
+</odoo>

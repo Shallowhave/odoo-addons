@@ -1,0 +1,3 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_delivery_report_user,delivery.report.user,model_stock_picking,stock.group_stock_user,1,1,1,0
+access_delivery_report_manager,delivery.report.manager,model_stock_picking,stock.group_stock_manager,1,1,1,1

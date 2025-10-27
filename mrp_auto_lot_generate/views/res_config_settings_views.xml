@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.mrp.auto.lot.generate</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base_setup.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[@id='companies']" position="after">
+                <block title="生产自动批次生成器" id="mrp_auto_lot_generate_settings">
+                    <setting id="mrp_auto_lot_batch_prefix_setting" string="批次号前缀" help="配置自动生成批次号的前缀">
+                        <field name="mrp_auto_lot_batch_prefix"/>
+                        <div class="text-muted">
+                            默认为 'XQ'。格式为：{PREFIX}YYMMDDHHMMAxx[-X]
+                        </div>
+                    </setting>
+                    <setting id="mrp_auto_lot_logging_setting" string="启用详细日志" help="启用批次生成过程的详细日志记录">
+                        <field name="mrp_auto_lot_enable_logging"/>
+                    </setting>
+                </block>
+            </xpath>
+        </field>
+    </record>
+</odoo>

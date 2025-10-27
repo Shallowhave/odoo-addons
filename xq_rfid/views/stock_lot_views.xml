@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+	<record id="view_move_form_rfid" model="ir.ui.view">
+        <field name="name">stock.lot.rfid.form</field>
+        <field name="model">stock.lot</field>
+        <field name="inherit_id" ref="stock.view_production_lot_form" />
+        <field name="arch" type="xml">
+	        <xpath expr="//field[@name='ref']" position="after">
+		        <field name="rfid_tag" />
+	        </xpath>
+        </field>
+	</record>
+</odoo>

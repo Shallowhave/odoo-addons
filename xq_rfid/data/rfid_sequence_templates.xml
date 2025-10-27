@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!--
+    ============================================
+    RFID 编号规则配置模板
+    ============================================
+    
+    使用方法：
+    1. 选择下面的一个模板
+    2. 复制到 rfid_sequence.xml 替换现有配置
+    3. 升级模块即可生效
+    
+    ============================================
+    -->
+    
+    <!-- 
+    ====================================
+    模板 1：默认配置（当前使用）
+    结果：RFID000001, RFID000002...
+    ==================================== 
+    -->
+    <data noupdate="1">
+        <record id="seq_rfid_tag" model="ir.sequence">
+            <field name="name">RFID 标签序列</field>
+            <field name="code">rfid.tag</field>
+            <field name="prefix">RFID</field>
+            <field name="padding">6</field>
+            <field name="number_increment">1</field>
+            <field name="number_next">1</field>
+            <field name="implementation">standard</field>
+        </record>
+    </data>
+    
+    <!-- 
+    ====================================
+    模板 2：简短编号
+    结果：RF0001, RF0002, RF0003...
+    ==================================== 
+    <data noupdate="1">
+        <record id="seq_rfid_tag" model="ir.sequence">
+            <field name="name">RFID 标签序列</field>
+            <field name="code">rfid.tag</field>
+            <field name="prefix">RF</field>
+            <field name="padding">4</field>
+            <field name="number_increment">1</field>
+            <field name="number_next">1</field>
+            <field name="implementation">standard</field>
+        </record>
+    </data>
+    -->
+    
+    <!-- 
+    ====================================
+    模板 3：年月日编号
+    结果：RFID20241015-00001
+    ==================================== 
+    <data noupdate="1">
+        <record id="seq_rfid_tag" model="ir.sequence">
+            <field name="name">RFID 标签序列</field>
+            <field name="code">rfid.tag</field>
+            <field name="prefix">RFID%(year)s%(month)s%(day)s-</field>
+            <field name="padding">5</field>
+            <field name="number_increment">1</field>
+            <field name="number_next">1</field>
+            <field name="implementation">standard</field>
+        </record>
+    </data>
+    -->
+    
+    <!-- 
+    ====================================
+    模板 4：年月编号（按月重置流水号）
+    结果：RFID202410-00001
+    ==================================== 
+    <data noupdate="1">
+        <record id="seq_rfid_tag" model="ir.sequence">
+            <field name="name">RFID 标签序列</field>
+            <field name="code">rfid.tag</field>
+            <field name="prefix">RFID%(year)s%(month)s-</field>
+            <field name="padding">5</field>
+            <field name="number_increment">1</field>
+            <field name="number_next">1</field>
+            <field name="implementation">standard</field>
+        </record>
+    </data>
+    -->
+    
+    <!-- 
+    ====================================
+    模板 5：公司代码+年月+流水号
+    结果：XQ202410-000001
+    ==================================== 
+    <data noupdate="1">
+        <record id="seq_rfid_tag" model="ir.sequence">
+            <field name="name">RFID 标签序列</field>
+            <field name="code">rfid.tag</field>
+            <field name="prefix">XQ%(year)s%(month)s-</field>
+            <field name="padding">6</field>
+            <field name="number_increment">1</field>
+            <field name="number_next">1</field>
+            <field name="implementation">standard</field>
+        </record>
+    </data>
+    -->
+    
+    <!-- 
+    ====================================
+    模板 6：纯数字（年月+流水号）
+    结果：2024100001, 2024100002...
+    ==================================== 
+    <data noupdate="1">
+        <record id="seq_rfid_tag" model="ir.sequence">
+            <field name="name">RFID 标签序列</field>
+            <field name="code">rfid.tag</field>
+            <field name="prefix">%(year)s%(month)s</field>
+            <field name="padding">4</field>
+            <field name="number_increment">1</field>
+            <field name="number_next">1</field>
+            <field name="implementation">standard</field>
+        </record>
+    </data>
+    -->
+    
+    <!-- 
+    ====================================
+    模板 7：防伪专用（FW=防伪）
+    结果：FW-2024-000001
+    ==================================== 
+    <data noupdate="1">
+        <record id="seq_rfid_tag" model="ir.sequence">
+            <field name="name">RFID 标签序列</field>
+            <field name="code">rfid.tag</field>
+            <field name="prefix">FW-%(year)s-</field>
+            <field name="padding">6</field>
+            <field name="number_increment">1</field>
+            <field name="number_next">1</field>
+            <field name="implementation">standard</field>
+        </record>
+    </data>
+    -->
+    
+    <!-- 
+    ====================================
+    模板 8：工厂代码+产品类型
+    结果：XQ01-A-00001（XQ01=1号工厂，A=产品类型）
+    ==================================== 
+    <data noupdate="1">
+        <record id="seq_rfid_tag" model="ir.sequence">
+            <field name="name">RFID 标签序列</field>
+            <field name="code">rfid.tag</field>
+            <field name="prefix">XQ01-A-</field>
+            <field name="padding">5</field>
+            <field name="number_increment">1</field>
+            <field name="number_next">1</field>
+            <field name="implementation">standard</field>
+        </record>
+    </data>
+    -->
+    
+</odoo>
+

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="ps_multi_image_mrp_qc.Sum3Input">
+        <div class="o_sum3_inputs d-flex align-items-center" style="gap:8px;">
+            <input type="number" t-att-value="state.v1" t-on-input="onInput1" t-on-change="onChange1" class="form-control" style="max-width:120px"/>
+            <span class="mx-1">×</span>
+            <input type="number" t-att-value="state.v2" t-on-input="onInput2" t-on-change="onChange2" class="form-control" style="max-width:120px"/>
+            <span class="mx-1">+</span>
+            <input type="number" t-att-value="state.v3" t-on-input="onInput3" t-on-change="onChange3" class="form-control" style="max-width:120px"/>
+            <div class="text-muted ms-2">
+                <span>（件 × 条/件 + 条）</span>
+            </div>
+        </div>
+    </t>
+</templates>
+
+

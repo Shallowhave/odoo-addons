@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+	<record id="product_template_only_rfid_form_view" model="ir.ui.view">
+        <field name="name">product.template.rfid.form</field>
+        <field name="model">product.template</field>
+		<field name="mode">extension</field>
+        <field name="inherit_id" ref="product.product_template_only_form_view"/>
+        <field name="arch" type="xml">
+			<!-- NOTE: Since 17.0, the "attrs" and "states" attributes are no longer used -->
+	        <!-- <xpath expr="//field[@name='barcode']" position="after">
+                <field name="rfid_tag" attrs="{'invisible': [('product_variant_count', '>', 1)]}"/>
+	        </xpath> -->
+            <xpath expr="//field[@name='barcode']" position="after">
+                <field name="rfid_tag" invisible= "product_variant_count > 1" readonly="1"/>
+	        </xpath>
+        </field>
+	</record>
+
+</odoo>

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        
+        <!-- 扩展交货单表单视图，添加打印按钮 -->
+        <record id="view_picking_form_delivery_report" model="ir.ui.view">
+            <field name="name">stock.picking.form.delivery.report</field>
+            <field name="model">stock.picking</field>
+            <field name="inherit_id" ref="stock.view_picking_form"/>
+            <field name="arch" type="xml">
+                <xpath expr="//header" position="inside">
+                    <button name="action_print_delivery_report" 
+                            string="打印交货单" 
+                            type="object" 
+                            class="btn-primary"
+                            icon="fa-print"/>
+                </xpath>
+            </field>
+        </record>
+
+        <!-- 扩展交货单列表视图，添加打印按钮 -->
+        <record id="view_picking_tree_delivery_report" model="ir.ui.view">
+            <field name="name">stock.picking.tree.delivery.report</field>
+            <field name="model">stock.picking</field>
+            <field name="inherit_id" ref="stock.vpicktree"/>
+            <field name="arch" type="xml">
+                <xpath expr="//header" position="inside">
+                    <button name="action_print_delivery_report" 
+                            string="交货单" 
+                            type="object" 
+                            class="btn-secondary"
+                            icon="fa-print"
+                            groups="stock.group_stock_user"/>
+                </xpath>
+            </field>
+        </record>
+
+        <!-- 交货单动作 -->
+        <record id="action_delivery_report" model="ir.actions.report">
+            <field name="name">交货单报告</field>
+            <field name="model">stock.picking</field>
+            <field name="report_type">qweb-pdf</field>
+            <field name="report_name">delivery_report.delivery_report_template</field>
+            <field name="report_file">delivery_report.delivery_report_template</field>
+            <field name="binding_model_id" ref="stock.model_stock_picking"/>
+            <field name="binding_type">report</field>
+        </record>
+
+    </data>
+</odoo>

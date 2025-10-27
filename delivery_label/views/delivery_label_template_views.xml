@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 发货标签模板列表视图 -->
+    <record id="view_delivery_label_template_list" model="ir.ui.view">
+        <field name="name">delivery.label.template.list</field>
+        <field name="model">delivery.label.template</field>
+        <field name="arch" type="xml">
+            <list string="发货标签模板">
+                <field name="name"/>
+                <field name="width"/>
+                <field name="height"/>
+                <field name="orientation"/>
+                <field name="font_size"/>
+                <field name="label_count"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- 发货标签模板表单视图 -->
+    <record id="view_delivery_label_template_form" model="ir.ui.view">
+        <field name="name">delivery.label.template.form</field>
+        <field name="model">delivery.label.template</field>
+        <field name="arch" type="xml">
+            <form string="发货标签模板">
+                <header>
+                    <button name="action_view_labels" string="查看标签" type="object" class="btn-primary"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="name" placeholder="模板名称"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="width"/>
+                            <field name="height"/>
+                            <field name="orientation"/>
+                            <field name="font_size"/>
+                        </group>
+                        <group>
+                            <field name="active"/>
+                            <field name="label_count"/>
+                        </group>
+                    </group>
+                    <group>
+                        <field name="description"/>
+                    </group>
+                    <notebook>
+                        <page string="显示选项">
+                            <group>
+                                <group>
+                                    <field name="show_company_logo"/>
+                                    <field name="show_qr_code"/>
+                                    <field name="show_barcode"/>
+                                    <field name="show_tracking_number"/>
+                                </group>
+                                <group>
+                                    <field name="show_weight"/>
+                                    <field name="show_volume"/>
+                                    <field name="show_delivery_address"/>
+                                    <field name="show_product_list"/>
+                                </group>
+                            </group>
+                        </page>
+                        <page string="使用此模板的标签">
+                            <field name="label_ids" readonly="1">
+                                <list>
+                                    <field name="name"/>
+                                    <field name="picking_id"/>
+                                    <field name="partner_id"/>
+                                    <field name="state"/>
+                                    <field name="print_date"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- 发货标签模板搜索视图 -->
+    <record id="view_delivery_label_template_search" model="ir.ui.view">
+        <field name="name">delivery.label.template.search</field>
+        <field name="model">delivery.label.template</field>
+        <field name="arch" type="xml">
+            <search string="搜索发货标签模板">
+                <field name="name"/>
+                <field name="description"/>
+                <separator/>
+                <filter string="激活" name="active" domain="[('active', '=', True)]"/>
+                <filter string="未激活" name="inactive" domain="[('active', '=', False)]"/>
+                <group expand="0" string="分组">
+                    <filter string="方向" name="group_orientation" context="{'group_by': 'orientation'}"/>
+                    <filter string="字体大小" name="group_font_size" context="{'group_by': 'font_size'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <!-- 发货标签模板动作 -->
+    <record id="action_delivery_label_template" model="ir.actions.act_window">
+        <field name="name">发货标签模板</field>
+        <field name="res_model">delivery.label.template</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_delivery_label_template_search"/>
+        <field name="context">{}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                创建您的第一个发货标签模板！
+            </p>
+            <p>
+                模板定义了标签的格式和显示内容。
+            </p>
+        </field>
+    </record>
+</odoo>

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 发货标签向导表单视图 -->
+    <record id="view_delivery_label_wizard_form" model="ir.ui.view">
+        <field name="name">delivery.label.wizard.form</field>
+        <field name="model">delivery.label.wizard</field>
+        <field name="arch" type="xml">
+            <form string="创建发货标签">
+                <group>
+                    <field name="picking_id" readonly="1"/>
+                    <field name="partner_id" readonly="1"/>
+                    <field name="template_id"/>
+                    <field name="quantity"/>
+                    <field name="notes"/>
+                </group>
+                <footer>
+                    <button string="创建标签" name="action_create_labels" type="object" class="btn-primary"/>
+                    <button string="创建并打印" name="action_create_and_print" type="object" class="btn-secondary"/>
+                    <button string="取消" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- 主菜单 -->
+    <menuitem id="menu_delivery_label_root" 
+              name="发货标签" 
+              sequence="100" 
+              web_icon="delivery_label,static/description/icon.png"/>
+
+    <!-- 发货标签菜单 -->
+    <menuitem id="menu_delivery_label" 
+              name="发货标签" 
+              parent="menu_delivery_label_root" 
+              action="action_delivery_label" 
+              sequence="10"/>
+
+    <!-- 标签模板菜单 -->
+    <menuitem id="menu_delivery_label_template" 
+              name="标签模板" 
+              parent="menu_delivery_label_root" 
+              action="action_delivery_label_template" 
+              sequence="20"/>
+
+    <!-- 配置菜单 -->
+    <menuitem id="menu_delivery_label_config" 
+              name="配置" 
+              parent="menu_delivery_label_root" 
+              sequence="30"/>
+
+    <!-- 标签模板配置菜单 -->
+    <menuitem id="menu_delivery_label_template_config" 
+              name="标签模板" 
+              parent="menu_delivery_label_config" 
+              action="action_delivery_label_template" 
+              sequence="10"/>
+</odoo>

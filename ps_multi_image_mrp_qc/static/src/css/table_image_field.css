@@ -1,0 +1,22 @@
+.o_portal_chatter_attachment {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    padding: 0.5rem;
+    border-radius: 0.25rem;
+    background-color: #f8f9fa;
+    width: 30%;
+}
+
+
+.o_portal_chatter_attachment_name {
+    flex-grow: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.o_portal_chatter_attachment_delete {
+    margin-left: 0.5rem; /* Adjust space between name and button */
+    white-space: nowrap;
+}

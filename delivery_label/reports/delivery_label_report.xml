@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 发货标签报告 -->
+    <record id="action_delivery_label_report" model="ir.actions.report">
+        <field name="name">发货标签</field>
+        <field name="model">delivery.label</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">delivery_label.delivery_label_report</field>
+        <field name="report_file">delivery_label.delivery_label_report</field>
+        <field name="binding_model_id" ref="model_delivery_label"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <!-- 发货标签报告模板 -->
+    <template id="delivery_label_report">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="label">
+                <t t-call="web.external_layout">
+                    <div class="page">
+                        <div class="oe_structure"/>
+                        
+                        <!-- 标签内容 -->
+                        <div class="delivery-label" style="width: 100mm; height: 60mm; border: 1px solid #ccc; padding: 5mm; font-family: Arial, sans-serif;">
+                            
+                            <!-- 标题 -->
+                            <div style="text-align: center; font-size: 14px; font-weight: bold; margin-bottom: 3mm;">
+                                发货标签 - <span t-field="label.name"/>
+                            </div>
+                            
+                            <!-- 客户信息 -->
+                            <div style="margin-bottom: 2mm;">
+                                <strong>客户:</strong> <span t-field="label.partner_id.name"/>
+                            </div>
+                            
+                            <!-- 收货地址 -->
+                            <div t-if="label.delivery_address" style="margin-bottom: 2mm; font-size: 10px;">
+                                <strong>收货地址:</strong><br/>
+                                <span t-field="label.delivery_address" t-options="{'widget': 'text'}"/>
+                            </div>
+                            
+                            <!-- 产品信息 -->
+                            <div t-if="label.product_ids" style="margin-bottom: 2mm; font-size: 10px;">
+                                <strong>产品:</strong>
+                                <t t-foreach="label.product_ids" t-as="product">
+                                    <span t-field="product.name"/>
+                                    <t t-if="not product_last">, </t>
+                                </t>
+                            </div>
+                            
+                            <!-- 重量和跟踪号 -->
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 2mm; font-size: 10px;">
+                                <div t-if="label.weight">
+                                    <strong>重量:</strong> <span t-field="label.weight"/>kg
+                                </div>
+                                <div t-if="label.tracking_number">
+                                    <strong>跟踪号:</strong> <span t-field="label.tracking_number"/>
+                                </div>
+                            </div>
+                            
+                            <!-- 承运商 -->
+                            <div t-if="label.carrier_id" style="margin-bottom: 2mm; font-size: 10px;">
+                                <strong>承运商:</strong> <span t-field="label.carrier_id.name"/>
+                            </div>
+                            
+                            <!-- 二维码区域 -->
+                            <div style="text-align: right; margin-top: 2mm;">
+                                <img t-if="label.qr_code" t-att-src="image_data_uri(label.qr_code)" style="width: 20mm; height: 20mm;"/>
+                            </div>
+                            
+                            <!-- 打印时间 -->
+                            <div style="text-align: right; font-size: 8px; color: #666; margin-top: 1mm;">
+                                <span t-if="label.print_date">打印时间: <span t-field="label.print_date" t-options="{'widget': 'datetime'}"/></span>
+                            </div>
+                            
+                        </div>
+                        
+                        <!-- 分页符 -->
+                        <div class="page-break"/>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <!-- 简化版标签模板 -->
+    <template id="delivery_label_simple">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="label">
+                <div class="delivery-label-simple" style="width: 80mm; height: 50mm; border: 1px solid #000; padding: 3mm; font-family: Arial, sans-serif; font-size: 10px;">
+                    
+                    <!-- 标题 -->
+                    <div style="text-align: center; font-size: 12px; font-weight: bold; margin-bottom: 2mm;">
+                        <span t-field="label.name"/>
+                    </div>
+                    
+                    <!-- 客户 -->
+                    <div style="margin-bottom: 1mm;">
+                        <strong>客户:</strong> <span t-field="label.partner_id.name"/>
+                    </div>
+                    
+                    <!-- 地址 -->
+                    <div t-if="label.delivery_address" style="margin-bottom: 1mm; font-size: 8px;">
+                        <span t-field="label.delivery_address" t-options="{'widget': 'text'}"/>
+                    </div>
+                    
+                    <!-- 产品 -->
+                    <div t-if="label.product_ids" style="margin-bottom: 1mm; font-size: 8px;">
+                        <strong>产品:</strong>
+                        <t t-foreach="label.product_ids" t-as="product">
+                            <span t-field="product.name"/>
+                            <t t-if="not product_last">, </t>
+                        </t>
+                    </div>
+                    
+                    <!-- 重量和跟踪号 -->
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 1mm; font-size: 8px;">
+                        <div t-if="label.weight">
+                            重量: <span t-field="label.weight"/>kg
+                        </div>
+                        <div t-if="label.tracking_number">
+                            跟踪: <span t-field="label.tracking_number"/>
+                        </div>
+                    </div>
+                    
+                    <!-- 二维码 -->
+                    <div style="text-align: center; margin-top: 1mm;">
+                        <img t-if="label.qr_code" t-att-src="image_data_uri(label.qr_code)" style="width: 15mm; height: 15mm;"/>
+                    </div>
+                    
+                </div>
+                <div class="page-break"/>
+            </t>
+        </t>
+    </template>
+
+    <!-- 批量标签模板 -->
+    <template id="delivery_label_batch">
+        <t t-call="web.html_container">
+            <div style="display: flex; flex-wrap: wrap; gap: 2mm;">
+                <t t-foreach="docs" t-as="label">
+                    <div class="delivery-label-batch" style="width: 48mm; height: 30mm; border: 1px solid #000; padding: 2mm; font-family: Arial, sans-serif; font-size: 8px; margin-bottom: 2mm;">
+                        
+                        <!-- 标签编号 -->
+                        <div style="text-align: center; font-size: 10px; font-weight: bold; margin-bottom: 1mm;">
+                            <span t-field="label.name"/>
+                        </div>
+                        
+                        <!-- 客户 -->
+                        <div style="margin-bottom: 1mm;">
+                            <span t-field="label.partner_id.name"/>
+                        </div>
+                        
+                        <!-- 地址（简化） -->
+                        <div t-if="label.delivery_address" style="margin-bottom: 1mm; font-size: 6px;">
+                            <span t-field="label.delivery_address" t-options="{'widget': 'text'}" style="display: block; max-height: 8mm; overflow: hidden;"/>
+                        </div>
+                        
+                        <!-- 重量和跟踪号 -->
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 1mm; font-size: 6px;">
+                            <div t-if="label.weight">
+                                <span t-field="label.weight"/>kg
+                            </div>
+                            <div t-if="label.tracking_number">
+                                <span t-field="label.tracking_number"/>
+                            </div>
+                        </div>
+                        
+                        <!-- 二维码 -->
+                        <div style="text-align: center;">
+                            <img t-if="label.qr_code" t-att-src="image_data_uri(label.qr_code)" style="width: 10mm; height: 10mm;"/>
+                        </div>
+                        
+                    </div>
+                </t>
+            </div>
+        </t>
+    </template>
+
+</odoo>

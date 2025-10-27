@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Inherit product template kanban view to add secondary UOM fields -->
+    <record id="product_template_kanban_view_inherit_bi_product_secondary_uom" model="ir.ui.view">
+        <field name="name">product.template.kanban.inherit.bi_product_secondary_uom</field>
+        <field name="model">product.template</field>
+        <field name="inherit_id" ref="product.product_template_kanban_view"/>
+        <field
+            name="arch" type="xml">
+            <!-- Hide the price span in kanban view -->
+            <xpath expr="//kanban/templates/t/main/span[1]" position="attributes">
+                <attribute name="invisible">1</attribute>
+            </xpath>
+            <!-- Add background color based on is_safty field -->
+
+            <xpath expr="//field[@name='product_properties']" position="after">
+                <div>
+                    平方数:
+                    <field name="lot_qty"/>
+                    <field name="secondary_uom_id"/>
+                </div>
+                <div>
+                    重量:
+                    <field name="lot_weight"/>kg
+                </div>
+                <field name="is_safty" invisible="1"/>
+                <div class="d-flex flex-row" style="justify-content: space-between;">
+                    <div class="flex-1" t-att-style="record.is_safty.raw_value?'': 'background-color: red;'">
+                        实际卷数:
+                        <field name="act_juan"/>
+                    </div>
+                </div>
+                <div>
+                    备注:
+                    <field name="o_note"/>
+                </div>
+            </xpath>
+        </field>
+    </record>
+</odoo>

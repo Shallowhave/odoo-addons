@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="0">
+        <!-- RFID 标签测试类型 -->
+        <record id="xq_rfid.test_type_rfid_label" model="quality.point.test_type">
+            <field name="name">RFID 标签</field>
+            <field name="technical_name">rfid_label</field>
+        </record>
+    </data>
+</odoo>
+

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- RFID 主菜单 -->
+    <menuitem name="RFID" id="menu_rfid_root" sequence="150"
+        web_icon="xq_rfid,static/description/rfid_menu_bista.png"/>
+
+    <!-- RFID 子菜单 -->
+    <menuitem id="menu_rfid" name="RFID" parent="menu_rfid_root" sequence="2"/>
+
+    <!-- 配置菜单 -->
+    <menuitem id="menu_rfid_config" name="配置" parent="menu_rfid_root" sequence="100"/>
+
+</odoo>

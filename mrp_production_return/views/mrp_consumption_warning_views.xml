@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 重写消耗警告视图，修改提示文本和按钮 -->
+    <record id="mrp_production_return_consumption_warning_view_form" model="ir.ui.view">
+        <field name="name">mrp.production.return.consumption.warning.form</field>
+        <field name="model">mrp.consumption.warning</field>
+        <field name="inherit_id" ref="mrp.view_mrp_consumption_warning_form"/>
+        <field name="arch" type="xml">
+            <!-- 修改提示文本 -->
+            <xpath expr="//div[@class='m-2']" position="replace">
+                <div class="m-2">
+                    您消费的以下产品数量与预期不同。
+                    <b invisible="consumption == 'strict'">
+                        请确认本卷是否做完。
+                    </b>
+                    <b invisible="consumption != 'strict'">
+                        请检查您的元件消耗量，或请经理确认
+                        <span invisible="mrp_production_count != 1">此制造单</span>
+                        <span invisible="mrp_production_count == 1">这些制造订单</span>。
+                    </b>
+                </div>
+            </xpath>
+            
+            <!-- 修改按钮区域 -->
+            <!-- <xpath expr="//footer" position="replace">
+                <footer>
+                    <button name="action_confirm" string="确认" data-hotkey="q"
+                        groups="mrp.group_mrp_manager" invisible="consumption != 'strict'"
+                        colspan="1" type="object" class="btn-primary"/>
+                    <button name="action_confirm" string="确认" invisible="consumption == 'strict'" data-hotkey="q"
+                        colspan="1" type="object" class="btn-primary"/>
+                    <button name="action_set_qty" string="分卷" colspan="1" type="object" class="btn-secondary" invisible="'is_subcontracting_portal' in context"/>
+                </footer>
+            </xpath> -->
+            <xpath expr="//footer" position="replace">
+                <footer>
+                    <button invisible="consumption == 'strict'" data-hotkey="q" colspan="1" class="btn btn-primary" name="action_confirm" type="object"><span>确认</span></button>
+                    <button colspan="1" invisible="'is_subcontracting_portal' in context" class="btn btn-secondary" name="action_set_qty" type="object"><span>分卷</span></button>
+                    <!-- <button data-hotkey="x" colspan="1" class="btn btn-secondary" name="action_cancel" type="object"><span>丢弃</span></button> -->
+                    <!-- <button class="btn btn-primary o-default-button d-none">确定</button> -->
+                </footer>
+            </xpath>
+
+
+
+            <!-- 修改按钮文本 -->
+            <!-- <xpath expr="//footer//button[@name='action_set_qty']" position="attributes">
+                <attribute name="string">分卷</attribute>
+            </xpath> -->
+            <!-- 移除关闭按钮 -->
+            <!-- <xpath expr="//header//button[@class='btn-close']" position="replace"/> -->
+            <!-- <xpath expr="//header//button[contains(@class, 'close')]" position="replace"/> -->
+            <!-- <xpath expr="//header//a[@class='btn-close']" position="replace"/> -->
+        </field>
+    </record>
+</odoo>

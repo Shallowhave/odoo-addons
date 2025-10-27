@@ -1,0 +1,109 @@
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* ps_multi_image_mrp_qc
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 18.0+e-20250507\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2025-09-28 03:41+0000\n"
+"PO-Revision-Date: 2025-09-28 03:41+0000\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: \n"
+"Plural-Forms: \n"
+
+#. module: ps_multi_image_mrp_qc
+#. odoo-javascript
+#: code:addons/ps_multi_image_mrp_qc/static/src/components/mrp_display/table_image_field.js:0
+msgid "Could not delete attachment <strong>%s</strong>"
+msgstr "无法删除附件<strong>%s</strong>"
+
+#. module: ps_multi_image_mrp_qc
+#. odoo-javascript
+#: code:addons/ps_multi_image_mrp_qc/static/src/components/mrp_display/table_image_field.js:0
+msgid "Could not fetch existing attachments."
+msgstr "无法获取现有附件。"
+
+#. module: ps_multi_image_mrp_qc
+#. odoo-javascript
+#: code:addons/ps_multi_image_mrp_qc/static/src/components/mrp_display/table_image_field.js:0
+msgid "Could not save file <strong>%s</strong>"
+msgstr "无法保存文件<strong>%s</strong>"
+
+#. module: ps_multi_image_mrp_qc
+#. odoo-javascript
+#: code:addons/ps_multi_image_mrp_qc/static/src/components/mrp_display/table_image_field.xml:0
+msgid "Delete"
+msgstr "删除"
+
+#. module: ps_multi_image_mrp_qc
+#. odoo-javascript
+#: code:addons/ps_multi_image_mrp_qc/static/src/components/mrp_display/table_image_field.js:0
+msgid "Error while sending the message."
+msgstr "发送消息时出错。"
+
+#. module: ps_multi_image_mrp_qc
+#: model:ir.model.fields,field_description:ps_multi_image_mrp_qc.field_mrp_workorder__multi_picture
+#: model:ir.model.fields,field_description:ps_multi_image_mrp_qc.field_quality_check__multi_picture
+#: model:ir.model.fields,field_description:ps_multi_image_mrp_qc.field_quality_check_wizard__multi_picture
+msgid "Image/PDF"
+msgstr "图片/PDF"
+
+#. module: ps_multi_image_mrp_qc
+#. odoo-javascript
+#: code:addons/ps_multi_image_mrp_qc/static/src/components/mrp_display/table_image_field.xml:0
+msgid "Oops! Something went wrong. Try to reload the page and log in."
+msgstr "糟糕！出现错误。请尝试重新加载页面并重新登录。"
+
+#. module: ps_multi_image_mrp_qc
+#: model:ir.model,name:ps_multi_image_mrp_qc.model_quality_check
+msgid "Quality Check"
+msgstr "质量检查"
+
+#. module: ps_multi_image_mrp_qc
+#. odoo-javascript
+#: code:addons/ps_multi_image_mrp_qc/static/src/components/mrp_display/table_image_field.js:0
+msgid "Some fields are required. Please make sure to attach a document"
+msgstr "某些字段为必填。请确保已附加一个文档。"
+
+#. module: ps_multi_image_mrp_qc
+#: model:quality.point.test_type,name:ps_multi_image_mrp_qc.test_type_multi_picture
+msgid "Take Multi Picture"
+msgstr "拍摄多张图片及视频"
+
+#. module: ps_multi_image_mrp_qc
+#. odoo-javascript
+#: code:addons/ps_multi_image_mrp_qc/static/src/components/mrp_display/table_image_field.xml:0
+msgid "Take a Picture"
+msgstr "拍照"
+
+#. module: ps_multi_image_mrp_qc
+#. odoo-javascript
+#: code:addons/ps_multi_image_mrp_qc/static/src/components/mrp_display/table_image_field.xml:0
+msgid "Validate"
+msgstr "验证"
+
+#. module: ps_multi_image_mrp_qc
+#: model:ir.model,name:ps_multi_image_mrp_qc.model_quality_check_wizard
+msgid "Wizard for Quality Check Pop Up"
+msgstr "弹出的质量检查向导"
+
+#. module: ps_multi_image_mrp_qc
+#: model:ir.model,name:ps_multi_image_mrp_qc.model_mrp_workorder
+msgid "Work Order"
+msgstr "工单"
+
+#. module: ps_multi_image_mrp_qc
+#. odoo-python
+#: code:addons/ps_multi_image_mrp_qc/wizard/multi_image_wizard.py:0
+msgid "You must provide a picture before validating"
+msgstr "在验证之前必须提供一张图片"
+
+#. module: ps_multi_image_mrp_qc
+#. odoo-python
+#: code:addons/ps_multi_image_mrp_qc/wizard/multi_image_wizard.py:0
+msgid "You must provide a pictures before validating"
+msgstr "在验证之前必须提供多张图片"

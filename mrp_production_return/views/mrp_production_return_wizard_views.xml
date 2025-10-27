@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="mrp_production_return_wizard_view_form" model="ir.ui.view">
+        <field name="name">mrp.production.return.wizard.form</field>
+        <field name="model">mrp.production.return.wizard</field>
+        <field name="arch" type="xml">
+            <form string="处理剩余组件">
+                <header>
+                    <field name="return_strategy" widget="radio" options="{'horizontal': true}"/>
+                </header>
+                
+                       <group>
+                           <group string="基本信息">
+                               <field name="production_id" readonly="1"/>
+                           </group>
+                           <group string="目标位置">
+                               <field name="defective_location_id" 
+                                      invisible="return_strategy != 'defective'"
+                                      required="return_strategy == 'defective'"/>
+                               <field name="main_location_id" 
+                                      invisible="return_strategy != 'main'"
+                                      required="return_strategy == 'main'"/>
+                               <field name="custom_location_id" 
+                                      invisible="return_strategy != 'custom'"
+                                      required="return_strategy == 'custom'"/>
+                               <field name="target_location_id" invisible="1"/>
+                               <field name="location_name" readonly="1" invisible="not target_location_id"/>
+                           </group>
+                       </group>
+                       
+                       <group string="剩余组件">
+                           <field name="component_line_ids" nolabel="1"/>
+                       </group>
+                
+                <group string="原因和备注">
+                    <field name="return_reason_id" 
+                           domain="[('return_strategy', 'in', [return_strategy, False])]"/>
+                    <field name="custom_reason" 
+                           invisible="return_reason_id"
+                           placeholder="请填写自定义原因..."/>
+                    <field name="notes" placeholder="额外的处理说明..."/>
+                </group>
+                
+                <group string="处理选项" invisible="return_strategy == 'scrap'">
+                    <field name="auto_confirm_picking"/>
+                    <field name="send_notification"/>
+                </group>
+                
+                <footer>
+                    <button name="action_confirm_return" 
+                            string="确认处理" 
+                            type="object" 
+                            class="btn-primary"/>
+                    <button string="取消" 
+                            class="btn-secondary" 
+                            special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+    
+</odoo>

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <!-- 移除表单展示，仅保留列表列 -->
+
+        <!-- 在销售订单列表中显示“总条数”列 -->
+        <!-- <record id="view_order_tree_inherit_sum3_total" model="ir.ui.view">
+            <field name="name">sale.order.tree.inherit.sum3.total</field>
+            <field name="model">sale.order</field>
+            <field name="inherit_id" ref="sale.view_quotation_tree_with_onboarding"/>
+            <field name="arch" type="xml">
+                <xpath expr="//list/field[last()]" position="after">
+                    <field name="sum3_total_count" string="总条数"/>
+                </xpath>
+            </field>
+        </record> -->
+
+        <!-- 在订单行 tree 中将“产品总条数”放在单价(price_unit)之后 -->
+        <record id="view_order_form_lines_tree_inherit_sum3_total" model="ir.ui.view">
+            <field name="name">sale.order.form.lines.tree.inherit.sum3.total</field>
+            <field name="model">sale.order</field>
+            <field name="inherit_id" ref="sale.view_order_form"/>
+            <field name="arch" type="xml">
+                <xpath expr="//page[@name='order_lines']//field[@name='order_line']/list/field[@name='price_unit']" position="after">
+                    <field name="actual_production_qty" string="实际生产数量" optional="show"/>
+                    <field name="sum3_total_count" string="总条数" optional="show"/>
+                </xpath>
+            </field>
+        </record>
+    </data>
+</odoo>
+
+

@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="ps_multi_image_mrp_qc.ActualQtyInput">
+        <div class="o_actual_qty_input">
+            <!-- 标题 -->
+            <div class="mb-3">
+                <h6 class="text-primary mb-2">
+                    <i class="fa fa-check-circle me-2"/>
+                    实际生产数量确认
+                </h6>
+            </div>
+            
+            <!-- 输入区域 -->
+            <div class="row">
+                <div class="col-md-8">
+                    <div class="input-group">
+                        <span class="input-group-text">
+                            <i class="fa fa-calculator"/>
+                        </span>
+                        <input 
+                            type="number" 
+                            t-att-value="state.actualQty" 
+                            t-on-input="onInput" 
+                            t-on-change="onChange" 
+                            t-att-class="inputClass"
+                            t-att-placeholder="placeholderText"
+                            min="0"
+                            step="1"
+                            style="font-size: 16px; font-weight: 500;"
+                        />
+                        <span class="input-group-text text-muted">条</span>
+                    </div>
+                    
+                    <!-- 错误提示 -->
+                    <div t-if="!state.isValid" class="invalid-feedback d-block mt-1">
+                        <i class="fa fa-exclamation-triangle me-1"/>
+                        <t t-esc="state.errorMessage"/>
+                    </div>
+                    
+                    <!-- 成功提示 -->
+                    <div t-if="state.isValid and state.actualQty > 0" class="valid-feedback d-block mt-1">
+                        <i class="fa fa-check me-1"/>
+                        数量有效
+                    </div>
+                </div>
+                
+                <!-- 数量显示 -->
+                <div class="col-md-4">
+                    <div class="card border-0 bg-light">
+                        <div class="card-body p-2 text-center">
+                            <div class="text-muted small">当前数量</div>
+                            <div class="h5 mb-0 text-primary" t-esc="state.actualQty"/>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 帮助信息 -->
+            <div class="mt-3 p-2 bg-info bg-opacity-10 rounded">
+                <small class="text-info">
+                    <i class="fa fa-info-circle me-1"/>
+                    请输入实际生产的成品数量，该数量将用于库存更新和销售订单同步
+                </small>
+            </div>
+        </div>
+    </t>
+</templates>
