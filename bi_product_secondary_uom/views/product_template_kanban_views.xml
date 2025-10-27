@@ -24,10 +24,13 @@
                     <field name="lot_weight"/>kg
                 </div>
                 <field name="is_safty" invisible="1"/>
+                <field name="product_type" invisible="1"/>
                 <div class="d-flex flex-row" style="justify-content: space-between;">
                     <div class="flex-1" t-att-style="record.is_safty.raw_value?'': 'background-color: red;'">
-                        实际卷数:
-                        <field name="act_juan"/>
+                        <span t-if="record.product_type and record.product_type.raw_value == 'solution_material'">桶数:</span>
+                        <span t-else="">实际卷数:</span>
+                        <field name="lot_barrels" t-if="record.product_type and record.product_type.raw_value == 'solution_material'"/>
+                        <field name="act_juan" t-else=""/>
                     </div>
                 </div>
                 <div>

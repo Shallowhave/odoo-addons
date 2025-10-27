@@ -25,15 +25,30 @@
             </field>
         </record>
 
+        <!-- 添加一个新的视图记录，确保覆盖所有库存视图 -->
+        <record id="view_stock_quant_tree_all_inherit" model="ir.ui.view">
+            <field name="name">stock.quant.tree.all</field>
+            <field name="model">stock.quant</field>
+            <field name="inherit_id" ref="stock.view_stock_quant_tree"/>
+            <field eval="1" name="priority"/>
+            <field name="arch" type="xml">
+                <field name="product_uom_id" position="after">
+                    <field name="lot_barrels" sum="total" optional="hide"/>
+                </field>
+            </field>
+        </record>
+
                 <record id="view_stock_quant_tree_editable_view" model="ir.ui.view">
             <field name="name">stock.quant.tree</field>
             <field name="model">stock.quant</field>
-            <field name="inherit_id" ref="stock.view_stock_quant_tree_editable"/>  
+            <field name="inherit_id" ref="stock.view_stock_quant_tree_editable"/>
+            <field eval="1" name="priority"/>
             <field name="arch" type="xml">
                 <field name="product_uom_id" position="after">
                     <field name="secondary_quantity" sum="total"/>
                     <field name="secondary_uom_id" />
                     <field name="lot_weight" sum="total"/>
+                    <field name="lot_barrels" sum="total" optional="hide"/>
                     <field name="in_date" string="到货日期"/>
                     <field name="o_note1" string="备注1" />
                     <field name="o_note2" string="备注2" />

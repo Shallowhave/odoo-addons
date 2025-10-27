@@ -7,6 +7,7 @@ class StockMoveLine(models.Model):
     _inherit = 'stock.move.line'
 
     lot_weight = fields.Float(string='重量(kg)')
+    lot_barrels = fields.Integer(string='桶数')
 
 
 class StockMove(models.Model):

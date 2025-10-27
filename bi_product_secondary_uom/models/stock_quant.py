@@ -6,6 +6,7 @@ class StockQuant(models.Model):
     _inherit = 'stock.quant'
 
     lot_weight = fields.Float(string='重量(kg)', default=0, compute='_compute_lot_weight', store=True)
+    lot_barrels = fields.Integer(string='桶数', default=0, compute='_compute_lot_barrels', store=True)
     secondary_uom_id = fields.Many2one('uom.uom', compute='_quantity_secondary_compute', string="第二单位", store=True)
 
     secondary_quantity = fields.Float('第二单位在手', compute='_quantity_secondary_compute', digits='Product Unit of Measure', store=True)
@@ -51,3 +52,22 @@ class StockQuant(models.Model):
                 quant.lot_weight = lot_weight * quant.inventory_quantity_auto_apply / qty
             else:
                 quant.lot_weight = 0
+
+    @api.depends('product_id', 'inventory_quantity_auto_apply')
+    def _compute_lot_barrels(self):
+        for quant in self:
+            # 对于配液原料类型，从库存移动行中获取桶数
+            if hasattr(quant.product_id.product_tmpl_id, 'product_type') and quant.product_id.product_tmpl_id.product_type == 'solution_material':
+                move_lines = self.env['stock.move.line'].search([
+                    ('lot_id', '=', quant.lot_id.id),
+                    ('state', '=', 'done'),
+                    ('location_dest_id', '=', quant.location_id.id)
+                ])
+                lot_barrels = sum(move_lines.mapped('lot_barrels'))
+                qty = sum(move_lines.mapped('qty_done'))
+                if qty > 0:
+                    quant.lot_barrels = lot_barrels * quant.inventory_quantity_auto_apply / qty
+                else:
+                    quant.lot_barrels = 0
+            else:
+                quant.lot_barrels = 0

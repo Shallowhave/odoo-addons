@@ -10,6 +10,8 @@
           <field name="lot_weight" 
                       column_invisible="parent.has_tracking == 'none' or not parent.show_lots_text"
                         readonly="package_level_id and parent.picking_type_entire_packs"/>
+          <field name="lot_barrels" 
+                        readonly="package_level_id and parent.picking_type_entire_packs"/>
         </xpath>
       </field>
     </record>
@@ -26,6 +28,18 @@
       </field>
     </record>
 
+    <!-- 继承stock.move.line表单视图，添加lot_weight和lot_barrels字段 -->
+    <record id="view_stock_move_line_form_inherit_stock_extend" model="ir.ui.view">
+      <field name="name">stock.move.line.form.inherit.stock_extend</field>
+      <field name="model">stock.move.line</field>
+      <field name="inherit_id" ref="stock.view_move_line_form"/>
+      <field name="arch" type="xml">
+        <xpath expr="//field[@name='owner_id']" position="after">
+          <field name="lot_weight"/>
+          <field name="lot_barrels"/>
+        </xpath>
+      </field>
+    </record>
 
   </data>
 </odoo>

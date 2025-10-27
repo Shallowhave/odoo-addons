@@ -27,6 +27,7 @@ class ProductTemplate(models.Model):
     lot_weight = fields.Float(string='重量', default=0.0, compute='_compute_lot_weight')
     lot_qty = fields.Float(string='第二单位数量', default=0.0, compute='_compute_lot_weight')
     act_juan = fields.Integer(string='实际卷数', default=0, compute='_compute_lot_weight')
+    lot_barrels = fields.Integer(string='桶数', default=0, compute='_compute_lot_weight')
     o_note= fields.Char(string='备注卷数', default='', compute='_compute_o_note')
     is_safty = fields.Boolean(string='是否安全', default=True, compute='_compute_is_safty')
     safty_rule = fields.Selection([('not_note1','不包括备注1'),('not_note2','不包括备注2'),('all','包括所有'),('not_all','都不包括')], string='安全库存规则', default='not_all')
@@ -75,6 +76,11 @@ class ProductTemplate(models.Model):
             product.lot_qty = sum(quants.mapped('secondary_quantity'))
             # 实际卷数：按照批号/序列号计算，每个批号/序列号都算作一卷，但需要判断在手数量大于0
             product.act_juan = len(quants.filtered(lambda x: x.lot_id and x.inventory_quantity_auto_apply > 0))
+            # 桶数：对于配液原料类型，从库存记录中获取手动输入的桶数
+            if hasattr(product, 'product_type') and product.product_type == 'solution_material':
+                product.lot_barrels = sum(quants.mapped('lot_barrels'))
+            else:
+                product.lot_barrels = 0
             # product.note_juan = sum(quants.filtered(lambda x: x.o_note).mapped('inventory_quantity_auto_apply'))
 
     @api.depends('secondary_uom_name')
