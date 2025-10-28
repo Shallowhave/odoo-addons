@@ -6,6 +6,12 @@
             <field name="name">RFID 标签</field>
             <field name="technical_name">rfid_label</field>
         </record>
+        
+        <!-- RFID 标签写入测试类型 -->
+        <record id="xq_rfid.test_type_rfid_write" model="quality.point.test_type">
+            <field name="name">RFID标签写入</field>
+            <field name="technical_name">rfid_write</field>
+        </record>
     </data>
 </odoo>
 

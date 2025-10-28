@@ -68,6 +68,14 @@ class QualityCheck(models.Model):
                     # RFID 生成失败会抛出异常，阻止质检通过
                     raise UserError(_('RFID 生成失败：%s') % str(e))
         
+        # 如果是 RFID 写入类型的质检，执行 RFID 写入操作
+        elif self.test_type == 'rfid_write':
+            try:
+                self._execute_rfid_write()
+            except Exception as e:
+                # RFID 写入失败会抛出异常，阻止质检通过
+                raise UserError(_('RFID 写入失败：%s') % str(e))
+        
         # 调用父类方法执行质检通过
         res = super(QualityCheck, self).do_pass()
         
@@ -127,4 +135,123 @@ class QualityCheck(models.Model):
         )
         
         return True
+    
+    def _execute_rfid_write(self):
+        """
+        执行 RFID 写入操作
+        
+        此方法处理 rfid_write 类型的质检点
+        """
+        # 检查是否配置了 RFID 设备
+        if not self.point_id.rfid_device_id:
+            raise UserError(_('请先配置 RFID 设备！'))
+        
+        # 获取 RFID 设备
+        device = self.point_id.rfid_device_id
+        
+        # 检查设备连接状态
+        if device.connection_status != 'connected':
+            raise UserError(_('RFID 设备未连接，请先测试连接！'))
+        
+        # 准备要写入的数据
+        write_data = self._prepare_rfid_write_data()
+        
+        # 根据设备类型调用相应的写入服务
+        if device.device_type == 'uhf_reader18':
+            result = self._write_to_uhf_reader18(device, write_data)
+        else:
+            # 使用通用设备服务
+            device_service = self.env['rfid.device.service']
+            result = device_service.write_rfid_tag(write_data)
+        
+        if not result.get('success'):
+            raise UserError(_('RFID 写入失败：%s') % result.get('error', '未知错误'))
+        
+        # 记录写入日志
+        self.message_post(
+            body=_('RFID 写入成功<br/>设备: %s<br/>数据: %s<br/>响应: %s') % (
+                device.name,
+                str(write_data),
+                result.get('message', '成功')
+            )
+        )
+        
+        return result
+    
+    def _prepare_rfid_write_data(self):
+        """
+        准备 RFID 写入数据
+        """
+        data = {
+            'production_order': self.production_id.name if self.production_id else '',
+            'product_name': self.product_id.name if self.product_id else '',
+            'product_code': self.product_id.default_code if self.product_id else '',
+            'batch_number': self.lot_id.name if self.lot_id else '',
+            'production_date': fields.Datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'quantity': self.qty_done if hasattr(self, 'qty_done') else 1,
+            'unit': self.product_id.uom_id.name if self.product_id and self.product_id.uom_id else '',
+            'work_center': self.workcenter_id.name if self.workcenter_id else '',
+            'workorder': self.workorder_id.name if self.workorder_id else '',
+            'operation': self.point_id.title if self.point_id else '',
+            'operator': self.user_id.name if self.user_id else '',
+        }
+        
+        return data
+    
+    def _write_to_uhf_reader18(self, device, write_data):
+        """
+        使用 UHFReader18 设备写入 RFID
+        """
+        try:
+            # 获取 UHFReader18 服务
+            uhf_service = self.env['uhf.reader18.service']
+            
+            # 准备写入的数据（转换为设备需要的格式）
+            formatted_data = self._format_data_for_uhf(write_data)
+            
+            # 将字符串转换为字节数据
+            data_bytes = formatted_data.encode('utf-8')
+            
+            # 将字节数据转换为字列表（每2个字节为一个字）
+            word_list = []
+            for i in range(0, len(data_bytes), 2):
+                if i + 1 < len(data_bytes):
+                    word = (data_bytes[i] << 8) | data_bytes[i + 1]
+                else:
+                    word = data_bytes[i] << 8  # 最后一个字节
+                word_list.append(word)
+            
+            # 使用默认的EPC（可以从设备配置中获取）
+            epc_hex = device.device_address or "000000000000000000000000"
+            
+            # 执行写入操作
+            result = uhf_service.write_data(
+                ip=device.ip_address,
+                port=int(device.port),
+                epc_hex=epc_hex,
+                mem_bank=0x01,  # EPC存储区
+                word_ptr=0x02,  # 从EPC的第二个字开始写入
+                write_data=word_list
+            )
+            
+            return result
+            
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+    
+    def _format_data_for_uhf(self, data):
+        """
+        将数据格式化为 UHFReader18 设备需要的格式
+        """
+        # 这里可以根据实际需求格式化数据
+        # 例如：将数据转换为十六进制、JSON 或其他格式
+        
+        # 简单示例：将关键信息组合成字符串
+        formatted_data = f"PO:{data.get('production_order', '')}|" \
+                        f"PN:{data.get('product_name', '')}|" \
+                        f"PC:{data.get('product_code', '')}|" \
+                        f"BN:{data.get('batch_number', '')}|" \
+                        f"PD:{data.get('production_date', '')}"
+        
+        return formatted_data
 

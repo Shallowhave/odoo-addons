@@ -25,7 +25,7 @@ class RFIDTag(models.Model):
             else:
                 return {'domain': {'picking_id': []}}
 
-    name = fields.Char(string='RFID 标签', required=True)
+    name = fields.Char(string='RFID 标签', required=True, default=lambda self: self._get_next_rfid_name())
     usage_type = fields.Selection([('receipt', '收货'), ('delivery', '发货'),
                                    ('product', '产品'), ('stock_prod_lot', '批次/序列号'), ('n_a', '未分配')],
                                   string="使用类型", required=True)
@@ -135,7 +135,15 @@ class RFIDTag(models.Model):
                     rec.stock_prod_lot_id.with_context(ctx).write({'rfid_tag': rec.id})
 
     @api.model
+    def _get_next_rfid_name(self):
+        """获取下一个RFID标签名称"""
+        return self.env['ir.sequence'].next_by_code('rfid.tag') or 'RFID000001'
+    
+    @api.model
     def create(self, vals):
+        # 如果没有提供name，自动生成
+        if not vals.get('name'):
+            vals['name'] = self._get_next_rfid_name()
         res = super(RFIDTag, self).create(vals)
         res.set_rfid_tag()
         return res
