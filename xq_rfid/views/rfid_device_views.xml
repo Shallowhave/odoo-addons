@@ -55,9 +55,13 @@
                         </group>
                         <group string="连接参数">
                             <field name="connection_string" 
-                                   invisible="device_type == 'simulation'"/>
+                                   invisible="device_type in ['simulation', 'uhf_reader18']"/>
+                            <field name="ip_address" 
+                                   invisible="device_type != 'uhf_reader18'"/>
                             <field name="port" 
-                                   invisible="device_type not in ['serial', 'usb']"/>
+                                   invisible="device_type not in ['serial', 'usb', 'uhf_reader18']"/>
+                            <field name="device_address" 
+                                   invisible="device_type != 'uhf_reader18'"/>
                             <field name="baudrate" 
                                    invisible="device_type != 'serial'"/>
                             <field name="timeout"/>
@@ -88,14 +92,16 @@
                                     <li><strong>USB 读写器</strong>：通过 USB 接口连接的 RFID 读写器</li>
                                     <li><strong>串口读写器</strong>：通过串口（COM口）连接的设备</li>
                                     <li><strong>网络读写器</strong>：通过网络（TCP/IP）连接的设备</li>
+                                    <li><strong>UHFReader18</strong>：UHFReader18 TCP/IP RFID读写器，支持EPC C1G2和18000-6B协议</li>
                                     <li><strong>自定义设备</strong>：其他类型的设备，需要自定义驱动</li>
                                 </ul>
                                 
-                                <h4>连接字符串示例</h4>
+                                <h4>连接参数示例</h4>
                                 <ul>
                                     <li>串口：<code>COM3</code> 或 <code>/dev/ttyUSB0</code></li>
                                     <li>网络：<code>192.168.1.100:8080</code></li>
                                     <li>USB：<code>USB0</code></li>
+                                    <li>UHFReader18：IP地址 <code>192.168.1.100</code>，端口 <code>6000</code>，设备地址 <code>0</code></li>
                                 </ul>
                                 
                                 <h4>开发集成</h4>
@@ -120,7 +126,12 @@
                 <field name="sequence" widget="handle"/>
                 <field name="name"/>
                 <field name="device_type"/>
-                <field name="connection_string"/>
+                <field name="connection_string" 
+                       invisible="device_type == 'uhf_reader18'"/>
+                <field name="ip_address" 
+                       invisible="device_type != 'uhf_reader18'"/>
+                <field name="port" 
+                       invisible="device_type not in ['serial', 'usb', 'uhf_reader18']"/>
                 <field name="connection_status" widget="badge" 
                        decoration-success="connection_status == 'connected'"
                        decoration-danger="connection_status == 'error'"

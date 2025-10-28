@@ -9,3 +9,4 @@ from . import quality_point
 from . import quality_check
 from . import quality_check_wizard
 from . import rfid_device
+from . import uhf_reader18_client

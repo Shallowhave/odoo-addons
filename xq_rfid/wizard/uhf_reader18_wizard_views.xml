@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- UHFReader18 配置向导视图 -->
+    <record id="view_uhf_reader18_config_wizard_form" model="ir.ui.view">
+        <field name="name">uhf.reader18.config.wizard.form</field>
+        <field name="model">uhf.reader18.config.wizard</field>
+        <field name="arch" type="xml">
+            <form string="UHFReader18 设备配置">
+                <group>
+                    <group>
+                        <field name="name"/>
+                        <field name="ip_address"/>
+                        <field name="port"/>
+                        <field name="device_address"/>
+                        <field name="timeout"/>
+                    </group>
+                    <group>
+                        <field name="connection_status" widget="text"/>
+                        <field name="reader_info" widget="text"/>
+                        <field name="inventory_result" widget="text"/>
+                    </group>
+                </group>
+                <footer>
+                    <button name="test_connection" string="测试连接" type="object" class="btn-primary"/>
+                    <button name="test_inventory" string="测试询查" type="object" class="btn-secondary"/>
+                    <button name="save_config" string="保存配置" type="object" class="btn-primary"/>
+                    <button string="关闭" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- UHFReader18 演示向导视图 -->
+    <record id="view_uhf_reader18_demo_wizard_form" model="ir.ui.view">
+        <field name="name">uhf.reader18.demo.wizard.form</field>
+        <field name="model">uhf.reader18.demo.wizard</field>
+        <field name="arch" type="xml">
+            <form string="UHFReader18 功能演示">
+                <group>
+                    <group>
+                        <field name="device_name"/>
+                        <field name="ip_address"/>
+                        <field name="port"/>
+                        <field name="device_address"/>
+                        <field name="demo_operation"/>
+                    </group>
+                    <group>
+                        <!-- 读数据参数 -->
+                        <field name="epc_hex" invisible="demo_operation not in ['read_data', 'write_data', 'write_epc', 'kill_tag']"/>
+                        <field name="mem_bank" invisible="demo_operation != 'read_data'"/>
+                        <field name="word_ptr" invisible="demo_operation != 'read_data'"/>
+                        <field name="num_words" invisible="demo_operation != 'read_data'"/>
+                        <field name="access_pwd" invisible="demo_operation not in ['read_data', 'write_data', 'write_epc']"/>
+                        
+                        <!-- 写数据参数 -->
+                        <field name="write_data" invisible="demo_operation != 'write_data'"/>
+                        <field name="write_words" invisible="demo_operation != 'write_data'"/>
+                        
+                        <!-- 写EPC参数 -->
+                        <field name="new_epc" invisible="demo_operation != 'write_epc'"/>
+                        
+                        <!-- 销毁标签参数 -->
+                        <field name="kill_pwd" invisible="demo_operation != 'kill_tag'"/>
+                        
+                        <!-- 设置参数 -->
+                        <field name="power_value" invisible="demo_operation != 'set_power'"/>
+                        <field name="scan_time_value" invisible="demo_operation != 'set_scan_time'"/>
+                    </group>
+                </group>
+                <group>
+                    <field name="demo_result" widget="text"/>
+                </group>
+                <footer>
+                    <button name="run_demo" string="运行演示" type="object" class="btn-primary"/>
+                    <button string="关闭" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- UHFReader18 配置向导动作 -->
+    <record id="action_uhf_reader18_config_wizard" model="ir.actions.act_window">
+        <field name="name">UHFReader18 配置</field>
+        <field name="res_model">uhf.reader18.config.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="view_id" ref="view_uhf_reader18_config_wizard_form"/>
+    </record>
+
+    <!-- UHFReader18 演示向导动作 -->
+    <record id="action_uhf_reader18_demo_wizard" model="ir.actions.act_window">
+        <field name="name">UHFReader18 演示</field>
+        <field name="res_model">uhf.reader18.demo.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="view_id" ref="view_uhf_reader18_demo_wizard_form"/>
+    </record>
+
+    <!-- 菜单项 -->
+    <menuitem id="menu_uhf_reader18_config"
+              name="UHFReader18 配置"
+              parent="xq_rfid.menu_rfid_config"
+              action="action_uhf_reader18_config_wizard"
+              sequence="10"/>
+
+    <menuitem id="menu_uhf_reader18_demo"
+              name="UHFReader18 演示"
+              parent="xq_rfid.menu_rfid_config"
+              action="action_uhf_reader18_demo_wizard"
+              sequence="20"/>
+
+</odoo>
