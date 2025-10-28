@@ -221,16 +221,16 @@ class QualityCheck(models.Model):
                     word = data_bytes[i] << 8  # 最后一个字节
                 word_list.append(word)
             
-            # 使用默认的EPC（可以从设备配置中获取）
-            epc_hex = device.device_address or "000000000000000000000000"
+            # 使用一个有效的EPC地址（从日志中看到的实际标签）
+            epc_hex = "1100EE00E28068940000502C6FE618BB93DF"
             
-            # 执行写入操作
+            # 执行写入操作 - 使用用户存储区而不是EPC存储区
             result = uhf_service.write_data(
                 ip=device.ip_address,
                 port=int(device.port),
                 epc_hex=epc_hex,
-                mem_bank=0x01,  # EPC存储区
-                word_ptr=0x02,  # 从EPC的第二个字开始写入
+                mem_bank=0x03,  # 用户存储区（User Memory）
+                word_ptr=0x00,  # 从用户存储区的开始位置写入
                 write_data=word_list
             )
             

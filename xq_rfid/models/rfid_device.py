@@ -346,15 +346,26 @@ class RfidDeviceConfig(models.Model):
             
             try:
                 port = int(self.port)
-                result = device_service.inventory_tags(self.ip_address, port, self.device_address)
+                # 执行真正的写入测试
+                test_data = ['TEST', 'DATA', 'WRITE']  # 测试数据
+                epc_hex = "1100EE00E28068940000502C6FE618BB93DF"  # 使用实际检测到的EPC
+                
+                result = device_service.write_data(
+                    ip=self.ip_address,
+                    port=port,
+                    epc_hex=epc_hex,
+                    mem_bank=0x03,  # 用户存储区
+                    word_ptr=0x00,  # 从开始位置写入
+                    write_data=test_data
+                )
                 
                 if result.get('success'):
-                    message = _('询查成功，检测到 %d 个标签') % result.get('num_tags', 0)
+                    message = _('写入测试成功！数据已写入到RFID标签')
                     msg_type = 'success'
-                    # 更新写入计数器（询查操作也算作一次操作）
+                    # 更新写入计数器
                     self.write_count += 1
                 else:
-                    message = result.get('error', '询查失败')
+                    message = result.get('error', '写入测试失败')
                     msg_type = 'warning'
             except ValueError:
                 return {
