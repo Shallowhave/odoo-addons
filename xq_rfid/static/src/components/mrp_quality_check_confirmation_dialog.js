@@ -3,6 +3,7 @@
 import { patch } from "@web/core/utils/patch";
 import { MrpQualityCheckConfirmationDialog } from "@mrp_workorder/mrp_display/dialog/mrp_quality_check_confirmation_dialog";
 import { RfidGenerationWizard } from "./rfid_generation_wizard";
+import { RfidWriteWizard } from "./rfid_write_wizard";
 
 patch(MrpQualityCheckConfirmationDialog.prototype, {
     setup() {
@@ -18,11 +19,21 @@ patch(MrpQualityCheckConfirmationDialog.prototype, {
             validate: this.validate && this.validate.bind(this),
         };
     },
+
+    get rfidWriteInfo() {
+        return {
+            name: "rfid_write",
+            record: this.props.record,
+            close: this.props.close,
+            validate: this.validate && this.validate.bind(this),
+        };
+    },
 });
 
 MrpQualityCheckConfirmationDialog.components = { 
     ...MrpQualityCheckConfirmationDialog.components, 
-    RfidGenerationWizard 
+    RfidGenerationWizard,
+    RfidWriteWizard
 };
 
 console.log('RFID components loaded:', MrpQualityCheckConfirmationDialog.components);

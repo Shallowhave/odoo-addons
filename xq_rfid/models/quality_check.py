@@ -34,6 +34,42 @@ class QualityCheck(models.Model):
         help='质检点的技术名称，用于判断是否为 RFID 测试'
     )
     
+    # RFID 写入内容显示
+    rfid_write_content = fields.Text(
+        string='RFID 写入内容',
+        compute='_compute_rfid_write_content',
+        readonly=True,
+        help='要写入到 RFID 标签的数据内容'
+    )
+    
+    @api.depends('test_type', 'production_id', 'product_id', 'lot_id')
+    def _compute_rfid_write_content(self):
+        """计算RFID写入内容"""
+        for record in self:
+            if record.test_type == 'rfid_write':
+                # 准备要写入的数据
+                write_data = record._prepare_rfid_write_data()
+                
+                # 格式化为可读的文本
+                content_lines = []
+                content_lines.append("=== RFID 写入数据 ===")
+                content_lines.append(f"生产订单: {write_data.get('production_order', '')}")
+                content_lines.append(f"产品名称: {write_data.get('product_name', '')}")
+                content_lines.append(f"产品编码: {write_data.get('product_code', '')}")
+                content_lines.append(f"批次号: {write_data.get('batch_number', '')}")
+                content_lines.append(f"生产日期: {write_data.get('production_date', '')}")
+                content_lines.append(f"数量: {write_data.get('quantity', '')}")
+                content_lines.append(f"单位: {write_data.get('unit', '')}")
+                content_lines.append(f"工作中心: {write_data.get('work_center', '')}")
+                content_lines.append(f"工单: {write_data.get('workorder', '')}")
+                content_lines.append(f"工序: {write_data.get('operation', '')}")
+                content_lines.append(f"操作员: {write_data.get('operator', '')}")
+                content_lines.append("==================")
+                
+                record.rfid_write_content = '\n'.join(content_lines)
+            else:
+                record.rfid_write_content = ''
+    
     def do_pass(self):
         """
         质检通过时自动生成 RFID 标签

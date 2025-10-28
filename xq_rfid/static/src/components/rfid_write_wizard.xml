@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="xq_rfid.RfidWriteWizard">
+        <div class="o_rfid_write_wizard">
+            <!-- 标题 -->
+            <div class="mb-3">
+                <h6 class="text-primary mb-2">
+                    <i class="fa fa-pencil-square-o me-2"/>
+                    RFID 标签写入
+                </h6>
+            </div>
+            
+            <!-- RFID 标签信息显示 -->
+            <div t-if="state.rfidTagName" class="alert alert-success mb-3" role="alert">
+                <div class="d-flex align-items-center">
+                    <i class="fa fa-qrcode fa-2x me-3 text-success"/>
+                    <div class="flex-grow-1">
+                        <h6 class="mb-2">RFID 标签信息</h6>
+                        <div class="mb-2">
+                            <strong>RFID 编号：</strong> 
+                            <code class="bg-white px-2 py-1 rounded fs-6" t-esc="state.rfidTagName"/>
+                        </div>
+                        <div class="mb-2">
+                            <strong>生产订单：</strong> 
+                            <span t-esc="state.productionOrder || '(待获取)'"/>
+                        </div>
+                        <div class="mb-2">
+                            <strong>批次号：</strong> 
+                            <span t-esc="state.batchNumber || '(待获取)'"/>
+                        </div>
+                        <div class="mb-2">
+                            <strong>生产日期：</strong> 
+                            <span t-esc="state.productionDate || '(待获取)'"/>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 如果没有RFID标签，显示提示信息 -->
+            <div t-else="" class="alert alert-warning mb-3" role="alert">
+                <div class="d-flex align-items-start">
+                    <i class="fa fa-exclamation-triangle fa-2x me-3 text-warning"/>
+                    <div class="flex-grow-1">
+                        <h6 class="mb-2">RFID 标签未生成</h6>
+                        <p class="mb-0">
+                            请先完成"RFID 标签"类型的质量控制检查，生成RFID标签后再进行写入操作。
+                        </p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 写入状态显示 -->
+            <div class="card border-warning">
+                <div class="card-body p-3">
+                    <div class="d-flex align-items-center justify-content-between">
+                        <div class="flex-grow-1">
+                            <div class="text-muted small mb-1">RFID 写入状态</div>
+                            <div class="h6 mb-0">
+                                <i class="fa fa-clock me-2 text-warning"/>
+                                <strong>点击"验证"按钮后将执行RFID写入操作</strong>
+                            </div>
+                        </div>
+                        <div class="text-end ms-3">
+                            <div class="badge bg-warning fs-6">
+                                <i class="fa fa-exclamation-triangle me-1"/>
+                                待写入
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </t>
+</templates>

@@ -7,6 +7,11 @@
             <div t-if="recordData.test_type === 'rfid_label'" class="workorder_rfid_generation">
                 <RfidGenerationWizard t-props="rfidInfo"/>
             </div>
+            
+            <!-- RFID 标签写入信息显示组件 -->
+            <div t-if="recordData.test_type === 'rfid_write'" class="workorder_rfid_write">
+                <RfidWriteWizard t-props="rfidWriteInfo"/>
+            </div>
         </xpath>
     </t>
 </templates>
