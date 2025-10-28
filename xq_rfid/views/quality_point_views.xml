@@ -15,16 +15,4 @@
             </xpath>
         </field>
     </record>
-    
-    <!-- 扩展IoT设备字段的显示条件，包含rfid_write类型 -->
-    <record id="quality_point_view_form_inherit_rfid_device" model="ir.ui.view">
-        <field name="name">quality.point.form.inherit.rfid.device</field>
-        <field name="model">quality.point</field>
-        <field name="inherit_id" ref="quality_iot.quality_point_view_form_inherit_quality_control_iot"/>
-        <field name="arch" type="xml">
-            <xpath expr="//field[@name='device_id']" position="attributes">
-                <attribute name="invisible">test_type not in ['picture', 'measure', 'print_label', 'rfid_write']</attribute>
-            </xpath>
-        </field>
-    </record>
 </odoo>
