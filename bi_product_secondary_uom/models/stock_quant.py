@@ -41,32 +41,25 @@ class StockQuant(models.Model):
     @api.depends('product_id', 'inventory_quantity_auto_apply')
     def _compute_lot_weight(self):
         for quant in self:
-            move_lines = self.env['stock.move.line'].search([
-                ('lot_id', '=', quant.lot_id.id),
-                ('state', '=', 'done'),
-                ('location_dest_id', '=', quant.location_id.id)
-            ])
-            lot_weight = sum(move_lines.mapped('lot_weight'))
-            qty = sum(move_lines.mapped('qty_done'))
-            if qty > 0:
-                quant.lot_weight = lot_weight * quant.inventory_quantity_auto_apply / qty
-            else:
-                quant.lot_weight = 0
+            # 由于lot_weight字段已从stock.move.line中移除，这里设置为0
+            # 如果需要重量信息，应该从其他字段计算或直接设置为0
+            quant.lot_weight = 0
 
     @api.depends('product_id', 'inventory_quantity_auto_apply')
     def _compute_lot_barrels(self):
         for quant in self:
-            # 对于配液原料类型，从库存移动行中获取桶数
+            # 对于配液原料类型，从库存移动行中获取单位数量
             if hasattr(quant.product_id.product_tmpl_id, 'product_type') and quant.product_id.product_tmpl_id.product_type == 'solution_material':
                 move_lines = self.env['stock.move.line'].search([
                     ('lot_id', '=', quant.lot_id.id),
                     ('state', '=', 'done'),
                     ('location_dest_id', '=', quant.location_id.id)
                 ])
-                lot_barrels = sum(move_lines.mapped('lot_barrels'))
+                # 使用lot_quantity字段替代lot_barrels
+                lot_quantity = sum(move_lines.mapped('lot_quantity'))
                 qty = sum(move_lines.mapped('qty_done'))
-                if qty > 0:
-                    quant.lot_barrels = lot_barrels * quant.inventory_quantity_auto_apply / qty
+                if qty > 0 and lot_quantity > 0:
+                    quant.lot_barrels = lot_quantity * quant.inventory_quantity_auto_apply / qty
                 else:
                     quant.lot_barrels = 0
             else:

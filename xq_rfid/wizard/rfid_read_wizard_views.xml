@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- RFID 读取向导表单视图 -->
+    <record id="rfid_read_wizard_view_form" model="ir.ui.view">
+        <field name="name">rfid.read.wizard.form</field>
+        <field name="model">rfid.read.wizard</field>
+        <field name="arch" type="xml">
+            <form string="RFID 读取向导">
+                <sheet>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="read_status" widget="badge" 
+                                   decoration-success="read_status == 'success'"
+                                   decoration-warning="read_status == 'reading'"
+                                   decoration-danger="read_status == 'failed'"
+                                   decoration-info="read_status == 'pending'"/>
+                            RFID 标签读取
+                        </h1>
+                    </div>
+                    
+                    <group>
+                        <group string="设备配置">
+                            <field name="device_id" options="{'no_create': True}"/>
+                            <field name="read_time" readonly="1"/>
+                        </group>
+                        <group string="读取参数">
+                            <field name="epc_hex" placeholder="例如: 1100EE00E28068940000502C6FE618BB93DF"/>
+                            <field name="mem_bank"/>
+                            <field name="word_ptr"/>
+                            <field name="word_count"/>
+                        </group>
+                    </group>
+                    
+                    <group string="读取结果" invisible="not read_result">
+                        <field name="read_result" readonly="1" nolabel="1"/>
+                    </group>
+                    
+                    <group string="解析数据" invisible="not parsed_data">
+                        <field name="parsed_data" readonly="1" nolabel="1" widget="text"/>
+                    </group>
+                    
+                    <footer>
+                        <button name="action_test_connection" string="测试连接" type="object" 
+                                class="btn-secondary" icon="fa-plug"/>
+                        <button name="action_read_rfid" string="读取RFID" type="object" 
+                                class="btn-primary" icon="fa-qrcode"/>
+                        <button string="关闭" class="btn-secondary" special="cancel"/>
+                    </footer>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- RFID 读取向导动作 -->
+    <record id="action_rfid_read_wizard" model="ir.actions.act_window">
+        <field name="name">RFID 读取向导</field>
+        <field name="res_model">rfid.read.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="view_id" ref="rfid_read_wizard_view_form"/>
+    </record>
+
+    <!-- RFID 读取向导菜单 -->
+    <menuitem id="menu_rfid_read_wizard"
+              name="RFID 读取"
+              parent="menu_rfid"
+              action="action_rfid_read_wizard"
+              sequence="20"/>
+
+</odoo>

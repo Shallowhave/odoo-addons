@@ -47,16 +47,99 @@ class ProductTemplate(models.Model):
     )
 
     # 配液原料专用字段
-    solution_weight = fields.Float(
-        string="重量 (公斤)",
-        help="配液原料的重量，单位：公斤",
-        digits=(12, 3)
-    )
-    
     solution_solid_content = fields.Float(
         string="固含 (%)",
         help="配液原料的固含量，单位：百分比",
         digits=(5, 2)
+    )
+    
+    solution_viscosity = fields.Float(
+        string="粘度值",
+        help="配液原料的粘度值",
+        digits=(12, 3)
+    )
+
+    # 通用单位配置系统
+    enable_custom_units = fields.Boolean(
+        string="启用自定义单位",
+        default=False,
+        help="启用后可以在库存移动时填写具体的单位信息"
+    )
+    
+    # 默认单位配置（用于快速设置）
+    default_unit_config = fields.Selection([
+        ('kg', '公斤(kg)'),
+        ('roll', '卷'),
+        ('barrel', '桶'),
+        ('box', '箱'),
+        ('bag', '袋'),
+        ('sqm', '平方米(㎡)'),
+        ('custom', '自定义')
+    ], string="默认单位配置",
+       help="选择常用的单位配置模板")
+    
+    # 快速配置字段（根据默认配置自动显示）
+    quick_unit_name = fields.Char(
+        string="单位名称",
+        help="如：卷、桶、箱、袋等"
+    )
+    
+    quick_unit_value = fields.Float(
+        string="单位数值",
+        digits=(12, 3),
+        help="如：每卷重量、每桶重量等"
+    )
+    
+    quick_unit_type = fields.Selection([
+        ('weight', '重量(kg)'),
+        ('area', '面积(㎡)'),
+        ('volume', '体积(m³)'),
+        ('length', '长度(m)'),
+        ('quantity', '数量(件)'),
+        ('custom', '自定义')
+    ], string="单位类型",
+       help="选择单位类型")
+    
+    # 采购单位相关字段（保留兼容性）
+    purchase_unit_type = fields.Selection([
+        ('roll', '按卷采购'),
+        ('kg', '按公斤采购'),
+        ('sqm', '按平方采购'),
+        ('custom', '自定义采购单位')
+    ], string="采购单位类型", 
+       help="选择产品的采购单位类型")
+    
+    # 原膜按卷采购：每卷重量
+    roll_weight_per_unit = fields.Float(
+        string="每卷重量 (kg)",
+        help="原膜按卷采购时，每卷的重量",
+        digits=(12, 3)
+    )
+    
+    # 配液原料按kg采购：每桶重量
+    barrel_weight_per_unit = fields.Float(
+        string="每桶重量 (kg)",
+        help="配液原料按kg采购时，每桶的重量",
+        digits=(12, 3)
+    )
+    
+    # 半成品原膜按平方采购：每卷面积
+    roll_area_per_unit = fields.Float(
+        string="每卷面积 (㎡)",
+        help="半成品原膜按平方采购时，每卷的面积",
+        digits=(12, 3)
+    )
+    
+    # 自定义采购单位
+    custom_purchase_unit_name = fields.Char(
+        string="自定义采购单位名称",
+        help="自定义采购单位的名称，如：箱、包、袋等"
+    )
+    
+    custom_purchase_unit_value = fields.Float(
+        string="自定义采购单位值",
+        help="自定义采购单位的数值",
+        digits=(12, 3)
     )
 
     # 成品计算字段：每米重量
@@ -360,6 +443,187 @@ class ProductTemplate(models.Model):
         if missing_fields:
             return False, f"缺少基础信息: {', '.join(missing_fields)}"
         return True, "符合条件"
+
+    def get_purchase_unit_info(self):
+        """
+        根据产品类型和采购单位类型，返回采购单位信息
+        
+        :return: dict {
+            'unit_name': '单位名称',
+            'unit_value': '单位数值',
+            'unit_type': '单位类型',
+            'description': '描述'
+        }
+        """
+        self.ensure_one()
+        
+        # 根据产品类型自动设置采购单位类型
+        if not self.purchase_unit_type:
+            if self.product_type == 'raw_material':
+                self.purchase_unit_type = 'roll'
+            elif self.product_type == 'solution_material':
+                self.purchase_unit_type = 'kg'
+            elif self.product_type == 'finished_product':
+                self.purchase_unit_type = 'sqm'
+        
+        unit_info = {
+            'unit_name': '',
+            'unit_value': 0.0,
+            'unit_type': self.purchase_unit_type,
+            'description': ''
+        }
+        
+        if self.purchase_unit_type == 'roll':
+            # 原膜按卷采购
+            if self.product_type == 'raw_material' and self.roll_weight_per_unit:
+                unit_info.update({
+                    'unit_name': '卷',
+                    'unit_value': self.roll_weight_per_unit,
+                    'description': f'每卷重量: {self.roll_weight_per_unit}kg'
+                })
+            else:
+                # 如果没有设置每卷重量，尝试从尺寸计算
+                if self.product_length and self.product_width and self.product_thickness:
+                    # 假设密度为1.0 g/cm³（可以根据实际情况调整）
+                    density = 1.0  # g/cm³
+                    length_cm = self.product_length * 100  # m → cm
+                    width_cm = self.product_width * 0.1    # mm → cm
+                    thickness_cm = self.product_thickness * 0.0001  # μm → cm
+                    volume_cm3 = length_cm * width_cm * thickness_cm
+                    weight_kg = (volume_cm3 * density) / 1000  # g → kg
+                    
+                    unit_info.update({
+                        'unit_name': '卷',
+                        'unit_value': round(weight_kg, 3),
+                        'description': f'每卷重量(计算): {round(weight_kg, 3)}kg'
+                    })
+                    
+        elif self.purchase_unit_type == 'kg':
+            # 配液原料按kg采购
+            if self.product_type == 'solution_material' and self.barrel_weight_per_unit:
+                unit_info.update({
+                    'unit_name': '桶',
+                    'unit_value': self.barrel_weight_per_unit,
+                    'description': f'每桶重量: {self.barrel_weight_per_unit}kg'
+                })
+            else:
+                unit_info.update({
+                    'unit_name': 'kg',
+                    'unit_value': 1.0,
+                    'description': '按公斤采购'
+                })
+                
+        elif self.purchase_unit_type == 'sqm':
+            # 半成品原膜按平方采购
+            if self.product_type == 'finished_product' and self.roll_area_per_unit:
+                unit_info.update({
+                    'unit_name': '卷',
+                    'unit_value': self.roll_area_per_unit,
+                    'description': f'每卷面积: {self.roll_area_per_unit}㎡'
+                })
+            else:
+                # 如果没有设置每卷面积，尝试从宽度计算
+                if self.product_width:
+                    width_m = self.product_width / 1000.0  # mm → m
+                    unit_info.update({
+                        'unit_name': '卷',
+                        'unit_value': round(width_m, 3),
+                        'description': f'每卷面积(计算): {round(width_m, 3)}㎡'
+                    })
+                    
+        elif self.purchase_unit_type == 'custom':
+            # 自定义采购单位
+            if self.custom_purchase_unit_name and self.custom_purchase_unit_value:
+                unit_info.update({
+                    'unit_name': self.custom_purchase_unit_name,
+                    'unit_value': self.custom_purchase_unit_value,
+                    'description': f'自定义单位: {self.custom_purchase_unit_value}{self.custom_purchase_unit_name}'
+                })
+        
+        return unit_info
+
+    @api.onchange('product_type')
+    def _onchange_product_type_purchase_unit(self):
+        """当产品类型改变时，自动设置采购单位类型"""
+        if self.product_type == 'raw_material':
+            self.purchase_unit_type = 'roll'
+        elif self.product_type == 'solution_material':
+            self.purchase_unit_type = 'kg'
+        elif self.product_type == 'finished_product':
+            self.purchase_unit_type = 'sqm'
+        else:
+            self.purchase_unit_type = 'custom'
+
+    @api.onchange('default_unit_config')
+    def _onchange_default_unit_config(self):
+        """当选择默认单位配置时，自动设置快速配置字段"""
+        if self.default_unit_config == 'kg':
+            self.quick_unit_name = 'kg'
+            self.quick_unit_type = 'weight'
+            self.quick_unit_value = 0.0
+        elif self.default_unit_config == 'roll':
+            self.quick_unit_name = '卷'
+            self.quick_unit_type = 'weight'
+            self.quick_unit_value = 0.0
+        elif self.default_unit_config == 'barrel':
+            self.quick_unit_name = '桶'
+            self.quick_unit_type = 'weight'
+            self.quick_unit_value = 0.0
+        elif self.default_unit_config == 'box':
+            self.quick_unit_name = '箱'
+            self.quick_unit_type = 'quantity'
+            self.quick_unit_value = 0.0
+        elif self.default_unit_config == 'bag':
+            self.quick_unit_name = '袋'
+            self.quick_unit_type = 'weight'
+            self.quick_unit_value = 0.0
+        elif self.default_unit_config == 'sqm':
+            self.quick_unit_name = '㎡'
+            self.quick_unit_type = 'area'
+            self.quick_unit_value = 0.0
+        elif self.default_unit_config == 'custom':
+            self.quick_unit_name = ''
+            self.quick_unit_type = 'custom'
+            self.quick_unit_value = 0.0
+
+    @api.onchange('product_length', 'product_width', 'product_thickness', 'product_type')
+    def _onchange_dimensions_calculate_units(self):
+        """当产品尺寸改变时，自动计算采购单位值"""
+        if self.product_type == 'raw_material' and self.purchase_unit_type == 'roll':
+            # 自动计算每卷重量
+            if self.product_length and self.product_width and self.product_thickness:
+                # 假设密度为1.0 g/cm³（可以根据实际情况调整）
+                density = 1.0  # g/cm³
+                length_cm = self.product_length * 100  # m → cm
+                width_cm = self.product_width * 0.1    # mm → cm
+                thickness_cm = self.product_thickness * 0.0001  # μm → cm
+                volume_cm3 = length_cm * width_cm * thickness_cm
+                weight_kg = (volume_cm3 * density) / 1000  # g → kg
+                self.roll_weight_per_unit = round(weight_kg, 3)
+                
+        elif self.product_type == 'finished_product' and self.purchase_unit_type == 'sqm':
+            # 自动计算每卷面积
+            if self.product_width:
+                width_m = self.product_width / 1000.0  # mm → m
+                self.roll_area_per_unit = round(width_m, 3)
+
+    def get_unit_config_for_stock_move(self):
+        """获取用于库存移动的单位配置信息"""
+        self.ensure_one()
+        
+        if not self.enable_custom_units:
+            return []
+        
+        # 使用快速配置
+        if self.quick_unit_name:
+            return [{
+                'name': self.quick_unit_name,
+                'type': self.quick_unit_type,
+                'default_value': 0.0,  # 不提供默认数值，让用户手动填写
+                'description': f'{self.quick_unit_name} - {self.quick_unit_type}'
+            }]
+        
+        return []
 
 
 class ProductProduct(models.Model):

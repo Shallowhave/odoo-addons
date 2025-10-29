@@ -15,27 +15,25 @@
 
             <xpath expr="//field[@name='product_properties']" position="after">
                 <div>
-                    平方数:
-                    <field name="lot_qty"/>
-                    <field name="secondary_uom_id"/>
+                    面积:
+                    <field name="product_area"/>㎡
                 </div>
                 <div>
-                    重量:
-                    <field name="lot_weight"/>kg
+                    体积:
+                    <field name="product_volume"/>cm³
                 </div>
-                <field name="is_safty" invisible="1"/>
                 <field name="product_type" invisible="1"/>
                 <div class="d-flex flex-row" style="justify-content: space-between;">
-                    <div class="flex-1" t-att-style="record.is_safty.raw_value?'': 'background-color: red;'">
-                        <span t-if="record.product_type and record.product_type.raw_value == 'solution_material'">桶数:</span>
-                        <span t-else="">实际卷数:</span>
-                        <field name="lot_barrels" t-if="record.product_type and record.product_type.raw_value == 'solution_material'"/>
-                        <field name="act_juan" t-else=""/>
+                    <div class="flex-1">
+                        <span t-if="record.product_type and record.product_type.raw_value == 'solution_material'">配液原料</span>
+                        <span t-elif="record.product_type and record.product_type.raw_value == 'raw_material'">原膜</span>
+                        <span t-elif="record.product_type and record.product_type.raw_value == 'finished_product'">成品膜</span>
+                        <span t-else="">默认产品</span>
                     </div>
                 </div>
                 <div>
-                    备注:
-                    <field name="o_note"/>
+                    采购单位:
+                    <field name="purchase_unit_type"/>
                 </div>
             </xpath>
         </field>

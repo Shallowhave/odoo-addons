@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <data>
+    <!-- 继承库存视图，添加单位信息字段 -->
+    <record id="view_stock_quant_tree_inherit_stock_extend" model="ir.ui.view">
+      <field name="name">stock.quant.tree.inherit.stock_extend</field>
+      <field name="model">stock.quant</field>
+      <field name="inherit_id" ref="stock.view_stock_quant_tree"/>
+      <field eval="1000" name="priority"/>
+      <field name="arch" type="xml">
+        <xpath expr="//field[@name='lot_id']" position="after">
+          <field name="lot_unit_name" string="自定义单位"/>
+          <field name="lot_quantity" string="单位数量"/>
+        </xpath>
+      </field>
+    </record>
+
+    <!-- 继承库存表单视图，添加单位信息字段 -->
+    <record id="view_stock_quant_form_inherit_stock_extend" model="ir.ui.view">
+      <field name="name">stock.quant.form.inherit.stock_extend</field>
+      <field name="model">stock.quant</field>
+      <field name="inherit_id" ref="stock.view_stock_quant_form"/>
+      <field eval="1000" name="priority"/>
+      <field name="arch" type="xml">
+        <xpath expr="//field[@name='lot_id']" position="after">
+          <field name="lot_unit_name"/>
+          <field name="lot_unit_name_custom" invisible="lot_unit_name != 'custom'"/>
+          <field name="lot_quantity"/>
+        </xpath>
+      </field>
+    </record>
+
+    <!-- 继承库存列表视图，添加单位信息字段 -->
+    <record id="view_stock_quant_list_inherit_stock_extend" model="ir.ui.view">
+      <field name="name">stock.quant.list.inherit.stock_extend</field>
+      <field name="model">stock.quant</field>
+      <field name="inherit_id" ref="stock.view_stock_quant_tree"/>
+      <field eval="1000" name="priority"/>
+      <field name="arch" type="xml">
+        <xpath expr="//field[@name='lot_id']" position="after">
+          <field name="lot_unit_name" string="自定义单位"/>
+          <field name="lot_quantity" string="单位数量"/>
+        </xpath>
+      </field>
+    </record>
+
+  </data>
+</odoo>

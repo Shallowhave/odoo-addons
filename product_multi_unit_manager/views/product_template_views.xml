@@ -53,11 +53,34 @@
                             </div>
                         </group>
                         
-                        <!-- 配液原料需要重量和固含量 -->
+                        <!-- 配液原料需要固含量和粘度值 -->
                         <group string="配液原料属性" name="solution_material_group" 
                                invisible="product_type != 'solution_material'">
-                            <field name="solution_weight"/>
                             <field name="solution_solid_content"/>
+                            <field name="solution_viscosity"/>
+                        </group>
+                        
+                        <!-- 附加单位配置系统 -->
+                        <group string="附加单位配置" name="universal_unit_group">
+                            <field name="enable_custom_units"/>
+                            
+                            <!-- 快速配置 -->
+                            <group string="快速配置" name="quick_config_group" 
+                                   invisible="not enable_custom_units">
+                                <field name="default_unit_config" widget="radio"/>
+                                <field name="quick_unit_name" 
+                                       invisible="default_unit_config != 'custom'"
+                                       string="自定义单位名称" 
+                                       help="填写自定义单位名称，如：托盘、板、捆等（此名称会自动带入库存移动界面）"/>
+                            </group>
+                            
+                            <!-- 详细配置 -->
+                            <group string="详细配置" name="detailed_config_group" 
+                                   invisible="not enable_custom_units">
+                                <div class="alert alert-info">
+                                    <p>详细配置功能正在开发中，请使用快速配置。</p>
+                                </div>
+                            </group>
                         </group>
                         
                     </div>

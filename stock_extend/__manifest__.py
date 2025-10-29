@@ -24,6 +24,7 @@ Long description of module's purpose
     'data': [
         # 'security/ir.model.access.csv',
         'views/views.xml',
+        'views/stock_quant_views.xml',
         'views/templates.xml',
     ],
     # client-side templates
@@ -32,6 +33,7 @@ Long description of module's purpose
     'assets': {
         'web.assets_backend': [
             'stock_extend/static/src/xml/lots_dialog.xml',
+            'stock_extend/static/src/js/stock_move_line_unit_filter.js',
         ],
     },
     # only loaded in demonstration mode
