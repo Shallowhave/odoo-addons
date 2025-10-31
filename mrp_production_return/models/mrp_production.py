@@ -70,8 +70,6 @@ class MrpProduction(models.Model):
 
     def button_mark_done(self):
         """重写完成制造订单方法，检查剩余组件"""
-        _logger.info(f"[DEBUG] button_mark_done 方法被调用")
-        
         # 检查是否是从"无欠单"按钮调用的
         skip_backorder = self.env.context.get('skip_backorder', False)
         # 检查是否是从欠单向导调用的（Odoo在创建欠单时会设置 mo_ids_to_backorder）
@@ -79,41 +77,24 @@ class MrpProduction(models.Model):
         # 检查是否已经在处理剩余组件（防止递归）
         processing_return = self.env.context.get('processing_return', False)
         
-        _logger.info(f"[DEBUG] skip_backorder: {skip_backorder}, mo_ids_to_backorder: {mo_ids_to_backorder}, processing_return: {processing_return}")
-        
         # 只有在"无欠单"且不是创建欠单且不在处理返回时才触发
         # mo_ids_to_backorder 存在表示是"创建欠单"操作
         should_check_remaining = skip_backorder and not mo_ids_to_backorder and not processing_return
         
         for record in self:
-            _logger.info(f"[DEBUG] 处理制造订单: {record.name}")
-            
             # 只有在真正的"无欠单"情况下才检查剩余组件
             if should_check_remaining:
-                # 调试信息：记录组件状态
-                _logger.info(f"[剩余组件检测] 制造订单 {record.name} 的组件状态:")
-                for move in record.move_raw_ids:
-                    _logger.info(f"  组件: {move.product_id.name}, 状态: {move.state}, 计划数量: {move.product_uom_qty}, 实际数量: {move.quantity}, 剩余: {move.product_uom_qty - move.quantity}")
-                
-                # 检查是否有剩余组件需要处理
-                # 包含更多可能的状态：done, assigned, partially_available
-                remaining_components = record.move_raw_ids.filtered(
-                    lambda m: m.state in ('done', 'assigned', 'partially_available') and m.product_uom_qty > m.quantity
-                )
-                
-                # 也检查其他可能的状态
-                all_components = record.move_raw_ids.filtered(
-                    lambda m: m.product_uom_qty > m.quantity
-                )
-                _logger.info(f"[剩余组件检测] 所有有剩余的组件: {len(all_components)}")
-                for comp in all_components:
-                    _logger.info(f"  有剩余组件: {comp.product_id.name}, 状态: {comp.state}, 计划: {comp.product_uom_qty}, 实际: {comp.quantity}")
-                
-                _logger.info(f"[剩余组件检测] 找到 {len(remaining_components)} 个剩余组件")
+                # 使用优化后的方法获取剩余组件（避免重复查询）
+                remaining_components = record._get_unprocessed_remaining_components()
                 
                 if remaining_components:
-                    # 如果有剩余组件，打开处理向导
-                    _logger.info(f"[剩余组件检测] 打开处理向导")
+                    # 记录关键信息（只在有剩余组件时）
+                    _logger.info(
+                        f"制造订单 {record.name} 有 {len(remaining_components)} 个剩余组件待处理：" +
+                        ", ".join(remaining_components.mapped('product_id.name'))
+                    )
+                    
+                    # 打开处理向导
                     return {
                         'type': 'ir.actions.act_window',
                         'name': f'处理剩余组件 - {record.name}',
@@ -124,13 +105,8 @@ class MrpProduction(models.Model):
                             'default_production_id': record.id,
                         }
                     }
-                else:
-                    _logger.info(f"[剩余组件检测] 没有剩余组件，直接完成制造订单")
-            else:
-                _logger.info(f"[DEBUG] 非无欠单操作（创建欠单或其他），直接调用原始方法")
         
         # 如果没有剩余组件或不是无欠单操作，调用原始方法
-        _logger.info(f"[DEBUG] 调用原始 button_mark_done 方法")
         return super().button_mark_done()
 
     def action_return_components(self):

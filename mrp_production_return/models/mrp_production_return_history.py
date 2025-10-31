@@ -17,12 +17,14 @@ class MrpProductionReturnHistory(models.Model):
         'mrp.production',
         string='制造订单',
         required=True,
-        ondelete='cascade'
+        ondelete='cascade',
+        index=True  # 添加索引，常用于查询
     )
     product_id = fields.Many2one(
         'product.product',
         string='产品',
-        required=True
+        required=True,
+        index=True  # 添加索引，常用于查询
     )
     quantity = fields.Float(
         string='数量',
@@ -64,12 +66,14 @@ class MrpProductionReturnHistory(models.Model):
         'res.users',
         string='处理人',
         required=True,
-        default=lambda self: self.env.user
+        default=lambda self: self.env.user,
+        index=True  # 添加索引，用于按处理人筛选
     )
     processed_date = fields.Datetime(
         string='处理时间',
         required=True,
-        default=fields.Datetime.now
+        default=fields.Datetime.now,
+        index=True  # 添加索引，常用于日期范围查询和排序
     )
     
     # 关联记录
@@ -94,7 +98,7 @@ class MrpProductionReturnHistory(models.Model):
         ('draft', '草稿'),
         ('done', '完成'),
         ('cancelled', '已取消'),
-    ], string='状态', default='draft', required=True)
+    ], string='状态', default='draft', required=True, index=True)  # 添加索引，常用于按状态筛选
     
     # 计算字段
     display_name = fields.Char(

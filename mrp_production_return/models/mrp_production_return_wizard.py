@@ -116,6 +116,40 @@ class MrpProductionReturnWizard(models.TransientModel):
         for record in self:
             record.location_name = record.target_location_id.name if record.target_location_id else ''
 
+    def _recommend_defective_location(self, warehouse):
+        """推荐不良品仓库位置"""
+        # 优先查找名称包含"不良"或"次品"的内部库位
+        defective_loc = self.env['stock.location'].search([
+            ('usage', '=', 'internal'),
+            ('scrap_location', '=', False),
+            ('warehouse_id', '=', warehouse.id),
+            '|', ('name', 'ilike', '不良'),
+            ('name', 'ilike', '次品')
+        ], limit=1)
+        
+        # 如果没有专门的不良品仓，使用主仓库的子位置
+        if not defective_loc:
+            defective_loc = self.env['stock.location'].search([
+                ('usage', '=', 'internal'),
+                ('scrap_location', '=', False),
+                ('warehouse_id', '=', warehouse.id),
+                ('location_id', '!=', False)  # 有父位置的子库位
+            ], limit=1)
+        
+        return defective_loc
+    
+    def _recommend_main_location(self, warehouse):
+        """推荐主仓库位置"""
+        return warehouse.lot_stock_id if warehouse else False
+    
+    def _recommend_scrap_location(self, company):
+        """推荐报废仓库位置"""
+        return self.env['stock.location'].search([
+            ('scrap_location', '=', True),
+            '|', ('company_id', '=', company.id),
+            ('company_id', '=', False)
+        ], limit=1)
+
     @api.model
     def default_get(self, fields_list):
         """设置默认值"""
@@ -159,38 +193,16 @@ class MrpProductionReturnWizard(models.TransientModel):
             ], limit=1)
             
             if warehouse:
-                # 推荐不良品仓（优先查找名称包含"不良"或"次品"的内部库位）
-                defective_loc = self.env['stock.location'].search([
-                    ('usage', '=', 'internal'),
-                    ('scrap_location', '=', False),
-                    ('warehouse_id', '=', warehouse.id),
-                    '|', ('name', 'ilike', '不良'),
-                    ('name', 'ilike', '次品')
-                ], limit=1)
-                
-                # 如果没有专门的不良品仓，使用主仓库的子位置
-                if not defective_loc:
-                    defective_loc = self.env['stock.location'].search([
-                        ('usage', '=', 'internal'),
-                        ('scrap_location', '=', False),
-                        ('warehouse_id', '=', warehouse.id),
-                        ('location_id', '!=', False)  # 有父位置的子库位
-                    ], limit=1)
-                
+                # 使用提取的方法推荐位置
+                defective_loc = self._recommend_defective_location(warehouse)
                 if defective_loc:
                     res['defective_location_id'] = defective_loc.id
                 
-                # 推荐主仓库
-                main_loc = warehouse.lot_stock_id
+                main_loc = self._recommend_main_location(warehouse)
                 if main_loc:
                     res['main_location_id'] = main_loc.id
                 
-                # 推荐报废仓库（查找scrap_location=True的库位）
-                scrap_loc = self.env['stock.location'].search([
-                    ('scrap_location', '=', True),
-                    '|', ('company_id', '=', production.company_id.id),
-                    ('company_id', '=', False)
-                ], limit=1)
+                scrap_loc = self._recommend_scrap_location(production.company_id)
                 if scrap_loc:
                     res['scrap_location_id'] = scrap_loc.id
                 
