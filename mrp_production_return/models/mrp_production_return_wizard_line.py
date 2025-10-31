@@ -52,6 +52,20 @@ class MrpProductionReturnWizardLine(models.TransientModel):
         required=True,
         help='要返回的组件数量'
     )
+    
+    # 附加单位字段
+    lot_quantity = fields.Float(
+        string='附加单位数量',
+        related='move_id.lot_quantity',
+        readonly=True,
+        help='该组件的附加单位数量'
+    )
+    lot_unit_name = fields.Char(
+        string='附加单位',
+        related='move_id.lot_unit_name',
+        readonly=True,
+        help='该组件的附加单位名称'
+    )
 
     @api.depends('expected_qty', 'consumed_qty')
     def _compute_remaining_qty(self):

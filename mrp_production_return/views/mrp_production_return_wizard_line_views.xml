@@ -13,6 +13,8 @@
                 <field name="consumed_qty" readonly="1" string="已消耗"/>
                 <field name="remaining_qty" readonly="1" string="剩余数量"/>
                 <field name="return_qty" string="返回/报废数量"/>
+                <field name="lot_quantity" readonly="1" string="附加单位数量" optional="show"/>
+                <field name="lot_unit_name" readonly="1" string="附加单位" optional="show"/>
             </list>
         </field>
     </record>
