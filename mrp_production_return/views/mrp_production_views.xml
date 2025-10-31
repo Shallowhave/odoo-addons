@@ -24,7 +24,7 @@
                    
                    <!-- 在信息页面添加剩余组件信息 -->
                    <xpath expr="//field[@name='product_qty']" position="after">
-                       <field name="remaining_components_count" readonly="1"/>
+                       <field name="remaining_components_count" invisible="1"/>
                        <field name="has_remaining_components" invisible="1"/>
                    </xpath>
             

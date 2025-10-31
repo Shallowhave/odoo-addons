@@ -35,6 +35,11 @@
                     采购单位:
                     <field name="purchase_unit_type"/>
                 </div>
+                <div>
+                    附属单位数量:
+                    <field name="secondary_product_qty"/>
+                    <field name="secondary_uom_name"/>
+                </div>
             </xpath>
         </field>
     </record>

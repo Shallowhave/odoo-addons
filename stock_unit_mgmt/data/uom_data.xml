@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- 创建自定义单位类别 -->
+        <record id="uom_categ_custom" model="uom.category">
+            <field name="name">自定义单位</field>
+        </record>
+
+        <!-- 创建常用单位 -->
+        <record id="uom_roll" model="uom.uom">
+            <field name="name">卷</field>
+            <field name="category_id" ref="uom_categ_custom"/>
+            <field name="uom_type">reference</field>
+            <field name="factor">1.0</field>
+        </record>
+
+        <record id="uom_barrel" model="uom.uom">
+            <field name="name">桶</field>
+            <field name="category_id" ref="uom_categ_custom"/>
+            <field name="uom_type">bigger</field>
+            <field name="factor">1.0</field>
+        </record>
+
+        <record id="uom_box" model="uom.uom">
+            <field name="name">箱</field>
+            <field name="category_id" ref="uom_categ_custom"/>
+            <field name="uom_type">bigger</field>
+            <field name="factor">1.0</field>
+        </record>
+
+        <record id="uom_bag" model="uom.uom">
+            <field name="name">袋</field>
+            <field name="category_id" ref="uom_categ_custom"/>
+            <field name="uom_type">bigger</field>
+            <field name="factor">1.0</field>
+        </record>
+    </data>
+</odoo>

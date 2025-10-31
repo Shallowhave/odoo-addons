@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <!-- 继承库存主列表视图（简单视图），添加单位信息字段 -->
+        <record id="view_stock_quant_list_simple_inherit_inventory_unit_manager" model="ir.ui.view">
+            <field name="name">stock.quant.list.simple.inherit.inventory_unit_manager</field>
+            <field name="model">stock.quant</field>
+            <field name="inherit_id" ref="stock.view_stock_quant_tree_simple"/>
+            <field eval="99" name="priority"/>
+            <field name="arch" type="xml">
+                <!-- 在"单位"字段后添加附加单位信息和其他扩展字段 -->
+                <field name="product_uom_id" position="after">
+                    <field name="lot_quantity" string="附加单位数量" sum="附加单位总数"/>
+                    <field name="lot_unit_name" string="附加单位类型" optional="show"/>
+                    <field name="in_date" string="到货日期" optional="show"/>
+                    <field name="o_note1" string="备注1" optional="hide"/>
+                    <field name="o_note2" string="备注2" optional="hide"/>
+                    <field name="contract_no" string="合同号" optional="hide"/>
+                </field>
+            </field>
+        </record>
+        
+        <!-- 继承库存可编辑列表视图，添加单位信息字段 -->
+        <record id="view_stock_quant_list_editable_inherit_inventory_unit_manager" model="ir.ui.view">
+            <field name="name">stock.quant.list.editable.inherit.inventory_unit_manager</field>
+            <field name="model">stock.quant</field>
+            <field name="inherit_id" ref="stock.view_stock_quant_tree_editable"/>
+            <field eval="99" name="priority"/>
+            <field name="arch" type="xml">
+                <!-- 在"单位"字段后添加附加单位信息和其他扩展字段 -->
+                <field name="product_uom_id" position="after">
+                    <field name="lot_quantity" string="附加单位数量" sum="附加单位总数"/>
+                    <field name="lot_unit_name" string="附加单位类型" optional="show"/>
+                    <field name="in_date" string="到货日期" optional="show"/>
+                    <field name="o_note1" string="备注1" optional="hide"/>
+                    <field name="o_note2" string="备注2" optional="hide"/>
+                    <field name="contract_no" string="合同号" optional="hide"/>
+                </field>
+            </field>
+        </record>
+        
+        <!-- 继承库存树状视图，添加单位信息字段 -->
+        <record id="view_stock_quant_tree_inherit_inventory_unit_manager" model="ir.ui.view">
+            <field name="name">stock.quant.tree.inherit.inventory_unit_manager</field>
+            <field name="model">stock.quant</field>
+            <field name="inherit_id" ref="stock.view_stock_quant_tree"/>
+            <field eval="99" name="priority"/>
+            <field name="arch" type="xml">
+                <!-- 在"单位"字段后添加附加单位信息和其他扩展字段 -->
+                <field name="product_uom_id" position="after">
+                    <field name="lot_quantity" string="附加单位数量" sum="附加单位总数"/>
+                    <field name="lot_unit_name" string="附加单位类型" optional="show"/>
+                    <field name="in_date" string="到货日期" optional="show"/>
+                    <field name="o_note1" string="备注1" optional="hide"/>
+                    <field name="o_note2" string="备注2" optional="hide"/>
+                    <field name="contract_no" string="合同号" optional="hide"/>
+                </field>
+            </field>
+        </record>
+
+        <!-- 继承库存表单视图，添加单位信息字段 -->
+        <record id="view_stock_quant_form_inherit_inventory_unit_manager" model="ir.ui.view">
+            <field name="name">stock.quant.form.inherit.inventory_unit_manager</field>
+            <field name="model">stock.quant</field>
+            <field name="inherit_id" ref="stock.view_stock_quant_form"/>
+            <field eval="16" name="priority"/>
+            <field name="arch" type="xml">
+                <xpath expr="//field[@name='lot_id']" position="after">
+                    <field name="lot_unit_name"/>
+                    <field name="lot_unit_name_custom" invisible="lot_unit_name != 'custom'"/>
+                    <field name="lot_quantity"/>
+                </xpath>
+            </field>
+        </record>
+
+        <!-- 继承库存可编辑视图，添加附加单位和扩展字段 -->
+        <record id="view_stock_quant_tree_editable_inherit_inventory_unit_manager" model="ir.ui.view">
+            <field name="name">stock.quant.tree.editable.inherit.inventory_unit_manager</field>
+            <field name="model">stock.quant</field>
+            <field name="inherit_id" ref="stock.view_stock_quant_tree_inventory_editable"/>
+            <field eval="1000" name="priority"/>
+            <field name="arch" type="xml">
+                <field name="product_uom_id" position="after">
+                    <field name="lot_quantity" string="附加单位数量" sum="附加单位总数"/>
+                    <field name="lot_unit_name" string="附加单位类型"/>
+                    <field name="in_date" string="到货日期"/>
+                    <field name="o_note1" string="备注1"/>
+                    <field name="o_note2" string="备注2"/>
+                    <field name="contract_no" string="合同号"/>
+                </field>
+            </field>
+        </record>
+    </data>
+</odoo>

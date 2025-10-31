@@ -23,14 +23,20 @@
                                <field name="custom_location_id" 
                                       invisible="return_strategy != 'custom'"
                                       required="return_strategy == 'custom'"/>
+                               <field name="scrap_location_id" 
+                                      invisible="return_strategy != 'scrap'"
+                                      required="return_strategy == 'scrap'"/>
                                <field name="target_location_id" invisible="1"/>
                                <field name="location_name" readonly="1" invisible="not target_location_id"/>
                            </group>
                        </group>
                        
-                       <group string="剩余组件">
-                           <field name="component_line_ids" nolabel="1"/>
-                       </group>
+                   <group string="剩余组件">
+                       <field name="component_line_ids" nolabel="1" 
+                              widget="one2many_list"
+                              context="{'create': False, 'delete': False}"
+                              options="{'no_create': True, 'no_open': True}"/>
+                   </group>
                 
                 <group string="原因和备注">
                     <field name="return_reason_id" 
@@ -41,7 +47,7 @@
                     <field name="notes" placeholder="额外的处理说明..."/>
                 </group>
                 
-                <group string="处理选项" invisible="return_strategy == 'scrap'">
+                <group string="处理选项">
                     <field name="auto_confirm_picking"/>
                     <field name="send_notification"/>
                 </group>

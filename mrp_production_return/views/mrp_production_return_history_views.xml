@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 返回历史 List 视图 -->
+    <record id="mrp_production_return_history_view_tree" model="ir.ui.view">
+        <field name="name">mrp.production.return.history.tree</field>
+        <field name="model">mrp.production.return.history</field>
+        <field name="arch" type="xml">
+            <list string="返回历史">
+                <field name="processed_date" string="处理时间"/>
+                <field name="product_id" string="产品"/>
+                <field name="quantity" string="数量"/>
+                <field name="return_strategy" string="返回策略"/>
+                <field name="target_location_id" string="目标位置"/>
+                <field name="processed_by" string="处理人"/>
+                <field name="picking_id" string="调拨单" optional="hide"/>
+                <field name="scrap_id" string="报废单" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- 返回历史 Form 视图 -->
+    <record id="mrp_production_return_history_view_form" model="ir.ui.view">
+        <field name="name">mrp.production.return.history.form</field>
+        <field name="model">mrp.production.return.history</field>
+        <field name="arch" type="xml">
+            <form string="返回历史详情">
+                <sheet>
+                    <group>
+                        <group string="基本信息">
+                            <field name="production_id" string="制造订单"/>
+                            <field name="product_id" string="产品"/>
+                            <field name="quantity" string="数量"/>
+                            <field name="return_strategy" string="返回策略"/>
+                        </group>
+                        <group string="处理信息">
+                            <field name="processed_by" string="处理人"/>
+                            <field name="processed_date" string="处理时间"/>
+                            <field name="target_location_id" string="目标位置"/>
+                        </group>
+                    </group>
+                    
+                    <group string="原因和备注">
+                        <field name="return_reason_id" string="返回原因"/>
+                        <field name="custom_reason" string="自定义原因"/>
+                        <field name="notes" string="备注"/>
+                    </group>
+                    
+                    <group string="关联记录">
+                        <field name="picking_id" string="调拨单"/>
+                        <field name="move_id" string="库存移动"/>
+                        <field name="scrap_id" string="报废单"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- 返回历史 Action -->
+    <record id="action_mrp_production_return_history" model="ir.actions.act_window">
+        <field name="name">返回历史</field>
+        <field name="res_model">mrp.production.return.history</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                暂无返回历史记录
+            </p>
+            <p>
+                这里将显示制造订单剩余组件的处理历史记录。
+            </p>
+        </field>
+    </record>
+</odoo>
+

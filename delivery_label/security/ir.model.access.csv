@@ -1,6 +1,0 @@
-id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
-access_delivery_label_user,delivery.label.user,model_delivery_label,base.group_user,1,1,1,0
-access_delivery_label_manager,delivery.label.manager,model_delivery_label,stock.group_stock_manager,1,1,1,1
-access_delivery_label_template_user,delivery.label.template.user,model_delivery_label_template,base.group_user,1,0,0,0
-access_delivery_label_template_manager,delivery.label.template.manager,model_delivery_label_template,stock.group_stock_manager,1,1,1,1
-access_delivery_label_wizard_user,delivery.label.wizard.user,model_delivery_label_wizard,base.group_user,1,1,1,1

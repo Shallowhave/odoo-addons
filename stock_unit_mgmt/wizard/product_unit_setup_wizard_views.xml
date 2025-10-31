@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 快速单位设置向导表单视图 -->
+    <record id="view_product_unit_setup_wizard_form" model="ir.ui.view">
+        <field name="name">product.unit.setup.wizard.form</field>
+        <field name="model">product.unit.setup.wizard</field>
+        <field name="arch" type="xml">
+            <form string="快速单位设置">
+                <sheet>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="product_name" readonly="1" class="o_text_overflow"/>
+                        </h1>
+                        <h3>快速单位设置</h3>
+                    </div>
+                    
+                    <!-- 产品类型显示 -->
+                    <group>
+                        <field name="product_tmpl_id" invisible="1"/>
+                        <field name="is_finished_product" invisible="1"/>
+                    </group>
+                    
+                    <!-- 原料产品规格信息 -->
+                    <group string="产品规格信息" invisible="is_finished_product == True">
+                        <group>
+                            <field name="product_length" readonly="1"/>
+                            <field name="product_width" readonly="1"/>
+                            <field name="product_area" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="product_thickness" readonly="1"/>
+                        </group>
+                    </group>
+                    
+                    <!-- 成品产品规格信息 -->
+                    <group string="产品规格信息" invisible="is_finished_product == False">
+                        <group>
+                            <field name="product_width" readonly="1"/>
+                            <field name="product_thickness" readonly="1"/>
+                            <field name="finished_density" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="product_area" readonly="1" string="每米面积 (㎡/m)"/>
+                            <field name="weight_per_meter" readonly="1"/>
+                        </group>
+                    </group>
+                    
+                    <!-- 原料自动计算结果 -->
+                    <group string="自动计算结果 (以卷为基础)" invisible="is_finished_product == True">
+                        <group>
+                            <field name="meter_per_roll" readonly="1" 
+                                   invisible="meter_per_roll == 0"/>
+                            <field name="sqm_per_roll" readonly="1"
+                                   invisible="sqm_per_roll == 0"/>
+                        </group>
+                        <group>
+                            <field name="ton_per_roll" readonly="1"
+                                   invisible="ton_per_roll == 0"/>
+                        </group>
+                    </group>
+                    
+                    <!-- 成品自动计算结果 -->
+                    <group string="自动计算结果 (以米为基础)" invisible="is_finished_product == False">
+                        <field name="sqm_per_meter" readonly="1"/>
+                    </group>
+                    
+                    <!-- 原料采购单位选择 -->
+                    <group string="单位设置" invisible="is_finished_product == True">
+                        <field name="purchase_unit" widget="radio"/>
+                    </group>
+                    
+                    <!-- 成品单位说明 -->
+                    <group string="单位设置" invisible="is_finished_product == False">
+                        <div class="alert alert-info">
+                            <strong>成品单位系统：</strong><br/>
+                            • 基础单位：米<br/>
+                            • 次要单位：平米<br/>
+                            • 采购单位：平米（默认）
+                        </div>
+                    </group>
+                    
+                    <!-- 附加单位配置 -->
+                    <group string="附加单位配置">
+                        <group>
+                            <field name="enable_custom_units"/>
+                            <field name="default_unit_config" invisible="not enable_custom_units"/>
+                            <field name="quick_unit_name" invisible="default_unit_config != 'custom' or not enable_custom_units"/>
+                        </group>
+                        <div class="alert alert-info" invisible="not enable_custom_units">
+                            <strong>说明：</strong>附加单位用于库存移动时手动填写单位数量，如：收货时输入"10卷"、"5桶"等。
+                        </div>
+                    </group>
+                    
+                    <footer>
+                        <button name="action_setup_units" 
+                                type="object" 
+                                string="设置单位" 
+                                class="btn-primary"/>
+                        <button name="action_cancel" 
+                                string="取消" 
+                                type="object" 
+                                class="btn-secondary"/>
+                    </footer>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- 产品单位配置向导动作 -->
+    <record id="action_product_unit_setup_wizard" model="ir.actions.act_window">
+        <field name="name">快速单位设置</field>
+        <field name="res_model">product.unit.setup.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="view_id" ref="view_product_unit_setup_wizard_form"/>
+        <field name="binding_model_id" ref="product.model_product_template"/>
+    </record>
+</odoo>

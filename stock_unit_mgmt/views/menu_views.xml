@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <!-- 库存单位管理菜单 -->
+        <menuitem id="menu_inventory_unit_manager"
+                  name="库存单位管理"
+                  parent="stock.menu_stock_inventory_control"
+                  sequence="100"/>
+    </data>
+</odoo>

@@ -15,8 +15,9 @@ class MrpProductionReturnWizardLine(models.TransientModel):
     move_id = fields.Many2one(
         'stock.move',
         string='库存移动',
-        required=True,
-        readonly=True
+        required=True
+        # 注意：不在模型中设置 readonly，只在视图中设置
+        # 这样 default_get 创建记录时才能正常传递 move_id
     )
     product_id = fields.Many2one(
         'product.product',
@@ -64,3 +65,16 @@ class MrpProductionReturnWizardLine(models.TransientModel):
         if 'return_qty' in fields_list:
             res['return_qty'] = res.get('remaining_qty', 0)
         return res
+    
+    @api.model_create_multi
+    def create(self, vals_list):
+        """重写创建方法，过滤掉没有move_id的记录"""
+        # 只保留有 move_id 的记录（防止 Odoo 自动保存机制创建无效记录）
+        valid_vals_list = [vals for vals in vals_list if vals.get('move_id')]
+        
+        if not valid_vals_list:
+            # 如果没有有效记录，返回空记录集（不报错）
+            return self.browse()
+        
+        # 创建有效记录
+        return super().create(valid_vals_list)

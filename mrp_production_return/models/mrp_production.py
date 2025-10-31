@@ -28,26 +28,45 @@ class MrpProduction(models.Model):
         help='当前剩余组件种类数量'
     )
 
-    @api.depends('move_raw_ids')
+    def _get_unprocessed_remaining_components(self):
+        """获取未处理的剩余组件（复用方法，避免重复查询）"""
+        self.ensure_one()
+        
+        # 获取剩余组件
+        remaining_components = self.move_raw_ids.filtered(
+            lambda m: m.state in ('done', 'assigned', 'partially_available') 
+            and m.product_uom_qty > m.quantity
+        )
+        
+        if not remaining_components:
+            return self.env['stock.move']
+        
+        # 获取已处理的产品（只查询一次，通过 return_history_ids 关系）
+        processed_products = self.return_history_ids.mapped('product_id')
+        
+        # 过滤掉已处理的组件
+        if processed_products:
+            remaining_components = remaining_components.filtered(
+                lambda m: m.product_id not in processed_products
+            )
+        
+        return remaining_components
+
+    @api.depends('move_raw_ids', 'return_history_ids')
     def _compute_has_remaining_components(self):
         """计算是否有剩余组件"""
         for record in self:
-            # 检查是否有未完全消耗的组件
-            # 组件状态可能是 'done', 'assigned', 'partially_available'，且计划数量大于实际消耗数量
-            remaining_components = record.move_raw_ids.filtered(
-                lambda m: m.state in ('done', 'assigned', 'partially_available') and m.product_uom_qty > m.quantity
+            record.has_remaining_components = bool(
+                record._get_unprocessed_remaining_components()
             )
-            record.has_remaining_components = bool(remaining_components)
 
-    @api.depends('move_raw_ids')
+    @api.depends('move_raw_ids', 'return_history_ids')
     def _compute_remaining_components_count(self):
         """计算剩余组件数量"""
         for record in self:
-            # 计算未完全消耗的组件种类数量
-            remaining_components = record.move_raw_ids.filtered(
-                lambda m: m.state in ('done', 'assigned', 'partially_available') and m.product_uom_qty > m.quantity
+            record.remaining_components_count = len(
+                record._get_unprocessed_remaining_components()
             )
-            record.remaining_components_count = len(remaining_components)
 
     def button_mark_done(self):
         """重写完成制造订单方法，检查剩余组件"""
@@ -55,13 +74,22 @@ class MrpProduction(models.Model):
         
         # 检查是否是从"无欠单"按钮调用的
         skip_backorder = self.env.context.get('skip_backorder', False)
-        _logger.info(f"[DEBUG] skip_backorder 上下文: {skip_backorder}")
+        # 检查是否是从欠单向导调用的（Odoo在创建欠单时会设置 mo_ids_to_backorder）
+        mo_ids_to_backorder = self.env.context.get('mo_ids_to_backorder', [])
+        # 检查是否已经在处理剩余组件（防止递归）
+        processing_return = self.env.context.get('processing_return', False)
+        
+        _logger.info(f"[DEBUG] skip_backorder: {skip_backorder}, mo_ids_to_backorder: {mo_ids_to_backorder}, processing_return: {processing_return}")
+        
+        # 只有在"无欠单"且不是创建欠单且不在处理返回时才触发
+        # mo_ids_to_backorder 存在表示是"创建欠单"操作
+        should_check_remaining = skip_backorder and not mo_ids_to_backorder and not processing_return
         
         for record in self:
             _logger.info(f"[DEBUG] 处理制造订单: {record.name}")
             
-            # 只有在"无欠单"情况下才检查剩余组件
-            if skip_backorder:
+            # 只有在真正的"无欠单"情况下才检查剩余组件
+            if should_check_remaining:
                 # 调试信息：记录组件状态
                 _logger.info(f"[剩余组件检测] 制造订单 {record.name} 的组件状态:")
                 for move in record.move_raw_ids:
@@ -99,7 +127,7 @@ class MrpProduction(models.Model):
                 else:
                     _logger.info(f"[剩余组件检测] 没有剩余组件，直接完成制造订单")
             else:
-                _logger.info(f"[DEBUG] 非无欠单操作，直接调用原始方法")
+                _logger.info(f"[DEBUG] 非无欠单操作（创建欠单或其他），直接调用原始方法")
         
         # 如果没有剩余组件或不是无欠单操作，调用原始方法
         _logger.info(f"[DEBUG] 调用原始 button_mark_done 方法")
@@ -147,7 +175,7 @@ class MrpProduction(models.Model):
             'type': 'ir.actions.act_window',
             'name': f'返回历史 - {self.name}',
             'res_model': 'mrp.production.return.history',
-            'view_mode': 'tree,form',
+            'view_mode': 'list,form',
             'domain': [('production_id', '=', self.id)],
             'context': {'default_production_id': self.id},
         }

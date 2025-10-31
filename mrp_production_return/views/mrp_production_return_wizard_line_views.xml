@@ -5,13 +5,14 @@
         <field name="name">mrp.production.return.wizard.line.tree</field>
         <field name="model">mrp.production.return.wizard.line</field>
         <field name="arch" type="xml">
-            <list editable="bottom">
-                <field name="product_id" readonly="1"/>
-                <field name="product_uom_id" readonly="1"/>
-                <field name="expected_qty" readonly="1"/>
-                <field name="consumed_qty" readonly="1"/>
-                <field name="remaining_qty" readonly="1"/>
-                <field name="return_qty"/>
+            <list editable="bottom" create="0" delete="0">
+                <field name="move_id" column_invisible="1"/>
+                <field name="product_id" readonly="1" string="组件"/>
+                <field name="product_uom_id" readonly="1" string="单位"/>
+                <field name="expected_qty" readonly="1" string="计划数量"/>
+                <field name="consumed_qty" readonly="1" string="已消耗"/>
+                <field name="remaining_qty" readonly="1" string="剩余数量"/>
+                <field name="return_qty" string="返回/报废数量"/>
             </list>
         </field>
     </record>

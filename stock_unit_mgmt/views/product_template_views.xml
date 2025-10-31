@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <!-- 继承产品模板表单视图 -->
+        <record id="product_template_form_inherit_inventory_unit_manager" model="ir.ui.view">
+            <field name="name">product.template.form.inherit.inventory_unit_manager</field>
+            <field name="model">product.template</field>
+            <field name="inherit_id" ref="product.product_template_only_form_view"/>
+            <field name="arch" type="xml">
+                <!-- 添加快速单位设置按钮 -->
+                <xpath expr="//header" position="inside">
+                    <button name="action_quick_unit_setup" 
+                            type="object" 
+                            string="快速单位设置" 
+                            class="oe_highlight"
+                            icon="fa-cog"/>
+                </xpath>
+                
+                <!-- 在采购标签页添加附加单位配置 -->
+                <xpath expr="//page[@name='purchase']" position="inside">
+                    <group string="附加单位配置" col="2">
+                        <field name="enable_custom_units"/>
+                        <field name="default_unit_config" invisible="not enable_custom_units"/>
+                        <field name="quick_unit_name" invisible="default_unit_config != 'custom' or not enable_custom_units"/>
+                    </group>
+                </xpath>
+                
+                <!-- 在库存标签页添加安全库存配置 -->
+                <xpath expr="//page[@name='inventory']" position="inside">
+                    <group string="安全库存配置" col="2">
+                        <field name="safty_qty"/>
+                        <field name="safty_rule"/>
+                    </group>
+                </xpath>
+                
+                <!-- 添加产品属性标签页 -->
+                <xpath expr="//page[@name='inventory']" position="after">
+                    <page string="产品属性" name="product_attributes">
+                        <group>
+                            <group string="产品规格">
+                                <field name="product_width"/>
+                                <field name="product_length"/>
+                                <field name="product_thickness"/>
+                                <field name="finished_density"/>
+                                <field name="weight_per_sqm"/>
+                                <field name="solution_solid_content"/>
+                                <field name="solution_viscosity"/>
+                            </group>
+                        </group>
+                        
+                        <group>
+                            <group string="计算属性">
+                                <field name="product_area" readonly="1"/>
+                                <field name="product_volume" readonly="1"/>
+                                <field name="weight_per_meter"/>
+                            </group>
+                            <group/>
+                        </group>
+                    </page>
+                </xpath>
+
+                <!-- 移除 技术规格(通用) 页面 -->
+            </field>
+        </record>
+
+        <!-- 继承产品模板看板视图 - 只显示已填写的属性 -->
+        <record id="product_template_kanban_inherit_inventory_unit_manager" model="ir.ui.view">
+            <field name="name">product.template.kanban.inherit.inventory_unit_manager</field>
+            <field name="model">product.template</field>
+            <field name="inherit_id" ref="product.product_template_kanban_view"/>
+            <field name="arch" type="xml">
+                <!-- 隐藏价格显示 -->
+                <xpath expr="//span[field[@name='list_price']]" position="replace"/>
+                
+                <!-- 先声明需要的字段（隐藏原始显示） -->
+                <field name="product_properties" position="before">
+                    <field name="product_width" invisible="1"/>
+                    <field name="product_length" invisible="1"/>
+                    <field name="product_thickness" invisible="1"/>
+                    <field name="finished_density" invisible="1"/>
+                    <field name="weight_per_sqm" invisible="1"/>
+                    <field name="solution_solid_content" invisible="1"/>
+                    <field name="solution_viscosity" invisible="1"/>
+                    <field name="product_area" invisible="1"/>
+                    <field name="product_volume" invisible="1"/>
+                    <field name="weight_per_meter" invisible="1"/>
+                    <field name="enable_custom_units" invisible="1"/>
+                    <field name="total_lot_quantity" invisible="1"/>
+                    <field name="default_unit_config" invisible="1"/>
+                    <field name="quick_unit_name" invisible="1"/>
+                    <field name="o_note" invisible="1"/>
+                    <field name="safty_qty" invisible="1"/>
+                    <field name="is_safty" invisible="1"/>
+                </field>
+                
+                <xpath expr="//field[@name='product_properties']" position="after">
+                    <!-- 产品尺寸属性 -->
+                    <div t-if="record.product_width.raw_value or record.product_length.raw_value or record.product_thickness.raw_value">
+                        <strong>尺寸:</strong>
+                        <span t-if="record.product_width.raw_value">宽<field name="product_width"/>mm</span>
+                        <span t-if="record.product_length.raw_value"> × 长<field name="product_length"/>m</span>
+                        <span t-if="record.product_thickness.raw_value"> × 厚<field name="product_thickness"/>μm</span>
+                    </div>
+                    
+                    <!-- 材料属性 -->
+                    <div t-if="record.finished_density.raw_value">
+                        <strong>密度:</strong> <field name="finished_density"/>g/cm³
+                    </div>
+                    <div t-if="record.weight_per_sqm.raw_value">
+                        <strong>重量系数:</strong> <field name="weight_per_sqm"/>g/㎡
+                    </div>
+                    <div t-if="record.solution_solid_content.raw_value">
+                        <strong>固含:</strong> <field name="solution_solid_content"/>%
+                    </div>
+                    <div t-if="record.solution_viscosity.raw_value">
+                        <strong>粘度:</strong> <field name="solution_viscosity"/>
+                    </div>
+                    
+                    <!-- 计算属性 -->
+                    <div t-if="record.product_area.raw_value">
+                        <strong>面积:</strong> <field name="product_area"/>㎡
+                    </div>
+                    <div t-if="record.product_volume.raw_value">
+                        <strong>体积:</strong> <field name="product_volume"/>cm³
+                    </div>
+                    <div t-if="record.weight_per_meter.raw_value">
+                        <strong>单位重量:</strong> <field name="weight_per_meter"/>kg/m²
+                    </div>
+                    
+                    <!-- 附加单位库存 -->
+                    <div t-if="record.enable_custom_units.raw_value and record.total_lot_quantity.raw_value">
+                        <strong>附加单位在手:</strong> 
+                        <field name="total_lot_quantity"/>
+                        <t t-if="record.default_unit_config.raw_value != 'custom'">
+                            <t t-if="record.default_unit_config.raw_value == 'kg'">公斤</t>
+                            <t t-if="record.default_unit_config.raw_value == 'roll'">卷</t>
+                            <t t-if="record.default_unit_config.raw_value == 'barrel'">桶</t>
+                            <t t-if="record.default_unit_config.raw_value == 'box'">箱</t>
+                            <t t-if="record.default_unit_config.raw_value == 'bag'">袋</t>
+                            <t t-if="record.default_unit_config.raw_value == 'sqm'">㎡</t>
+                        </t>
+                        <t t-if="record.default_unit_config.raw_value == 'custom' and record.quick_unit_name.raw_value">
+                            <field name="quick_unit_name"/>
+                        </t>
+                    </div>
+                    
+                    <!-- 备注统计 -->
+                    <div t-if="record.o_note.raw_value">
+                        <strong>备注统计:</strong> <field name="o_note"/>
+                    </div>
+                    
+                    <!-- 安全库存 -->
+                    <div t-if="record.safty_qty.raw_value">
+                        <strong>安全库存:</strong> <field name="safty_qty"/>
+                        <span t-if="record.is_safty.raw_value" class="badge bg-success">安全</span>
+                        <span t-else="" class="badge bg-danger">不足</span>
+                    </div>
+                </xpath>
+            </field>
+        </record>
+    </data>
+</odoo>

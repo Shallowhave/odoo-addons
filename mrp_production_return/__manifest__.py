@@ -37,6 +37,7 @@
         'views/mrp_production_views.xml',
         'views/mrp_production_return_wizard_views.xml',
         'views/mrp_production_return_wizard_line_views.xml',
+        'views/mrp_production_return_history_views.xml',
         'views/mrp_consumption_warning_views.xml',
     ],
     'installable': True,

@@ -10,7 +10,7 @@
       <field name="arch" type="xml">
         <xpath expr="//field[@name='lot_id']" position="after">
           <field name="lot_unit_name" string="自定义单位"/>
-          <field name="lot_quantity" string="单位数量"/>
+          <field name="lot_quantity" string="单位数量" sum="total"/>
         </xpath>
       </field>
     </record>
@@ -39,7 +39,7 @@
       <field name="arch" type="xml">
         <xpath expr="//field[@name='lot_id']" position="after">
           <field name="lot_unit_name" string="自定义单位"/>
-          <field name="lot_quantity" string="单位数量"/>
+          <field name="lot_quantity" string="单位数量" sum="total"/>
         </xpath>
       </field>
     </record>
