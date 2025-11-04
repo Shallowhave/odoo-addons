@@ -81,10 +81,9 @@ class MrpProduction(models.Model):
     def _generate_batch_number(self):
         """
         优化后的批次号生成逻辑
-        批次号格式：{PREFIX}YYMMDDHHMMAxx[-X]
-        - 同一制造单第一次注册生产：主批次
-        - 欠单（同一 origin）：延续主批次，加 -2/-3
-        - 不同制造单：Axx 递增
+        批次号格式：{PREFIX}YYMMDDHHMMAxx
+        - 每个制造单（包括欠单）都生成独立的主批次号
+        - 不再生成分卷批次号（-x后缀）
         """
         try:
             utc_now = fields.Datetime.now()
@@ -96,21 +95,11 @@ class MrpProduction(models.Model):
             time_str = user_dt.strftime('%H%M')
             Lot = self.env['stock.lot']
 
-            # 首先检查是否是欠单
-            if self._is_backorder():
-                # 是欠单，查找主批次
-                main_lot_for_origin = self._find_main_lot_for_production(Lot)
-                if main_lot_for_origin:
-                    # 找到主批次 → 生成分卷
-                    return self._generate_sub_batch(main_lot_for_origin.name, Lot)
-                else:
-                    # 没找到主批次，按新批次处理
-                    if self._is_logging_enabled():
-                        _logger.warning("[自动批次] 欠单 %s 未找到主批次，按新批次处理", self.name)
-                    return self._generate_main_batch(prefix, date_str, time_str, Lot)
-            else:
-                # 不是欠单，直接生成新的主批次
-                return self._generate_main_batch(prefix, date_str, time_str, Lot)
+            # 所有订单都生成独立的主批次号（包括欠单）
+            if self._is_logging_enabled():
+                _logger.info("[自动批次] 为制造单 %s 生成独立批次号", self.name)
+            
+            return self._generate_main_batch(prefix, date_str, time_str, Lot)
                 
         except Exception as e:
             _logger.error("[AutoBatch] 生成批次号失败: %s", str(e))
@@ -126,22 +115,32 @@ class MrpProduction(models.Model):
             ('company_id', '=', self.company_id.id)
         ])
         
-        # 提取已使用的序列号
+        # 提取已使用的序列号（支持2位数和3位数）
         used_sequences = set()
         for lot in existing_lots:
-            match = re.match(rf"^{re.escape(prefix)}\d{{6}}\d{{0,4}}A(\d{{2}})$", lot.name)
+            # 匹配 A01-A99 (2位数) 和 A100-A999 (3位数)
+            match = re.match(rf"^{re.escape(prefix)}\d{{6}}\d{{0,4}}A(\d{{2,3}})$", lot.name)
             if match:
                 used_sequences.add(int(match.group(1)))
         
-        # 找到下一个可用序列号
+        # 找到下一个可用序列号（从1开始，可以超过99）
         next_seq = 1
-        while next_seq in used_sequences and next_seq < 99:
+        max_retries = 999  # 最大支持到 A999
+        retry_count = 0
+        
+        while next_seq in used_sequences and retry_count < max_retries:
             next_seq += 1
+            retry_count += 1
             
-        if next_seq >= 99:
-            raise UserError("当日批次号已满，请明天再试")
-            
-        lot_name = f"{prefix}{date_str}{time_str}A{next_seq:02d}"
+        if retry_count >= max_retries:
+            raise UserError(f"当日批次号序列已用完（已尝试到 {next_seq}），请明天再试")
+        
+        # 根据序列号位数格式化（A01-A99 用2位数，A100及以上用3位数）
+        if next_seq <= 99:
+            lot_name = f"{prefix}{date_str}{time_str}A{next_seq:02d}"
+        else:
+            lot_name = f"{prefix}{date_str}{time_str}A{next_seq:03d}"
+        
         if self._is_logging_enabled():
             _logger.info("[自动批次] 生成主批次号：%s", lot_name)
         return lot_name

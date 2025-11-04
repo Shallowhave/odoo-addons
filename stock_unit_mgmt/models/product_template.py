@@ -3,6 +3,8 @@
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError
 
+from . import utils
+
 
 class ProductTemplate(models.Model):
     _inherit = 'product.template'
@@ -26,9 +28,9 @@ class ProductTemplate(models.Model):
 
     # 成品专用字段：材料密度（成品单独使用）
     finished_density = fields.Float(
-        string="材料密度 (g/cm³)",
-        help="成品材料密度，单位：克/立方厘米（如：PE=0.92, PET=1.38, PP=0.90）",
-        digits=(12, 3)
+        string="材料密度 (kg/cm³)",
+        help="成品材料密度，单位：千克/立方厘米（如：PE=0.00092, PET=0.00138, PP=0.00090）",
+        digits=(12, 6)
     )
 
     # 配液原料专用字段
@@ -154,11 +156,11 @@ class ProductTemplate(models.Model):
     def _compute_o_note(self):
         """计算备注卷数"""
         for product in self:
-            quants = self.env['stock.quant'].sudo().search([
-                ('product_tmpl_id', '=', product.id), 
-                ('location_id.usage', '=', 'internal'),
-                ('quantity', '>', 0)
-            ])
+            # 优化：直接使用已加载的 stock_quant_ids，避免重复查询
+            all_quants = product.product_variant_ids.mapped('stock_quant_ids')
+            quants = all_quants.filtered(
+                lambda q: q.location_id.usage == 'internal' and q.quantity > 0
+            )
             # 收集所有备注1和备注2的内容
             all_notes = []
             for quant in quants:
@@ -189,11 +191,9 @@ class ProductTemplate(models.Model):
                 product.is_safty = True
                 continue
                 
-            # 根据安全库存规则计算可用数量
-            quants = self.env['stock.quant'].sudo().search([
-                ('product_tmpl_id', '=', product.id), 
-                ('location_id.usage', '=', 'internal')
-            ])
+            # 优化：直接使用已加载的 stock_quant_ids，避免重复查询
+            all_quants = product.product_variant_ids.mapped('stock_quant_ids')
+            quants = all_quants.filtered(lambda q: q.location_id.usage == 'internal')
             
             qty = 0
             if product.safty_rule == 'all':
@@ -215,10 +215,9 @@ class ProductTemplate(models.Model):
     def _compute_lot_weight(self):
         """计算库存重量和数量统计"""
         for product in self:
-            quants = self.env['stock.quant'].sudo().search([
-                ('product_tmpl_id', '=', product.id),
-                ('location_id.usage', '=', 'internal')
-            ])
+            # 优化：直接使用已加载的 stock_quant_ids，避免重复查询
+            all_quants = product.product_variant_ids.mapped('stock_quant_ids')
+            quants = all_quants.filtered(lambda q: q.location_id.usage == 'internal')
             if quants:
                 # lot_weight 字段保留但可能在其他模块中定义，使用 hasattr 检查
                 product.lot_weight = sum(q.lot_weight for q in quants if hasattr(q, 'lot_weight') and q.lot_weight) or 0.0
@@ -255,17 +254,7 @@ class ProductTemplate(models.Model):
 
     def _get_unit_display_name(self, unit_code):
         """获取单位显示名称"""
-        unit_map = {
-            'kg': '公斤(kg)',
-            'roll': '卷',
-            'barrel': '桶',
-            'box': '箱',
-            'bag': '袋',
-            'sqm': '平方米(㎡)',
-            'piece': '件',
-            'custom': '自定义'
-        }
-        return unit_map.get(unit_code, unit_code)
+        return utils.get_unit_display_name(unit_code)
     
     def action_quick_unit_setup(self):
         """打开快速单位设置向导"""
@@ -319,12 +308,11 @@ class ProductTemplate(models.Model):
                 template.total_lot_quantity = 0.0
                 continue
             
-            # 获取该产品所有的库存批次
-            quants = self.env['stock.quant'].search([
-                ('product_tmpl_id', '=', template.id),
-                ('location_id.usage', '=', 'internal'),
-                ('quantity', '>', 0)
-            ])
+            # 优化：直接使用已加载的 stock_quant_ids，避免重复查询
+            all_quants = template.product_variant_ids.mapped('stock_quant_ids')
+            quants = all_quants.filtered(
+                lambda q: q.location_id.usage == 'internal' and q.quantity > 0
+            )
             
             total = sum(quants.mapped('lot_quantity') or [0.0])
             template.total_lot_quantity = total if total else 0.0

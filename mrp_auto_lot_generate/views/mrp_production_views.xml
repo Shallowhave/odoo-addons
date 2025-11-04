@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 确保批次号字段可以手动修改 -->
+    <record id="view_production_form_auto_lot_generate" model="ir.ui.view">
+        <field name="name">mrp.production.form.auto.lot.generate</field>
+        <field name="model">mrp.production</field>
+        <field name="inherit_id" ref="mrp.mrp_production_form_view"/>
+        <field name="arch" type="xml">
+            <!-- Ensure lot_producing_id field can be manually edited even after auto-generation -->
+            <xpath expr="//field[@name='lot_producing_id']" position="attributes">
+                <attribute name="readonly">0</attribute>
+                <attribute name="required">0</attribute>
+            </xpath>
+        </field>
+    </record>
+</odoo>
+

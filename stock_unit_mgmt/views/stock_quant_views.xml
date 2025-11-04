@@ -10,6 +10,7 @@
             <field name="arch" type="xml">
                 <!-- 在"单位"字段后添加附加单位信息和其他扩展字段 -->
                 <field name="product_uom_id" position="after">
+                    <field name="calculated_length_m" string="计算长度 (m)" sum="计算长度 (m)"/>
                     <field name="lot_quantity" string="附加单位数量" sum="附加单位总数"/>
                     <field name="lot_unit_name" string="附加单位类型" optional="show"/>
                     <field name="in_date" string="到货日期" optional="show"/>
@@ -29,6 +30,7 @@
             <field name="arch" type="xml">
                 <!-- 在"单位"字段后添加附加单位信息和其他扩展字段 -->
                 <field name="product_uom_id" position="after">
+                    <field name="calculated_length_m" string="计算长度 (m)" sum="计算长度 (m)"/>
                     <field name="lot_quantity" string="附加单位数量" sum="附加单位总数"/>
                     <field name="lot_unit_name" string="附加单位类型" optional="show"/>
                     <field name="in_date" string="到货日期" optional="show"/>
@@ -48,6 +50,7 @@
             <field name="arch" type="xml">
                 <!-- 在"单位"字段后添加附加单位信息和其他扩展字段 -->
                 <field name="product_uom_id" position="after">
+                    <field name="calculated_length_m" string="计算长度 (m)" sum="计算长度 (m)"/>
                     <field name="lot_quantity" string="附加单位数量" sum="附加单位总数"/>
                     <field name="lot_unit_name" string="附加单位类型" optional="show"/>
                     <field name="in_date" string="到货日期" optional="show"/>
@@ -81,6 +84,7 @@
             <field eval="1000" name="priority"/>
             <field name="arch" type="xml">
                 <field name="product_uom_id" position="after">
+                    <field name="calculated_length_m" string="计算长度 (m)" sum="计算长度 (m)"/>
                     <field name="lot_quantity" string="附加单位数量" sum="附加单位总数"/>
                     <field name="lot_unit_name" string="附加单位类型"/>
                     <field name="in_date" string="到货日期"/>

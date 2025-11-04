@@ -3,6 +3,8 @@
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError, ValidationError
 
+from ..models import utils
+
 
 class ProductUnitSetupWizard(models.TransientModel):
     _name = 'product.unit.setup.wizard'
@@ -36,10 +38,10 @@ class ProductUnitSetupWizard(models.TransientModel):
         readonly=True
     )
     finished_density = fields.Float(
-        string='材料密度 (g/cm³)',
+        string='材料密度 (kg/cm³)',
         related='product_tmpl_id.finished_density',
         readonly=True,
-        digits=(12, 3)
+        digits=(12, 6)
     )
     product_area = fields.Float(
         string='产品面积 (㎡)',
@@ -208,8 +210,8 @@ class ProductUnitSetupWizard(models.TransientModel):
                     thickness_m = wizard.product_thickness / 1000000.0  # μm → m
                     volume_m3 = length_m * width_m * thickness_m
                     
-                    # 密度 g/cm³ = 1000 kg/m³，转换为吨/m³
-                    density_kg_m3 = wizard.finished_density * 1000
+                    # 密度 kg/cm³ = 1000000 kg/m³，转换为吨/m³
+                    density_kg_m3 = wizard.finished_density * 1000000
                     weight_kg = volume_m3 * density_kg_m3
                     wizard.ton_per_roll = round(weight_kg / 1000.0, 6)  # kg → 吨
                 else:
@@ -491,16 +493,7 @@ class ProductUnitSetupWizard(models.TransientModel):
 
     def _get_unit_display_name(self):
         """获取单位显示名称"""
-        unit_map = {
-            'kg': '公斤(kg)',
-            'roll': '卷',
-            'barrel': '桶',
-            'box': '箱',
-            'bag': '袋',
-            'sqm': '平方米(㎡)',
-            'custom': '自定义'
-        }
-        return unit_map.get(self.default_unit_config, self.default_unit_config)
+        return utils.get_unit_display_name(self.default_unit_config)
 
     def action_cancel(self):
         """取消设置"""

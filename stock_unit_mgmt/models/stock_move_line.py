@@ -3,6 +3,8 @@
 from odoo import models, fields, api
 from re import findall as regex_findall
 
+from . import utils
+
 
 class StockMoveLine(models.Model):
     _inherit = 'stock.move.line'
@@ -178,17 +180,7 @@ class StockMoveLine(models.Model):
 
     def _get_unit_display_name(self, unit_code):
         """获取单位显示名称"""
-        unit_map = {
-            'kg': '公斤(kg)',
-            'roll': '卷',
-            'barrel': '桶',
-            'box': '箱',
-            'bag': '袋',
-            'sqm': '平方米(㎡)',
-            'piece': '件',
-            'custom': '自定义'
-        }
-        return unit_map.get(unit_code, unit_code)
+        return utils.get_unit_display_name(unit_code)
 
     @api.onchange('lot_name')
     def _onchange_lot_name(self):

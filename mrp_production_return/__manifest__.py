@@ -29,7 +29,7 @@
     'author': 'memory',
     'website': 'https://www.example.com',
     'category': 'Manufacturing/Inventory',
-    'depends': ['mrp', 'stock', 'stock_account'],
+    'depends': ['mrp', 'stock', 'stock_account', 'stock_unit_mgmt'],
     'data': [
         'security/ir.model.access.csv',
         'security/security.xml',

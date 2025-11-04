@@ -12,7 +12,7 @@
         • 库存移动行记录单位名称与单位数量
         • 库存数量视图展示并汇总单位数量
     """,
-    'author': 'Grit',
+    'author': 'memory',
     'website': 'https://ifangtech.com',
     'category': 'Inventory/Inventory',
     'depends': [

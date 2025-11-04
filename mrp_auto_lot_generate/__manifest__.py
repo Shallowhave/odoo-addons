@@ -14,6 +14,7 @@
     'depends': ['mrp', 'stock'],
     'data': [
         'views/res_config_settings_views.xml',
+        'views/mrp_production_views.xml',
     ],
     'installable': True,
     'application': False,

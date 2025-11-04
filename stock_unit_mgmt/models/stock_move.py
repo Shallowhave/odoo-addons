@@ -29,25 +29,27 @@ class StockMove(models.Model):
         """完成库存移动时，将单位信息传递到库存数量记录"""
         result = super()._action_done(cancel_backorder)
         
+        # 收集需要更新计算的 stock_quant 记录
+        quants_to_recompute = self.env['stock.quant']
+        
         for move in self:
             for move_line in move.move_line_ids:
-                if move_line.lot_quantity:
+                if move_line.lot_id and move_line.lot_quantity:
+                    # 查找相关的 stock_quant 记录（包括源位置和目标位置）
                     quants = self.env['stock.quant'].search([
                         ('product_id', '=', move_line.product_id.id),
                         ('lot_id', '=', move_line.lot_id.id),
-                        ('location_id', '=', move_line.location_dest_id.id),
                         ('owner_id', '=', move_line.owner_id.id),
                     ])
-
-                    for quant in quants:
-                        candidate_vals = {
-                            'lot_unit_name': move_line.lot_unit_name,
-                            'lot_unit_name_custom': move_line.lot_unit_name_custom,
-                            'lot_quantity': move_line.lot_quantity,
-                        }
-                        update_vals = {k: v for k, v in candidate_vals.items() if hasattr(quant, k)}
-                        if update_vals:
-                            quant.write(update_vals)
+                    
+                    # 添加到需要重新计算的列表
+                    quants_to_recompute |= quants
+        
+        # 触发所有相关的 stock_quant 重新计算
+        if quants_to_recompute:
+            # 批量触发计算字段重新计算（优化性能）
+            quants_to_recompute.invalidate_recordset(['lot_quantity', 'lot_unit_name', 'lot_unit_name_custom'])
+            quants_to_recompute._compute_lot_unit_info()
         
         return result
 
