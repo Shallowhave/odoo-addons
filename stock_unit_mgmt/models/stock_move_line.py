@@ -54,6 +54,12 @@ class StockMoveLine(models.Model):
         default=0,
         index=True
     )
+    
+    # 合同号字段（从制造订单获取）
+    contract_no = fields.Char(
+        string='合同号',
+        help='合同号，从制造订单自动获取'
+    )
 
     @api.model
     def _get_lot_unit_name_selection(self):
@@ -837,6 +843,32 @@ class StockMoveLine(models.Model):
             # 无法访问 request 或没有请求上下文，跳过扫描顺序设置
             _logger.debug(f"[批次号创建] 无法访问 request，跳过扫描顺序设置: {str(e)}")
         
+        # **关键修复**：从制造订单获取合同号
+        # 为每个要创建的记录从制造订单获取合同号
+        for vals in vals_list:
+            move_id = vals.get('move_id')
+            if move_id and not vals.get('contract_no'):
+                try:
+                    move = self.env['stock.move'].browse(move_id)
+                    if move.exists():
+                        # 优先从成品制造订单获取（production_id）
+                        # 如果没有，则从原材料制造订单获取（raw_material_production_id）
+                        contract_no = None
+                        if move.production_id and move.production_id.contract_no:
+                            contract_no = move.production_id.contract_no
+                        elif move.raw_material_production_id and move.raw_material_production_id.contract_no:
+                            contract_no = move.raw_material_production_id.contract_no
+                        
+                        if contract_no:
+                            vals['contract_no'] = contract_no
+                            _logger.info(
+                                f"[合同号创建] 从制造订单获取合同号: move_id={move_id}, "
+                                f"合同号={contract_no}, production_id={move.production_id.id if move.production_id else None}, "
+                                f"raw_material_production_id={move.raw_material_production_id.id if move.raw_material_production_id else None}"
+                            )
+                except Exception as e:
+                    _logger.warning(f"[合同号创建] 从制造订单获取合同号时出错: {str(e)}")
+        
         # **关键修复**：检查是否是扫码操作
         is_barcode_scan = (
             self.env.context.get('barcode_view') or
@@ -1204,6 +1236,44 @@ class StockMoveLine(models.Model):
                             break
                 except Exception:
                     pass
+        
+        # **关键修复**：从制造订单获取合同号（如果 vals 中没有合同号）
+        # 如果 vals 中没有合同号，尝试从制造订单获取
+        # 注意：如果 self 中有多个记录，它们可能来自不同的制造订单，需要分别处理
+        if 'contract_no' not in vals:
+            # 收集所有需要设置合同号的记录
+            records_to_update = []
+            for record in self:
+                if record.exists() and record.move_id:
+                    try:
+                        move = record.move_id
+                        # 优先从成品制造订单获取（production_id）
+                        # 如果没有，则从原材料制造订单获取（raw_material_production_id）
+                        contract_no = None
+                        if move.production_id and move.production_id.contract_no:
+                            contract_no = move.production_id.contract_no
+                        elif move.raw_material_production_id and move.raw_material_production_id.contract_no:
+                            contract_no = move.raw_material_production_id.contract_no
+                        
+                        if contract_no and contract_no != record.contract_no:
+                            # 只有在合同号不同时才更新
+                            records_to_update.append((record, contract_no))
+                            _logger.info(
+                                f"[合同号更新] 从制造订单获取合同号: record_id={record.id}, move_id={move.id}, "
+                                f"合同号={contract_no}, production_id={move.production_id.id if move.production_id else None}, "
+                                f"raw_material_production_id={move.raw_material_production_id.id if move.raw_material_production_id else None}"
+                            )
+                    except Exception as e:
+                        _logger.warning(f"[合同号更新] 从制造订单获取合同号时出错: {str(e)}")
+            
+            # 如果只有一个记录需要更新，且所有记录都来自同一个制造订单，则统一设置
+            if records_to_update:
+                # 检查所有记录是否来自同一个制造订单（同一个 move_id 或同一个制造订单）
+                if len(records_to_update) == 1 or len(set([r[1] for r in records_to_update])) == 1:
+                    # 所有记录都有相同的合同号，统一设置
+                    vals['contract_no'] = records_to_update[0][1]
+                # 如果有多个记录但合同号不同，需要在 write 后单独处理
+                # 这种情况比较少见，暂时不处理
         
         # **关键修复**：在批次号验证之前，先检查每个记录是否已经有包裹
         # 这样可以提前检测到包裹操作，避免在循环中重复检测

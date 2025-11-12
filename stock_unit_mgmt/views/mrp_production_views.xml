@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 扩展制造订单表单视图，添加合同号字段 -->
+    <record id="view_mrp_production_form_inherit_stock_unit_mgmt" model="ir.ui.view">
+        <field name="name">mrp.production.form.inherit.stock_unit_mgmt</field>
+        <field name="model">mrp.production</field>
+        <field name="inherit_id" ref="mrp.mrp_production_form_view"/>
+        <field name="arch" type="xml">
+            <!-- 在物料清单（notebook）之前添加合同号字段 -->
+            <!-- 合同号字段将显示在物料清单标签页（组件、工单、副产品等）之前 -->
+            <!-- 使用sheet//notebook确保只匹配表单视图中的notebook，避免匹配子视图 -->
+            <!-- 使用group包装，确保字段正确显示，只有一个字段应该只显示一个标签 -->
+            <xpath expr="//sheet//notebook" position="before">
+                <group>
+                    <field name="contract_no"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+    
+    <!-- 暂时注释掉列表视图扩展，等表单视图通过后再添加 -->
+    <!--
+    <record id="view_mrp_production_tree_inherit_stock_unit_mgmt" model="ir.ui.view">
+        <field name="name">mrp.production.tree.inherit.stock_unit_mgmt</field>
+        <field name="model">mrp.production</field>
+        <field name="inherit_id" ref="mrp.mrp_production_tree_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//tree/field[last()]" position="after">
+                <field name="contract_no" string="合同号" optional="hide"/>
+            </xpath>
+        </field>
+    </record>
+    -->
+</odoo>
+

@@ -78,7 +78,8 @@ class StockMove(models.Model):
         # 触发所有相关的 stock_quant 重新计算
         if quants_to_recompute:
             # 批量触发计算字段重新计算（优化性能）
-            quants_to_recompute.invalidate_recordset(['lot_quantity', 'lot_unit_name', 'lot_unit_name_custom'])
+            # **关键修复**：添加 contract_no 到无效化字段列表，确保合同号也会重新计算
+            quants_to_recompute.invalidate_recordset(['lot_quantity', 'lot_unit_name', 'lot_unit_name_custom', 'contract_no'])
             quants_to_recompute._compute_lot_unit_info()
         
         return result

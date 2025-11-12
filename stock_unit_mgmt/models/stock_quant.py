@@ -260,6 +260,27 @@ class StockQuant(models.Model):
                         quant.lot_unit_name = False
                         quant.lot_unit_name_custom = False
                 
+                # **关键修复**：从移动行获取合同号
+                # 优先从入库移动行获取，如果没有则从出库移动行获取
+                if incoming_move_lines:
+                    # 从入库移动行获取合同号（优先最新的）
+                    latest_incoming = incoming_move_lines.sorted(key='id', reverse=True)[:1]
+                    if latest_incoming and latest_incoming.contract_no:
+                        quant.contract_no = latest_incoming.contract_no
+                    elif relevant_move_lines:
+                        # 如果入库移动行没有合同号，尝试从所有移动行获取
+                        latest_all = relevant_move_lines.sorted(key='id', reverse=True)[:1]
+                        if latest_all and latest_all.contract_no:
+                            quant.contract_no = latest_all.contract_no
+                        else:
+                            # 如果所有移动行都没有合同号，保持原值或设为 False
+                            pass
+                elif relevant_move_lines:
+                    # 如果没有入库移动行，尝试从所有移动行获取
+                    latest_all = relevant_move_lines.sorted(key='id', reverse=True)[:1]
+                    if latest_all and latest_all.contract_no:
+                        quant.contract_no = latest_all.contract_no
+                
                 # 设置单位数量（确保不为负数）
                 quant.lot_quantity = max(0.0, current_lot_quantity)
             except Exception as e:
