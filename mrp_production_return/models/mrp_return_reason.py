@@ -36,9 +36,9 @@ class MrpReturnReason(models.Model):
         help='是否启用此原因'
     )
     return_strategy = fields.Selection([
+        ('before', '返回至生产前'),
+        ('after', '返回至生产后'),
         ('defective', '返回至不良品仓'),
-        ('main', '返回至主仓库'),
-        ('custom', '返回至自定义位置'),
         ('scrap', '报废处理'),
     ], string='适用策略', help='此原因适用的返回策略')
     
@@ -75,7 +75,7 @@ class MrpReturnReason(models.Model):
                 'name': '生产过剩',
                 'code': 'OVER_PRODUCTION',
                 'description': '生产数量超过需求',
-                'return_strategy': 'main',
+                'return_strategy': 'defective',
             },
             {
                 'name': '设备故障',
@@ -93,6 +93,6 @@ class MrpReturnReason(models.Model):
                 'name': '工艺调整',
                 'code': 'PROCESS_ADJUSTMENT',
                 'description': '生产工艺需要调整',
-                'return_strategy': 'custom',
+                'return_strategy': 'before',
             },
         ]

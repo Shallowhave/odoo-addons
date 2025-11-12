@@ -28,8 +28,8 @@ class ProductTemplate(models.Model):
 
     # 成品专用字段：材料密度（成品单独使用）
     finished_density = fields.Float(
-        string="材料密度 (kg/cm³)",
-        help="成品材料密度，单位：千克/立方厘米（如：PE=0.00092, PET=0.00138, PP=0.00090）",
+        string="材料密度 (g/cm³)",
+        help="成品材料密度，单位：克/立方厘米（如：PE=0.92, PET=1.38, PP=0.90）",
         digits=(12, 6)
     )
 
@@ -48,8 +48,8 @@ class ProductTemplate(models.Model):
     
     # 成品膜专用字段：发货重量系数
     weight_per_sqm = fields.Float(
-        string="发货重量系数 (g/㎡)",
-        help="成品膜发货时的重量系数，单位：克/平方米。用于计算发货重量 = 面积 × 重量系数",
+        string="发货重量系数 (kg/㎡)",
+        help="成品膜发货时的重量系数，单位：千克/平方米。用于计算发货重量 = 面积 × 重量系数",
         digits=(12, 2)
     )
 

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 扩展作业类型视图，添加增强条码验证配置选项 -->
+    <record id="view_picking_type_form_enhanced_barcode" model="ir.ui.view">
+        <field name="name">stock.picking.type.form.enhanced.barcode</field>
+        <field name="model">stock.picking.type</field>
+        <field name="inherit_id" ref="stock_barcode.stock_barcode_view_picking_type_form"/>
+        <field name="arch" type="xml">
+            <!-- 在选项（Options）组中添加增强条码验证选项 -->
+            <!-- 注意：barcode_options 组在条码应用（barcode_app）页面中 -->
+            <xpath expr="//group[@name='barcode_options']/field[@name='barcode_allow_extra_product']" position="after">
+                <field name="enable_enhanced_barcode_validation" 
+                       string="启用增强条码验证"
+                       help="启用后，在条码应用中会执行增强的验证功能：&#10;• 验证扫码的批次号必须与预填的批次号匹配&#10;• 验证批次号列表是否一致&#10;• 验证数量是否一致（允许0.01的误差）&#10;• 检测重复扫描并提示"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>
+

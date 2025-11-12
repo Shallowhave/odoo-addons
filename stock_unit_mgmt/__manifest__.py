@@ -19,6 +19,7 @@
         'base',
         'product', 
         'stock',
+        'stock_barcode',
         'uom',
         'purchase',
         'sale'
@@ -29,6 +30,7 @@
         'views/product_template_views.xml',
         'views/stock_move_views.xml',
         'views/stock_quant_views.xml',
+        'views/stock_picking_type_views.xml',
         'wizard/product_unit_setup_wizard_views.xml',
         'views/menu_views.xml',
     ],

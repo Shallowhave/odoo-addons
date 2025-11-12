@@ -34,16 +34,46 @@ class StockMove(models.Model):
         
         for move in self:
             for move_line in move.move_line_ids:
-                if move_line.lot_id and move_line.lot_quantity:
-                    # 查找相关的 stock_quant 记录（包括源位置和目标位置）
-                    quants = self.env['stock.quant'].search([
+                # 只要有批次号就触发重新计算，即使 lot_quantity 为空
+                # 因为 lot_quantity 可能在扫码时填写，需要重新计算
+                if move_line.lot_id:
+                    # 查找相关的 stock_quant 记录
+                    # 优先匹配目标位置（入库），如果没有找到再尝试源位置（出库）
+                    domain = [
                         ('product_id', '=', move_line.product_id.id),
                         ('lot_id', '=', move_line.lot_id.id),
-                        ('owner_id', '=', move_line.owner_id.id),
-                    ])
+                    ]
                     
-                    # 添加到需要重新计算的列表
-                    quants_to_recompute |= quants
+                    # owner_id 处理：如果移动行有 owner_id，则匹配；否则匹配 owner_id 为空的记录
+                    if move_line.owner_id:
+                        domain.append(('owner_id', '=', move_line.owner_id.id))
+                    else:
+                        domain.append(('owner_id', '=', False))
+                    
+                    # 优先查找目标位置的 quant（入库）
+                    quants_found = False
+                    if move_line.location_dest_id:
+                        quants = self.env['stock.quant'].search(domain + [
+                            ('location_id', '=', move_line.location_dest_id.id)
+                        ])
+                        if quants:
+                            quants_to_recompute |= quants
+                            quants_found = True
+                    
+                    # 如果没有找到，尝试源位置的 quant（出库或内部移动）
+                    if not quants_found and move_line.location_id:
+                        quants = self.env['stock.quant'].search(domain + [
+                            ('location_id', '=', move_line.location_id.id)
+                        ])
+                        if quants:
+                            quants_to_recompute |= quants
+                            quants_found = True
+                    
+                    # 如果还是没找到，尝试不限制位置（可能位置不匹配）
+                    if not quants_found:
+                        quants = self.env['stock.quant'].search(domain)
+                        if quants:
+                            quants_to_recompute |= quants
         
         # 触发所有相关的 stock_quant 重新计算
         if quants_to_recompute:

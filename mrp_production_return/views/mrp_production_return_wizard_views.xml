@@ -17,25 +17,29 @@
                                <field name="defective_location_id" 
                                       invisible="return_strategy != 'defective'"
                                       required="return_strategy == 'defective'"/>
-                               <field name="main_location_id" 
-                                      invisible="return_strategy != 'main'"
-                                      required="return_strategy == 'main'"/>
-                               <field name="custom_location_id" 
-                                      invisible="return_strategy != 'custom'"
-                                      required="return_strategy == 'custom'"/>
                                <field name="scrap_location_id" 
                                       invisible="return_strategy != 'scrap'"
                                       required="return_strategy == 'scrap'"/>
                                <field name="target_location_id" invisible="1"/>
-                               <field name="location_name" readonly="1" invisible="not target_location_id"/>
+                               <field name="location_name" readonly="1" 
+                                      string="目标位置" 
+                                      invisible="return_strategy in ('defective', 'scrap') or not target_location_id"
+                                      help="生产前位置：原材料位置；生产后位置：成品位置"/>
                            </group>
                        </group>
                        
                    <group string="剩余组件">
+                       <div class="oe_button_box" name="button_box">
+                           <button name="action_add_available_components" 
+                                   string="添加可用组件" 
+                                   type="object" 
+                                   class="oe_stat_button"
+                                   icon="fa-plus"/>
+                       </div>
                        <field name="component_line_ids" nolabel="1" 
                               widget="one2many_list"
-                              context="{'create': False, 'delete': False}"
-                              options="{'no_create': True, 'no_open': True}"/>
+                              context="{'default_wizard_id': id}"
+                              options="{'no_create_edit': False}"/>
                    </group>
                 
                 <group string="原因和备注">

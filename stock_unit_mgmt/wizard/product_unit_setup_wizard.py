@@ -38,7 +38,7 @@ class ProductUnitSetupWizard(models.TransientModel):
         readonly=True
     )
     finished_density = fields.Float(
-        string='材料密度 (kg/cm³)',
+        string='材料密度 (g/cm³)',
         related='product_tmpl_id.finished_density',
         readonly=True,
         digits=(12, 6)
@@ -210,8 +210,9 @@ class ProductUnitSetupWizard(models.TransientModel):
                     thickness_m = wizard.product_thickness / 1000000.0  # μm → m
                     volume_m3 = length_m * width_m * thickness_m
                     
-                    # 密度 kg/cm³ = 1000000 kg/m³，转换为吨/m³
-                    density_kg_m3 = wizard.finished_density * 1000000
+                    # 密度 g/cm³ = 1000 kg/m³，转换为吨/m³
+                    # 1 g/cm³ = 1 g/cm³ × (1 kg / 1000 g) × (1000000 cm³ / 1 m³) = 1000 kg/m³
+                    density_kg_m3 = wizard.finished_density * 1000  # g/cm³ → kg/m³
                     weight_kg = volume_m3 * density_kg_m3
                     wizard.ton_per_roll = round(weight_kg / 1000.0, 6)  # kg → 吨
                 else:

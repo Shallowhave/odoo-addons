@@ -13,8 +13,8 @@
         <record id="return_reason_over_production" model="mrp.return.reason">
             <field name="name">生产过剩</field>
             <field name="code">OVER_PRODUCTION</field>
-            <field name="description">生产数量超过需求，返回至主仓库</field>
-            <field name="return_strategy">main</field>
+            <field name="description">生产数量超过需求，返回至不良品仓</field>
+            <field name="return_strategy">defective</field>
             <field name="sequence">20</field>
         </record>
         
@@ -37,16 +37,16 @@
         <record id="return_reason_process_adjustment" model="mrp.return.reason">
             <field name="name">工艺调整</field>
             <field name="code">PROCESS_ADJUSTMENT</field>
-            <field name="description">生产工艺需要调整，产品返回至指定位置</field>
-            <field name="return_strategy">custom</field>
+            <field name="description">生产工艺需要调整，产品返回至生产前</field>
+            <field name="return_strategy">before</field>
             <field name="sequence">50</field>
         </record>
         
         <record id="return_reason_customer_change" model="mrp.return.reason">
             <field name="name">客户变更</field>
             <field name="code">CUSTOMER_CHANGE</field>
-            <field name="description">客户需求变更，产品需要重新处理</field>
-            <field name="return_strategy">main</field>
+            <field name="description">客户需求变更，产品需要重新处理，返回至生产后</field>
+            <field name="return_strategy">after</field>
             <field name="sequence">60</field>
         </record>
     </data>

@@ -69,7 +69,12 @@ class MrpProduction(models.Model):
             )
 
     def button_mark_done(self):
-        """重写完成制造订单方法，检查剩余组件"""
+        """重写完成制造订单方法，检查剩余组件
+        
+        逻辑：
+        1. 如果剩余组件已经全部退回处理，即使产成品数量不足，也自动选择"无欠单"完成
+        2. 如果还有剩余组件未处理，在"无欠单"时弹出处理向导
+        """
         # 检查是否是从"无欠单"按钮调用的
         skip_backorder = self.env.context.get('skip_backorder', False)
         # 检查是否是从欠单向导调用的（Odoo在创建欠单时会设置 mo_ids_to_backorder）
@@ -81,12 +86,44 @@ class MrpProduction(models.Model):
         # mo_ids_to_backorder 存在表示是"创建欠单"操作
         should_check_remaining = skip_backorder and not mo_ids_to_backorder and not processing_return
         
+        # 为每个记录处理
+        records_to_process = []
         for record in self:
+            # 检查剩余组件是否已经全部处理
+            remaining_components = record._get_unprocessed_remaining_components()
+            all_components_returned = not remaining_components
+            
+            _logger.info(
+                f"[制造订单完成] {record.name}: "
+                f"skip_backorder={skip_backorder}, "
+                f"mo_ids_to_backorder={mo_ids_to_backorder}, "
+                f"processing_return={processing_return}, "
+                f"all_components_returned={all_components_returned}"
+            )
+            
+            # 如果剩余组件已经全部退回处理，且当前不是从"无欠单"按钮调用
+            # 自动选择"无欠单"完成，不弹出欠单提示
+            if all_components_returned and not skip_backorder and not mo_ids_to_backorder and not processing_return:
+                # 如果剩余组件已全部退回，无论产成品数量是否不足，都自动选择"无欠单"完成
+                # 因为用户已经处理完了所有剩余组件，不需要再创建欠单
+                _logger.info(
+                    f"[制造订单完成] {record.name} 剩余组件已全部退回，"
+                    f"自动选择无欠单完成（不弹出欠单提示）"
+                )
+                # 直接调用父类方法，传入 skip_backorder=True，避免递归
+                # 使用 processing_return=True 防止再次检查剩余组件
+                result = super(MrpProduction, record.with_context(
+                    skip_backorder=True,
+                    processing_return=True
+                )).button_mark_done()
+                # 如果返回的是动作（如弹窗），应该直接返回
+                if isinstance(result, dict):
+                    return result
+                continue
+            
             # 只有在真正的"无欠单"情况下才检查剩余组件
             if should_check_remaining:
                 # 使用优化后的方法获取剩余组件（避免重复查询）
-                remaining_components = record._get_unprocessed_remaining_components()
-                
                 if remaining_components:
                     # 记录关键信息（只在有剩余组件时）
                     _logger.info(
@@ -105,9 +142,16 @@ class MrpProduction(models.Model):
                             'default_production_id': record.id,
                         }
                     }
+            
+            # 其他记录正常处理
+            records_to_process.append(record)
         
-        # 如果没有剩余组件或不是无欠单操作，调用原始方法
-        return super().button_mark_done()
+        # 如果有需要正常处理的记录，使用原始上下文调用父类方法
+        if records_to_process:
+            return super(MrpProduction, self.browse([r.id for r in records_to_process])).button_mark_done()
+        
+        # 如果没有需要处理的记录，返回空结果
+        return True
 
     def action_return_components(self):
         """处理剩余组件返回"""

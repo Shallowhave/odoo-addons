@@ -90,30 +90,57 @@ class StockQuant(models.Model):
             ('state', '=', 'done')
         ])
         
-        # 建立索引：按 (lot_id, product_id, location_id) 索引
+        # 建立索引：按 (lot_id, product_id) 索引
         # 用于快速查找相关的移动行
+        # 注意：存储为 recordset，而不是 list
         move_lines_by_key = {}
         for ml in all_move_lines:
             key = (ml.lot_id.id, ml.product_id.id)
             if key not in move_lines_by_key:
-                move_lines_by_key[key] = []
-            move_lines_by_key[key].append(ml)
+                move_lines_by_key[key] = self.env['stock.move.line']  # 初始化为空 recordset
+            move_lines_by_key[key] |= ml  # 使用 |= 操作符添加到 recordset
         
         # 处理每个库存记录
         for quant in self:
-            if not quant.lot_id or not quant.product_id:
+            if not quant.product_id:
                 quant.lot_unit_name = False
                 quant.lot_unit_name_custom = False
                 quant.lot_quantity = 0.0
                 continue
             
+            # 如果没有批次号，尝试从产品配置获取单位信息
+            if not quant.lot_id:
+                product_tmpl = quant.product_id.product_tmpl_id
+                if hasattr(product_tmpl, 'get_unit_config_for_stock_move'):
+                    try:
+                        unit_configs = product_tmpl.get_unit_config_for_stock_move()
+                        if unit_configs:
+                            config = unit_configs[0]
+                            quant.lot_unit_name = config['name']
+                            # 没有批次号时，单位数量设为库存数量（如果有配置）
+                            quant.lot_quantity = quant.quantity if quant.quantity > 0 else 0.0
+                        else:
+                            quant.lot_unit_name = False
+                            quant.lot_unit_name_custom = False
+                            quant.lot_quantity = 0.0
+                    except Exception:
+                        quant.lot_unit_name = False
+                        quant.lot_unit_name_custom = False
+                        quant.lot_quantity = 0.0
+                else:
+                    quant.lot_unit_name = False
+                    quant.lot_unit_name_custom = False
+                    quant.lot_quantity = 0.0
+                continue
+            
             try:
                 # 从批量加载的移动行中获取当前记录相关的移动行
                 key = (quant.lot_id.id, quant.product_id.id)
-                relevant_move_lines = move_lines_by_key.get(key, [])
+                relevant_move_lines = move_lines_by_key.get(key, self.env['stock.move.line'])
                 
                 # 筛选入库和出库移动行
                 # 注意：入库是指 destination 是当前 quant 的位置，出库是指 source 是当前 quant 的位置
+                # 直接使用位置ID匹配（因为 stock.quant 的位置应该是精确的）
                 incoming_move_lines = relevant_move_lines.filtered(
                     lambda ml: ml.location_dest_id.id == quant.location_id.id
                 )
@@ -139,7 +166,43 @@ class StockQuant(models.Model):
                 for ml in outgoing_with_lot_qty:
                     total_outgoing += ml.lot_quantity
                 
-                # 调试日志（仅在启用详细日志时输出）
+                # 计算当前剩余的单位数量
+                current_lot_quantity = total_incoming - total_outgoing
+                
+                # 调试日志：记录详细信息，特别是当没有单位信息时
+                product_code = quant.product_id.default_code or quant.product_id.name
+                lot_name = quant.lot_id.name if quant.lot_id else 'None'
+                # 检查是否缺少单位信息（在计算完成后检查）
+                # 如果产品编号包含 250PY2M5001241145a207602，总是记录日志
+                should_log = (product_code and '250PY2M5001241145a207602' in str(product_code)) or \
+                             (lot_name and '250PY2M5001241145a207602' in str(lot_name)) or \
+                             ((not current_lot_quantity or current_lot_quantity <= 0) and quant.quantity > 0)
+                
+                if should_log:
+                    # 记录详细信息用于调试
+                    _logger.info(f"[批次数量计算] 产品={product_code}, "
+                                f"批次={lot_name}, "
+                                f"位置={quant.location_id.name if quant.location_id else 'None'}, "
+                                f"位置ID={quant.location_id.id if quant.location_id else 'None'}, "
+                                f"库存数量={quant.quantity}, "
+                                f"所有移动行数={len(relevant_move_lines)}, "
+                                f"入库移动行数={len(incoming_move_lines)}, "
+                                f"有数量入库行数={len(incoming_with_lot_qty)}, "
+                                f"总入库数量={total_incoming}, "
+                                f"总出库数量={total_outgoing}, "
+                                f"计算出的单位数量={current_lot_quantity}")
+                    # 记录移动行详情
+                    if relevant_move_lines:
+                        for ml in relevant_move_lines[:5]:  # 记录前5条
+                            _logger.info(f"  -> 移动行 {ml.id}: lot_quantity={ml.lot_quantity}, "
+                                        f"lot_unit_name={ml.lot_unit_name}, "
+                                        f"location_dest={ml.location_dest_id.name if ml.location_dest_id else 'None'}(ID:{ml.location_dest_id.id if ml.location_dest_id else 'None'}), "
+                                        f"location_id={ml.location_id.name if ml.location_id else 'None'}(ID:{ml.location_id.id if ml.location_id else 'None'}), "
+                                        f"state={ml.state}")
+                    else:
+                        _logger.info(f"  -> 没有找到相关的移动行")
+                
+                # 详细调试日志（仅在启用详细日志时输出）
                 if self.env['ir.config_parameter'].sudo().get_param('stock_unit_mgmt.enable_debug_logging', 'False').lower() == 'true':
                     incoming_details = [(ml.id, ml.lot_quantity) for ml in incoming_with_lot_qty]
                     _logger.debug(f"[批次数量计算] 批次={quant.lot_id.name if quant.lot_id else 'None'}, "
@@ -149,9 +212,6 @@ class StockQuant(models.Model):
                                  f"有数量入库行数={len(incoming_with_lot_qty)}, "
                                  f"总入库数量={total_incoming}, "
                                  f"总出库数量={total_outgoing}")
-                
-                # 计算当前剩余的单位数量
-                current_lot_quantity = total_incoming - total_outgoing
                 
                 # 如果还有库存但单位数量为0或负数，说明可能出库时没有填写单位数量
                 # 在这种情况下，按比例计算

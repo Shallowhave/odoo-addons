@@ -24,11 +24,11 @@ class MrpProductionReturnWizard(models.TransientModel):
         help='需要处理的剩余组件列表'
     )
     return_strategy = fields.Selection([
+        ('before', '返回至生产前'),
+        ('after', '返回至生产后'),
         ('defective', '返回至不良品仓'),
-        ('main', '返回至主仓库'),
-        ('custom', '返回至自定义位置'),
         ('scrap', '报废处理'),
-    ], string='返回策略', required=True, default='defective')
+    ], string='返回策略', required=True, default='before')
     
     # 位置选择
     defective_location_id = fields.Many2one(
@@ -36,18 +36,6 @@ class MrpProductionReturnWizard(models.TransientModel):
         string='不良品仓',
         domain="[('usage', '=', 'internal'), ('scrap_location', '=', False)]",
         help='选择不良品仓位置（用于存放不合格但仍存在的产品）'
-    )
-    main_location_id = fields.Many2one(
-        'stock.location',
-        string='主仓库',
-        domain="[('usage', '=', 'internal'), ('scrap_location', '=', False)]",
-        help='选择主仓库位置'
-    )
-    custom_location_id = fields.Many2one(
-        'stock.location',
-        string='自定义位置',
-        domain="[('usage', '=', 'internal')]",
-        help='选择自定义返回位置'
     )
     scrap_location_id = fields.Many2one(
         'stock.location',
@@ -95,16 +83,18 @@ class MrpProductionReturnWizard(models.TransientModel):
         compute='_compute_location_name'
     )
 
-    @api.depends('return_strategy', 'defective_location_id', 'main_location_id', 'custom_location_id', 'scrap_location_id')
+    @api.depends('return_strategy', 'production_id', 'defective_location_id', 'scrap_location_id')
     def _compute_target_location(self):
         """计算目标位置"""
         for record in self:
-            if record.return_strategy == 'defective':
+            if record.return_strategy == 'before':
+                # 返回至生产前：使用制造订单的源位置（原材料位置）
+                record.target_location_id = record.production_id.location_src_id if record.production_id else False
+            elif record.return_strategy == 'after':
+                # 返回至生产后：使用制造订单的目标位置（成品位置）
+                record.target_location_id = record.production_id.location_dest_id if record.production_id else False
+            elif record.return_strategy == 'defective':
                 record.target_location_id = record.defective_location_id
-            elif record.return_strategy == 'main':
-                record.target_location_id = record.main_location_id
-            elif record.return_strategy == 'custom':
-                record.target_location_id = record.custom_location_id
             elif record.return_strategy == 'scrap':
                 record.target_location_id = record.scrap_location_id
             else:
@@ -138,9 +128,6 @@ class MrpProductionReturnWizard(models.TransientModel):
         
         return defective_loc
     
-    def _recommend_main_location(self, warehouse):
-        """推荐主仓库位置"""
-        return warehouse.lot_stock_id if warehouse else False
     
     def _recommend_scrap_location(self, company):
         """推荐报废仓库位置"""
@@ -177,14 +164,36 @@ class MrpProductionReturnWizard(models.TransientModel):
                     lambda m: m.product_id not in processed_products
                 )
             
-            # 创建组件行
+            # 自动填充剩余组件行
+            _logger.info(f"[剩余组件向导] 开始填充组件行，找到 {len(remaining_moves)} 个剩余组件")
             component_lines = []
             for move in remaining_moves:
+                remaining_qty = move.product_uom_qty - move.quantity
+                _logger.info(
+                    f"[剩余组件向导] 处理组件: 产品={move.product_id.name}(ID:{move.product_id.id}), "
+                    f"移动ID={move.id}, 计划数量={move.product_uom_qty}, 已消耗={move.quantity}, "
+                    f"剩余数量={remaining_qty}, 单位={move.product_uom.name if move.product_uom else 'None'}"
+                )
+                
+                # 关键修复：必须设置 move_id，否则 related 字段（product_uom_id, expected_qty等）无法获取值
+                # 同时需要确保 wizard_id 在 context 中，以便计算字段能够正确计算
                 component_lines.append((0, 0, {
-                    'move_id': move.id,
-                    'return_qty': move.product_uom_qty - move.quantity,
+                    'move_id': move.id,  # 添加 move_id
+                    # 注意：product_id 现在是从 move_id 自动关联的，不需要手动设置
+                    # 但是在 wizard_line 中，product_id 不再是 related 字段，所以需要手动设置
+                    'product_id': move.product_id.id,
+                    'return_qty': remaining_qty,
                 }))
+                _logger.info(
+                    f"[剩余组件向导] 已创建组件行: move_id={move.id}, product_id={move.product_id.id}, "
+                    f"return_qty={remaining_qty}"
+                )
+            
             res['component_line_ids'] = component_lines
+            _logger.info(f"[剩余组件向导] 共创建 {len(component_lines)} 个组件行")
+            
+            # 关键修复：在创建向导后，需要确保组件行的 available_product_ids 被正确计算
+            # 这会在创建向导对象时自动触发，因为 @api.depends 会监听 wizard_id 的变化
             
             # 智能推荐位置
             # 获取公司的默认仓库
@@ -197,10 +206,6 @@ class MrpProductionReturnWizard(models.TransientModel):
                 defective_loc = self._recommend_defective_location(warehouse)
                 if defective_loc:
                     res['defective_location_id'] = defective_loc.id
-                
-                main_loc = self._recommend_main_location(warehouse)
-                if main_loc:
-                    res['main_location_id'] = main_loc.id
                 
                 scrap_loc = self._recommend_scrap_location(production.company_id)
                 if scrap_loc:
@@ -228,12 +233,15 @@ class MrpProductionReturnWizard(models.TransientModel):
         # 所有策略都需要验证目标位置
         if not self.target_location_id:
             strategy_names = {
+                'before': '生产前',
+                'after': '生产后',
                 'defective': '不良品仓',
-                'main': '主仓库', 
-                'custom': '自定义位置',
                 'scrap': '报废仓库'
             }
-            raise ValidationError(f'请选择{strategy_names.get(self.return_strategy, "目标")}位置')
+            if self.return_strategy in ('before', 'after'):
+                raise ValidationError(f'无法找到{strategy_names.get(self.return_strategy, "目标")}位置，请检查制造订单的位置设置')
+            else:
+                raise ValidationError(f'请选择{strategy_names.get(self.return_strategy, "目标")}位置')
         
         # 报废处理必须选择原因
         if self.return_strategy == 'scrap' and not self.return_reason_id:
@@ -358,7 +366,27 @@ class MrpProductionReturnWizard(models.TransientModel):
         # 自动确认调拨单
         if self.auto_confirm_picking:
             picking.action_confirm()
-            if picking.state == 'assigned':
+            
+            # 创建移动行并设置完成数量
+            move_line_vals = {
+                'move_id': move.id,
+                'product_id': line.product_id.id,
+                'product_uom_id': line.product_id.uom_id.id,
+                'location_id': source_location.id,
+                'location_dest_id': self.target_location_id.id,
+                'qty_done': line.return_qty,
+            }
+            # 如果有批次号，需要处理批次号（通过 move_line_ids 获取）
+            if line.move_id.move_line_ids:
+                # 使用第一个移动行的批次号
+                first_move_line = line.move_id.move_line_ids[0]
+                if first_move_line.lot_id:
+                    move_line_vals['lot_id'] = first_move_line.lot_id.id
+            self.env['stock.move.line'].create(move_line_vals)
+            
+            # 完成调拨单
+            if picking.state in ('assigned', 'confirmed'):
+                # 验证并完成调拨单
                 picking.button_validate()
 
     def _process_scrap_return(self, history, line):
@@ -424,10 +452,121 @@ class MrpProductionReturnWizard(models.TransientModel):
         # 自动确认调拨单
         if self.auto_confirm_picking:
             picking.action_confirm()
-            if picking.state == 'assigned':
+            
+            # 创建移动行并设置完成数量
+            move_line_vals = {
+                'move_id': move.id,
+                'product_id': line.product_id.id,
+                'product_uom_id': line.product_id.uom_id.id,
+                'location_id': source_location.id,
+                'location_dest_id': self.scrap_location_id.id,
+                'qty_done': line.return_qty,
+            }
+            # 如果有批次号，需要处理批次号（通过 move_line_ids 获取）
+            if line.move_id.move_line_ids:
+                # 使用第一个移动行的批次号
+                first_move_line = line.move_id.move_line_ids[0]
+                if first_move_line.lot_id:
+                    move_line_vals['lot_id'] = first_move_line.lot_id.id
+            self.env['stock.move.line'].create(move_line_vals)
+            
+            # 完成调拨单
+            if picking.state in ('assigned', 'confirmed'):
+                # 验证并完成调拨单
                 picking.button_validate()
 
     def _send_notification(self):
         """发送通知"""
         # 这里可以实现邮件或系统通知
         pass
+    
+    def get_available_product_ids(self):
+        """获取可选组件的产品ID列表（用于视图domain）"""
+        self.ensure_one()
+        if not self.production_id:
+            return []
+        
+        # 获取剩余组件
+        remaining_moves = self.production_id.move_raw_ids.filtered(
+            lambda m: m.state in ('done', 'assigned', 'partially_available') and m.product_uom_qty > m.quantity
+        )
+        
+        # 获取已经处理过的产品（避免重复处理）
+        processed_history = self.env['mrp.production.return.history'].search([
+            ('production_id', '=', self.production_id.id)
+        ])
+        processed_products = processed_history.mapped('product_id')
+        
+        # 过滤掉已经处理过的组件
+        if processed_products:
+            remaining_moves = remaining_moves.filtered(
+                lambda m: m.product_id not in processed_products
+            )
+        
+        # 获取当前已添加的组件
+        existing_product_ids = self.component_line_ids.mapped('product_id').ids
+        
+        # 过滤掉已经添加的组件
+        available_moves = remaining_moves.filtered(
+            lambda m: m.product_id.id not in existing_product_ids
+        )
+        
+        return available_moves.mapped('product_id').ids
+    
+    @api.onchange('production_id')
+    def _onchange_production_id(self):
+        """制造订单变更时，更新组件行的可选组件"""
+        if self.production_id:
+            # 触发组件行的可用产品列表重新计算
+            for line in self.component_line_ids:
+                line._compute_available_product_ids()
+    
+    def action_add_available_components(self):
+        """添加可用的剩余组件"""
+        self.ensure_one()
+        if not self.production_id:
+            raise UserError('请先选择制造订单')
+        
+        # 获取剩余组件
+        remaining_moves = self.production_id.move_raw_ids.filtered(
+            lambda m: m.state in ('done', 'assigned', 'partially_available') and m.product_uom_qty > m.quantity
+        )
+        
+        # 获取已经处理过的产品（避免重复处理）
+        processed_history = self.env['mrp.production.return.history'].search([
+            ('production_id', '=', self.production_id.id)
+        ])
+        processed_products = processed_history.mapped('product_id')
+        
+        # 过滤掉已经处理过的组件
+        if processed_products:
+            remaining_moves = remaining_moves.filtered(
+                lambda m: m.product_id not in processed_products
+            )
+        
+        # 获取当前已添加的组件
+        existing_product_ids = self.component_line_ids.mapped('product_id').ids
+        
+        # 过滤掉已经添加的组件
+        available_moves = remaining_moves.filtered(
+            lambda m: m.product_id.id not in existing_product_ids
+        )
+        
+        # 创建新的组件行
+        for move in available_moves:
+            self.env['mrp.production.return.wizard.line'].create({
+                'wizard_id': self.id,
+                'product_id': move.product_id.id,
+                'return_qty': move.product_uom_qty - move.quantity,
+            })
+        
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': '添加完成',
+                'message': f'已添加 {len(available_moves)} 个可用组件',
+                'type': 'success',
+                'sticky': False,
+            }
+        }

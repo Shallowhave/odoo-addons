@@ -5,9 +5,14 @@
         <field name="name">mrp.production.return.wizard.line.tree</field>
         <field name="model">mrp.production.return.wizard.line</field>
         <field name="arch" type="xml">
-            <list editable="bottom" create="0" delete="0">
+            <list editable="bottom">
                 <field name="move_id" column_invisible="1"/>
-                <field name="product_id" readonly="1" string="组件"/>
+                <field name="available_product_ids" column_invisible="1"/>
+                <field name="available_product_ids_str" column_invisible="1"/>
+                <field name="available_product_ids_for_domain" column_invisible="1"/>
+                <field name="product_id" string="组件" 
+                       context="{'default_wizard_id': parent.id, 'default_production_id': parent.production_id.id if parent.production_id else False, 'active_id': parent.production_id.id if parent.production_id else False, 'active_model': 'mrp.production'}"
+                       options="{'no_create': True, 'no_open': True}"/>
                 <field name="product_uom_id" readonly="1" string="单位"/>
                 <field name="expected_qty" readonly="1" string="计划数量"/>
                 <field name="consumed_qty" readonly="1" string="已消耗"/>

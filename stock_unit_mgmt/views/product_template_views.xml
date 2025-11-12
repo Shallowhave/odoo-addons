@@ -104,10 +104,10 @@
                     
                     <!-- 材料属性 -->
                     <div t-if="record.finished_density.raw_value">
-                        <strong>密度:</strong> <field name="finished_density"/>kg/cm³
+                        <strong>密度:</strong> <field name="finished_density"/>g/cm³
                     </div>
                     <div t-if="record.weight_per_sqm.raw_value">
-                        <strong>重量系数:</strong> <field name="weight_per_sqm"/>g/㎡
+                        <strong>重量系数:</strong> <field name="weight_per_sqm"/>kg/㎡
                     </div>
                     <div t-if="record.solution_solid_content.raw_value">
                         <strong>固含:</strong> <field name="solution_solid_content"/>%
