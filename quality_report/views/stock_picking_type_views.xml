@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <!-- 扩展作业类型视图，添加品质报告打印配置选项 -->
+        <record id="view_picking_type_form_quality_report" model="ir.ui.view">
+            <field name="name">stock.picking.type.form.quality.report</field>
+            <field name="model">stock.picking.type</field>
+            <field name="inherit_id" ref="stock.view_picking_type_form"/>
+            <field name="arch" type="xml">
+                <!-- 在常规标签页中添加品质报告打印配置选项 -->
+                <!-- 查找一个合适的位置，比如在 use_create_lots 字段之后 -->
+                <xpath expr="//field[@name='use_create_lots']" position="after">
+                    <field name="enable_quality_report" 
+                           string="启用品质报告打印"
+                           help="启用后，在交货单表单和列表视图中显示'打印品质报告'按钮"/>
+                </xpath>
+            </field>
+        </record>
+    </data>
+</odoo>
+

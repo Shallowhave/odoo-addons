@@ -13,7 +13,8 @@
                             string="打印品质报告" 
                             type="object" 
                             class="btn-primary"
-                            icon="fa-print"/>
+                            icon="fa-print"
+                            invisible="not can_print_quality_report"/>
                 </xpath>
             </field>
         </record>
@@ -30,7 +31,8 @@
                             type="object" 
                             class="btn-secondary"
                             icon="fa-print"
-                            groups="stock.group_stock_user"/>
+                            groups="stock.group_stock_user"
+                            invisible="not can_print_quality_report"/>
                 </xpath>
             </field>
         </record>

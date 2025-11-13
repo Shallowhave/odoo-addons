@@ -16,6 +16,7 @@
     'depends': ['stock'],
     'data': [
         'security/ir.model.access.csv',
+        'views/stock_picking_type_views.xml',
         'views/stock_picking_views.xml',
         'reports/quality_report_data.xml',
         'reports/quality_report.xml',
