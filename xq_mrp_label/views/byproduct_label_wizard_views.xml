@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_byproduct_label_wizard_form" model="ir.ui.view">
+        <field name="name">byproduct.label.wizard.form</field>
+        <field name="model">byproduct.label.wizard</field>
+        <field name="arch" type="xml">
+            <form string="选择副产品">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="production_id" readonly="1"/>
+                            <field name="quality_check_id" invisible="1"/>
+                        </group>
+                    </group>
+                    
+                    <group>
+                        <group string="选择副产品">
+                            <field name="byproduct_move_id" 
+                                   options="{'no_create': True, 'no_create_edit': True}"
+                                   required="1"/>
+                        </group>
+                        <group string="副产品信息" readonly="1">
+                            <field name="product_name"/>
+                            <field name="product_code"/>
+                            <field name="quantity"/>
+                            <field name="uom_name"/>
+                            <field name="lot_id"/>
+                        </group>
+                    </group>
+                </sheet>
+                <footer>
+                    <button name="action_print_label" 
+                            string="打印标签" 
+                            type="object" 
+                            class="btn-primary"/>
+                    <button string="取消" 
+                            class="btn-secondary" 
+                            special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_byproduct_label_wizard" model="ir.actions.act_window">
+        <field name="name">选择副产品</field>
+        <field name="res_model">byproduct.label.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="binding_model_id" ref="mrp.model_mrp_production"/>
+        <field name="binding_type">action</field>
+    </record>
+</odoo>
+

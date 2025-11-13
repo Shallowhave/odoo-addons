@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from odoo import models, fields, api
+from odoo import models, fields, api, _
 import logging
 
 from . import utils
@@ -173,34 +173,42 @@ class StockQuant(models.Model):
                 product_code = quant.product_id.default_code or quant.product_id.name
                 lot_name = quant.lot_id.name if quant.lot_id else 'None'
                 # 检查是否缺少单位信息（在计算完成后检查）
-                # 如果产品编号包含 250PY2M5001241145a207602，总是记录日志
-                should_log = (product_code and '250PY2M5001241145a207602' in str(product_code)) or \
-                             (lot_name and '250PY2M5001241145a207602' in str(lot_name)) or \
-                             ((not current_lot_quantity or current_lot_quantity <= 0) and quant.quantity > 0)
+                # 使用配置参数控制调试日志（生产环境默认关闭）
+                enable_debug_logging = self.env['ir.config_parameter'].sudo().get_param(
+                    'stock_unit_mgmt.enable_debug_logging', 'False'
+                ).lower() == 'true'
+                should_log = enable_debug_logging and (
+                    (not current_lot_quantity or current_lot_quantity <= 0) and quant.quantity > 0
+                )
                 
                 if should_log:
-                    # 记录详细信息用于调试
-                    _logger.info(f"[批次数量计算] 产品={product_code}, "
-                                f"批次={lot_name}, "
-                                f"位置={quant.location_id.name if quant.location_id else 'None'}, "
-                                f"位置ID={quant.location_id.id if quant.location_id else 'None'}, "
-                                f"库存数量={quant.quantity}, "
-                                f"所有移动行数={len(relevant_move_lines)}, "
-                                f"入库移动行数={len(incoming_move_lines)}, "
-                                f"有数量入库行数={len(incoming_with_lot_qty)}, "
-                                f"总入库数量={total_incoming}, "
-                                f"总出库数量={total_outgoing}, "
-                                f"计算出的单位数量={current_lot_quantity}")
+                    # 记录详细信息用于调试（使用 DEBUG 级别）
+                    _logger.debug(
+                        _("[批次数量计算] 产品=%s, 批次=%s, 位置=%s, 位置ID=%s, "
+                          "库存数量=%s, 所有移动行数=%s, 入库移动行数=%s, "
+                          "有数量入库行数=%s, 总入库数量=%s, 总出库数量=%s, 计算出的单位数量=%s"),
+                        product_code, lot_name,
+                        quant.location_id.name if quant.location_id else 'None',
+                        quant.location_id.id if quant.location_id else 'None',
+                        quant.quantity, len(relevant_move_lines),
+                        len(incoming_move_lines), len(incoming_with_lot_qty),
+                        total_incoming, total_outgoing, current_lot_quantity
+                    )
                     # 记录移动行详情
                     if relevant_move_lines:
                         for ml in relevant_move_lines[:5]:  # 记录前5条
-                            _logger.info(f"  -> 移动行 {ml.id}: lot_quantity={ml.lot_quantity}, "
-                                        f"lot_unit_name={ml.lot_unit_name}, "
-                                        f"location_dest={ml.location_dest_id.name if ml.location_dest_id else 'None'}(ID:{ml.location_dest_id.id if ml.location_dest_id else 'None'}), "
-                                        f"location_id={ml.location_id.name if ml.location_id else 'None'}(ID:{ml.location_id.id if ml.location_id else 'None'}), "
-                                        f"state={ml.state}")
+                            _logger.debug(
+                                _("  -> 移动行 %s: lot_quantity=%s, lot_unit_name=%s, "
+                                  "location_dest=%s(ID:%s), location_id=%s(ID:%s), state=%s"),
+                                ml.id, ml.lot_quantity, ml.lot_unit_name,
+                                ml.location_dest_id.name if ml.location_dest_id else 'None',
+                                ml.location_dest_id.id if ml.location_dest_id else 'None',
+                                ml.location_id.name if ml.location_id else 'None',
+                                ml.location_id.id if ml.location_id else 'None',
+                                ml.state
+                            )
                     else:
-                        _logger.info(f"  -> 没有找到相关的移动行")
+                        _logger.debug(_("  -> 没有找到相关的移动行"))
                 
                 # 详细调试日志（仅在启用详细日志时输出）
                 if self.env['ir.config_parameter'].sudo().get_param('stock_unit_mgmt.enable_debug_logging', 'False').lower() == 'true':

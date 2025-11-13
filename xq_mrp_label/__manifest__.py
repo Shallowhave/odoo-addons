@@ -11,8 +11,10 @@
     'data': [
         'data/quality_control_data.xml',
         'views/quality_views.xml',
+        'views/byproduct_label_wizard_views.xml',
         'report/mrp_label.xml',
         'report/mrp_qc_label.xml',
+        'report/mrp_byproduct_label.xml',
     ],
     'assets': {
         'web.assets_backend': [

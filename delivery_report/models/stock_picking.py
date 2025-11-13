@@ -27,11 +27,47 @@ class StockPicking(models.Model):
                         except:
                             width = '-'
                             
+                        # **关键修改**：从 stock.quant 获取计算长度(m)，而不是从产品模板获取
+                        # 优先从目标位置的库存数量记录获取计算长度
+                        length = '-'
                         try:
-                            length = getattr(product_tmpl, 'product_length', None)
-                            length = length if length else '-'
-                        except:
-                            length = '-'
+                            # 查找对应的 stock.quant 记录
+                            # 使用目标位置（location_dest_id）查找，因为这是交货单，货物会移动到目标位置
+                            quant = self.env['stock.quant'].search([
+                                ('lot_id', '=', line.lot_id.id),
+                                ('product_id', '=', move.product_id.id),
+                                ('location_id', '=', line.location_dest_id.id)
+                            ], limit=1, order='id desc')
+                            
+                            # 如果目标位置找不到，尝试从源位置查找
+                            if not quant:
+                                quant = self.env['stock.quant'].search([
+                                    ('lot_id', '=', line.lot_id.id),
+                                    ('product_id', '=', move.product_id.id),
+                                    ('location_id', '=', line.location_id.id)
+                                ], limit=1, order='id desc')
+                            
+                            # 如果还是找不到，尝试不指定位置查找（可能位置已经变化）
+                            if not quant:
+                                quant = self.env['stock.quant'].search([
+                                    ('lot_id', '=', line.lot_id.id),
+                                    ('product_id', '=', move.product_id.id)
+                                ], limit=1, order='id desc')
+                            
+                            # 如果找到了库存数量记录，获取计算长度
+                            if quant and hasattr(quant, 'calculated_length_m') and quant.calculated_length_m:
+                                length = quant.calculated_length_m
+                            else:
+                                # 如果找不到或没有计算长度，回退到产品模板的长度
+                                length = getattr(product_tmpl, 'product_length', None)
+                                length = length if length else '-'
+                        except Exception as e:
+                            # 如果出错，回退到产品模板的长度
+                            try:
+                                length = getattr(product_tmpl, 'product_length', None)
+                                length = length if length else '-'
+                            except:
+                                length = '-'
                         
                         lot_info.append({
                             'product': move.product_id.name,

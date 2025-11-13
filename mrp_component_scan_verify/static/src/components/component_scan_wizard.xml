@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="mrp_component_scan_verify.ComponentScanWizard">
+        <div class="o_component_scan_wizard">
+            <!-- 标题 -->
+            <div class="mb-3">
+                <h6 class="text-primary mb-2">
+                    <i class="fa fa-barcode me-2"/>
+                    组件扫码确认
+                </h6>
+            </div>
+            
+            <!-- 需要的组件列表 -->
+            <div class="card mb-3" t-if="state.requiredComponents.length > 0">
+                <div class="card-header">
+                    <strong>生产订单需要的组件：</strong>
+                </div>
+                <div class="card-body">
+                    <ul class="list-group list-group-flush">
+                        <li t-foreach="state.requiredComponents" t-as="component" 
+                            class="list-group-item d-flex justify-content-between align-items-center">
+                            <span>
+                                <strong t-esc="component.name"/>
+                                <small class="text-muted ms-2" t-esc="component.code"/>
+                            </span>
+                            <span class="badge bg-primary rounded-pill" t-esc="component.quantity"/>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            
+            <!-- 扫码输入（支持pad设备扫码） -->
+            <div class="card mb-3">
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">
+                            <i class="fa fa-barcode me-2"/>
+                            扫描组件条码/批次号：
+                        </label>
+                        <input type="text" 
+                               class="form-control form-control-lg" 
+                               placeholder="请使用pad设备扫描组件条码或批次号"
+                               t-on-input="onBarcodeScanned"
+                               t-on-keydown="onKeyDown"
+                               t-att-disabled="state.isScanning"
+                               autofocus="autofocus"/>
+                        <small class="form-text text-muted">
+                            <i class="fa fa-info-circle me-1"/>
+                            使用pad设备扫描组件的条码、产品编码或批次号进行验证
+                        </small>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 扫码结果 -->
+            <div t-if="state.scannedProduct" class="card mb-3">
+                <div class="card-body">
+                    <div class="mb-2">
+                        <strong>扫码的组件：</strong>
+                        <span t-esc="state.scannedProductName"/>
+                        <small class="text-muted ms-2" t-esc="state.scannedProductCode"/>
+                    </div>
+                    
+                    <!-- 验证结果 -->
+                    <div t-if="state.verificationResult === 'matched'" 
+                         class="alert alert-success mb-0">
+                        <i class="fa fa-check-circle me-2"/>
+                        <strong>验证成功！</strong>
+                        <div t-esc="state.verificationMessage"/>
+                    </div>
+                    
+                    <div t-if="state.verificationResult === 'mismatched'" 
+                         class="alert alert-danger mb-0">
+                        <i class="fa fa-times-circle me-2"/>
+                        <strong>验证失败！</strong>
+                        <div t-esc="state.verificationMessage"/>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </t>
+</templates>
+

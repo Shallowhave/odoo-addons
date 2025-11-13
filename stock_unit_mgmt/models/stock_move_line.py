@@ -447,17 +447,27 @@ class StockMoveLine(models.Model):
                             # 关键：需要检查预填列表，防止扫码时创建重复的新行
                             pre_filled_lot_names.append(lot_name_normalized)
                             pre_filled_lot_lines.append(line)
+                    except ValidationError:
+                        # 验证错误应该抛出，不捕获
+                        raise
+                    except UserError:
+                        # 用户错误应该抛出，不捕获
+                        raise
                     except Exception as e:
-                        _logger.warning(f"[扫码入库] 处理移动行时出错: line_id={line.id if hasattr(line, 'id') else 'unknown'}, 错误={str(e)}")
+                        # 其他错误记录日志，但不阻止操作（非关键错误）
+                        _logger.warning(
+                            _("[扫码入库] 处理移动行时出错: line_id=%s, 错误=%s"),
+                            line.id if hasattr(line, 'id') else 'unknown',
+                            str(e),
+                            exc_info=True
+                        )
                         continue
                 
-                _logger.info(
-                    f"[扫码入库] 验证批次号: "
-                    f"当前行ID={self.id}, 是否NewId={is_current_new}, "
-                    f"批次号={self.lot_name} (标准化={scanned_lot_name}), "
-                    f"已保存的批次号列表={saved_lot_names}, "
-                    f"预填的批次号列表={pre_filled_lot_names}, "
-                    f"移动行总数={len(move_lines)}"
+                _logger.debug(
+                    _("[扫码入库] 验证批次号: 当前行ID=%s, 是否NewId=%s, 批次号=%s (标准化=%s), "
+                      "已保存的批次号列表=%s, 预填的批次号列表=%s, 移动行总数=%s"),
+                    self.id, is_current_new, self.lot_name, scanned_lot_name,
+                    saved_lot_names, pre_filled_lot_names, len(move_lines)
                 )
                 
                 # **根本性修复**：在 onchange 阶段，完全移除所有验证逻辑
@@ -1916,6 +1926,20 @@ class StockMoveLine(models.Model):
             )
         
         return result
+    
+    @api.constrains('lot_quantity')
+    def _check_lot_quantity(self):
+        """验证单位数量不能为负数"""
+        for record in self:
+            if record.lot_quantity and record.lot_quantity < 0:
+                raise ValidationError(_('单位数量不能为负数！'))
+    
+    @api.constrains('lot_name')
+    def _check_lot_name_length(self):
+        """验证批次号长度"""
+        for record in self:
+            if record.lot_name and len(record.lot_name) > 255:
+                raise ValidationError(_('批次号长度不能超过255个字符！'))
     
     @api.constrains('lot_name', 'move_id')
     def _check_lot_name_match(self):

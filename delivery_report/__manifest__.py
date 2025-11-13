@@ -14,7 +14,7 @@
     """,
     'author': 'memory',
     'website': 'http://www.yourwebsite.com',
-    'depends': ['base', 'stock', 'sale', 'account'],
+    'depends': ['base', 'stock', 'sale', 'account', 'stock_unit_mgmt'],
     'data': [
         'security/ir.model.access.csv',
         'data/delivery_report_data.xml',

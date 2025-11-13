@@ -11,6 +11,12 @@
             <field name="name">质检标签</field>
             <field name="technical_name">qc_label</field>
         </record>
+
+        <!-- 副产品标签测试类型 -->
+        <record id="xq_mrp_label.test_type_byproduct_label" model="quality.point.test_type">
+            <field name="name">副产品标签</field>
+            <field name="technical_name">byproduct_label</field>
+        </record>
     </data>
 </odoo>
 

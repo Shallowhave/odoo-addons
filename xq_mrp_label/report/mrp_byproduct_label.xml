@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <data>
+    <!-- 副产品标签模板 -->
+    <template id="mrp_byproduct_label_document">
+      <t t-call="web.html_container">
+        <t t-foreach="docs" t-as="o">
+          <t t-set="doc" t-value="o"/>
+          <t t-call="xq_mrp_label.external_layout_mrp_label">
+            <style>
+              * {
+                font-family: 'Calibri','DejaVu Sans','Noto Sans CJK SC','Source Han Sans SC','WenQuanYi Micro Hei','Noto Sans SC','Microsoft YaHei','SimSun',sans-serif !important;
+                font-size: 10pt;
+              }
+              table { width: 100%; border-collapse: collapse; }
+              table, th, td { border: 1px solid black; padding: 5px; }
+              .no-border { border: none !important; }
+              .main-title { font-size: 18pt; font-weight: bold; }
+              .section-title { font-size: 12pt; font-weight: bold; background-color: rgb(192,192,192); color: black; padding: 5px; }
+              td, th { font-size: 10pt; }
+              strong { font-size: 10pt; font-weight: bold; }
+              .label-page { width: 100mm; height: 100mm; box-sizing: border-box; }
+              .label-table { width: 100mm; height: 100mm; }
+              .company-table, .company-table td { border: 1px solid black; }
+              .label-table td, .label-table th { text-align: center; vertical-align: middle; }
+              .sub-en { color:#666; font-size:9pt; display:block; }
+            </style>
+
+            <div class="page">
+              <div class="label-page">
+              <table class="label-table">
+                <tr>
+                  <td colspan="4" style="text-align: center; font-weight: bold; font-size: 16pt; padding: 8px;">江西鑫桥新材料科技有限公司</td>
+                </tr>
+                <tr>
+                  <td style="width: 25%;"><div><strong>品名</strong></div><span class="sub-en">name</span></td>
+                  <td style="width: 75%;" colspan="3">
+                    <!-- 从 context 中获取副产品信息 -->
+                    <t t-set="byproduct_move" t-value="context.get('byproduct_move', False)"/>
+                    <t t-if="byproduct_move">
+                      <span t-esc="byproduct_move.product_id.display_name"/>
+                    </t>
+                    <t t-else="">
+                      <span t-esc="o.product_id.display_name"/>
+                    </t>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="width: 25%;"><div><strong>规格</strong></div><span class="sub-en">spec</span></td>
+                  <td style="width: 75%;" colspan="3">
+                    <t t-set="byproduct_move" t-value="context.get('byproduct_move', False)"/>
+                    <t t-set="byproduct_product" t-value="byproduct_move and byproduct_move.product_id or o.product_id"/>
+                    <t t-set="tmpl" t-value="byproduct_product.product_tmpl_id"/>
+                    <t t-set="base_spec_list" t-value="[tmpl.product_thickness, tmpl.product_width]"/>
+                    <t t-set="byproduct_qty" t-value="byproduct_move and byproduct_move.quantity_done or (byproduct_move and byproduct_move.product_uom_qty) or 0.0"/>
+                    <t t-set="spec_vals" t-value="[str(v) for v in base_spec_list if v] + [str(byproduct_qty)]"/>
+                    <t t-set="spec_text" t-value="'*'.join(spec_vals)"/>
+                    <span t-esc="spec_text or (byproduct_product.default_code or '')"/> m
+                  </td>
+                </tr>
+                <tr>
+                  <td style="width: 25%;"><div><strong>数量</strong></div><span class="sub-en">qty</span></td>
+                  <td style="width: 75%;" colspan="3">
+                    <t t-set="byproduct_move" t-value="context.get('byproduct_move', False)"/>
+                    <t t-set="byproduct_product" t-value="byproduct_move and byproduct_move.product_id or o.product_id"/>
+                    <t t-set="tmpl" t-value="byproduct_product.product_tmpl_id"/>
+                    <t t-set="byproduct_qty" t-value="byproduct_move and byproduct_move.quantity_done or (byproduct_move and byproduct_move.product_uom_qty) or 0.0"/>
+                    <t t-set="length_m" t-value="byproduct_qty or 0.0"/>
+                    <t t-set="width_m" t-value="tmpl.product_width and (tmpl.product_width / 1000.0) or 0.0"/>
+                    <t t-set="area_sqm" t-value="(length_m and width_m) and (length_m * width_m) or False"/>
+                    <t t-set="qty_text" t-value="(area_sqm and ('%.2f ㎡' % area_sqm)) or (str(byproduct_qty) + ' ' + (byproduct_move and byproduct_move.product_uom_id.name or byproduct_product.uom_id.name or ''))"/>
+                    <span t-esc="qty_text"/>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="width: 25%;"><div><strong>批号</strong></div><span class="sub-en">lot</span></td>
+                  <td style="width: 75%;" colspan="3">
+                    <t t-set="byproduct_move" t-value="context.get('byproduct_move', False)"/>
+                    <t t-if="byproduct_move">
+                      <t t-set="move_lines" t-value="byproduct_move.move_line_ids"/>
+                      <t t-set="lot" t-value="(move_lines and move_lines[0].lot_id) or False"/>
+                    </t>
+                    <t t-else="">
+                      <t t-set="lot_from_mo" t-value="('lot_producing_id' in o._fields) and o.lot_producing_id or False"/>
+                      <t t-set="move_lines" t-value="o.move_finished_ids and o.move_finished_ids.move_line_ids or []"/>
+                      <t t-set="lot_from_moves" t-value="(move_lines and move_lines[0].lot_id) or False"/>
+                      <t t-set="lot" t-value="lot_from_mo or lot_from_moves"/>
+                    </t>
+                    <div><span t-esc="(lot and lot.name) or '-'"/></div>
+                    <t t-if="lot">
+                      <div style="margin-top:4px;">
+                        <span t-field="lot.name" t-options-widget="'barcode'" t-options-width="200" t-options-height="30" t-options-type="'Code128'"/>
+                      </div>
+                    </t>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="width: 25%;"><div><strong>类型</strong></div><span class="sub-en">type</span></td>
+                  <td style="width: 75%;" colspan="3">
+                    <span style="color: #ff6600; font-weight: bold;">副产品</span>
+                  </td>
+                </tr>
+              </table>
+              </div>
+            </div>
+          </t>
+        </t>
+      </t>
+    </template>
+
+    <!-- 副产品标签报表动作 -->
+    <record id="action_report_mrp_byproduct_label" model="ir.actions.report">
+      <field name="name">副产品标签</field>
+      <field name="model">mrp.production</field>
+      <field name="report_type">qweb-pdf</field>
+      <field name="report_name">xq_mrp_label.mrp_byproduct_label_document</field>
+      <field name="report_file">xq_mrp_label.mrp_byproduct_label_document</field>
+      <field name="print_report_name">(object.name or 'MO') + '-byproduct-label'</field>
+      <field name="binding_model_id" ref="mrp.model_mrp_production"/>
+      <field name="binding_type">report</field>
+    </record>
+  </data>
+</odoo>
+

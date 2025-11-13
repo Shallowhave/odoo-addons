@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="mrp_component_scan_verify.extended_mrp_quality_check_confirmation_dialog"
+              t-inherit="mrp_workorder.MrpQualityCheckConfirmationDialog"  t-inherit-mode="extension" owl="1">
+        <xpath expr="//t/div/Dialog" position="inside">
+            <!-- 组件扫码确认信息显示组件 -->
+            <div t-if="recordData.test_type === 'component_scan_verify'" class="workorder_component_scan">
+                <ComponentScanWizard t-props="componentScanInfo"/>
+            </div>
+        </xpath>
+    </t>
+</templates>
+
