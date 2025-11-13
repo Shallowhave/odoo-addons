@@ -89,6 +89,26 @@ class StockPicking(models.Model):
                         })
         return lot_info
 
+    can_print_delivery_report = fields.Boolean(
+        string='可打印交货单',
+        compute='_compute_can_print_delivery_report',
+        store=False,
+        help='根据作业类型配置判断是否可以打印交货单'
+    )
+    
+    @api.depends('picking_type_id')
+    def _compute_can_print_delivery_report(self):
+        """计算是否可以打印交货单报告"""
+        for picking in self:
+            if not picking.picking_type_id:
+                picking.can_print_delivery_report = False
+                continue
+            # 安全检查字段是否存在
+            if hasattr(picking.picking_type_id, 'enable_delivery_report'):
+                picking.can_print_delivery_report = picking.picking_type_id.enable_delivery_report
+            else:
+                picking.can_print_delivery_report = False
+    
     def action_print_delivery_report(self):
         """打印交货单报告"""
         return self.env.ref('delivery_report.action_delivery_report').report_action(self)

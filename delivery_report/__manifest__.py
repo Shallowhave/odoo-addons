@@ -18,6 +18,7 @@
     'data': [
         'security/ir.model.access.csv',
         'data/delivery_report_data.xml',
+        'views/stock_picking_type_views.xml',
         'views/stock_picking_views.xml',
         'reports/delivery_report.xml',
     ],
