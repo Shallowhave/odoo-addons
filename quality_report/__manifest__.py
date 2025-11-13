@@ -13,7 +13,7 @@
     """,
     'author': 'memory',
     'website': 'http://www.yourwebsite.com',
-    'depends': ['stock'],
+    'depends': ['stock', 'delivery_report'],
     'data': [
         'security/ir.model.access.csv',
         'views/stock_picking_type_views.xml',

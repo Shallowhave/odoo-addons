@@ -25,14 +25,20 @@
             <field name="model">stock.picking</field>
             <field name="inherit_id" ref="stock.vpicktree"/>
             <field name="arch" type="xml">
+                <!-- 首先添加计算字段，使其在列表视图中可用 -->
+                <!-- 将字段添加到第一个字段之后，使其在视图中可用 -->
+                <xpath expr="//list//field[1]" position="after">
+                    <field name="can_print_delivery_report" invisible="1" column_invisible="1"/>
+                </xpath>
+                <!-- 然后在 header 中添加按钮 -->
+                <!-- 注意：header 按钮的 invisible 无法访问记录级别的计算字段，所以在 Python 方法中检查权限 -->
                 <xpath expr="//header" position="inside">
                     <button name="action_print_delivery_report" 
                             string="交货单" 
                             type="object" 
                             class="btn-secondary"
                             icon="fa-print"
-                            groups="stock.group_stock_user"
-                            invisible="not can_print_delivery_report"/>
+                            groups="stock.group_stock_user"/>
                 </xpath>
             </field>
         </record>
