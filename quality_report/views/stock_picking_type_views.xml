@@ -7,9 +7,10 @@
             <field name="model">stock.picking.type</field>
             <field name="inherit_id" ref="stock.view_picking_type_form"/>
             <field name="arch" type="xml">
-                <!-- 在常规标签页中添加品质报告打印配置选项 -->
-                <!-- 查找一个合适的位置，比如在 use_create_lots 字段之后 -->
-                <xpath expr="//field[@name='use_create_lots']" position="after">
+                <!-- 在硬件标签页中添加品质报告打印配置选项 -->
+                <!-- 放在 auto_print_packages 字段之后 -->
+                <!-- 如果 delivery_report 模块已安装，enable_delivery_report 会先添加，然后 enable_quality_report 会跟在后面 -->
+                <xpath expr="//page[@name='hardware']//field[@name='auto_print_packages']" position="after">
                     <field name="enable_quality_report" 
                            string="启用品质报告打印"
                            help="启用后，在交货单表单和列表视图中显示'打印品质报告'按钮"/>
