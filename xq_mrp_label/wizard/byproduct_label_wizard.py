@@ -55,7 +55,7 @@ class ByproductLabelWizard(models.TransientModel):
     
     uom_name = fields.Char(
         string='单位',
-        related='byproduct_move_id.product_uom_id.name',
+        related='byproduct_move_id.product_uom.name',
         readonly=True
     )
     
