@@ -69,6 +69,13 @@ class StockPicking(models.Model):
                             except:
                                 length = '-'
                         
+                        # 获取包裹信息
+                        package_name = '-'
+                        if line.result_package_id:
+                            package_name = line.result_package_id.name
+                        elif line.package_id:
+                            package_name = line.package_id.name
+                        
                         lot_info.append({
                             'product': move.product_id.name,
                             'product_code': move.product_id.default_code or '',
@@ -78,6 +85,7 @@ class StockPicking(models.Model):
                             'thickness': thickness,
                             'width': width,
                             'length': length,
+                            'package_name': package_name,
                         })
         return lot_info
 
