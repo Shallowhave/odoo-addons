@@ -1,6 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <!-- 质量控制点表单视图扩展 -->
-    <!-- 注意：pad设备自带扫码功能，不需要额外配置 -->
+    <data>
+        <!-- 扩展质检点表单视图，添加待登记组件字段 -->
+        <record id="quality_point_view_form_inherit_component_scan_verify" model="ir.ui.view">
+            <field name="name">quality.point.form.inherit.component.scan.verify</field>
+            <field name="model">quality.point</field>
+            <field name="inherit_id" ref="quality.quality_point_view_form"/>
+            <field name="arch" type="xml">
+                <xpath expr="//field[@name='test_type_id']" position="after">
+                    <!-- 待登记组件选择字段（参考 register_consumed_materials 的实现，使用 component_ids） -->
+                    <field name="component_id" 
+                           invisible="not is_workorder_step or not operation_id or test_type != 'component_scan_verify'"
+                           string="待登记组件"
+                           placeholder="选择要验证的待登记组件（可选）"
+                           options="{'no_create': True, 'no_open': True}"
+                           domain="[('id', 'in', component_ids), '|', ('company_id', '=', company_id), ('company_id', '=', False)]"
+                           help="选择要验证的待登记组件。如果配置了此字段，在质检时将直接验证扫码的组件是否匹配此组件，而不需要用户再选择。"/>
+                </xpath>
+            </field>
+        </record>
+    </data>
 </odoo>
 

@@ -10,56 +10,111 @@
                 </h6>
             </div>
             
-            <!-- 需要的组件列表 -->
-            <div class="card mb-3" t-if="state.requiredComponents.length > 0">
+            <!-- 选择待登记组件（如果质检点未配置组件，则显示选择界面） -->
+            <div class="card mb-3" t-if="state.requiredComponents.length > 0 and !state.selectedComponentId">
                 <div class="card-header">
-                    <strong>生产订单需要的组件：</strong>
+                    <strong>步骤1：选择待登记组件</strong>
                 </div>
                 <div class="card-body">
-                    <ul class="list-group list-group-flush">
-                        <li t-foreach="state.requiredComponents" t-as="component" 
-                            t-key="component_index"
-                            class="list-group-item d-flex justify-content-between align-items-center">
-                            <span>
-                                <strong t-esc="component.name"/>
-                                <small class="text-muted ms-2" t-esc="component.code"/>
-                            </span>
-                            <span class="badge bg-primary rounded-pill" t-esc="component.quantity"/>
-                        </li>
-                    </ul>
+                    <div class="mb-2">
+                        <small class="text-muted">
+                            <i class="fa fa-info-circle me-1"/>
+                            请先选择要验证的待登记组件，然后再扫码验证
+                        </small>
+                    </div>
+                    <div class="list-group">
+                        <button type="button" 
+                                t-foreach="state.requiredComponents" t-as="component" 
+                                t-key="component.id"
+                                t-att-class="state.selectedComponentId === component.id ? 'list-group-item list-group-item-action active' : 'list-group-item list-group-item-action'"
+                                t-on-click="() => this.onSelectComponent(component.id)">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <strong t-esc="component.name"/>
+                                    <small class="text-muted ms-2" t-esc="component.code"/>
+                                    <br/>
+                                    <small class="text-muted">
+                                        已消耗：<span t-esc="component.consumedQty"/> / 计划：<span t-esc="component.plannedQty"/>
+                                    </small>
+                                </div>
+                                <span class="badge bg-warning rounded-pill" t-esc="component.quantity"/>
+                            </div>
+                        </button>
+                    </div>
                 </div>
             </div>
             
-            <!-- 扫码输入（支持pad设备扫码） -->
-            <div class="card mb-3">
+            <!-- 显示已选择的组件（包括从配置中自动选择的） -->
+            <div class="card mb-3" t-if="state.selectedComponentId">
+                <div class="card-body">
+                    <div class="alert alert-info mb-0">
+                        <i class="fa fa-check-circle me-2"/>
+                        <strong>待验证组件：</strong>
+                        <span t-esc="state.selectedComponentName"/>
+                        <small class="text-muted ms-2" t-esc="state.selectedComponentCode"/>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 如果没有待登记组件且未配置组件 -->
+            <div class="card mb-3" t-if="state.requiredComponents.length === 0 and !state.selectedComponentId">
+                <div class="card-body">
+                    <div class="alert alert-warning mb-0">
+                        <i class="fa fa-exclamation-triangle me-2"/>
+                        没有待登记的组件，所有组件已消耗完毕
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 扫码输入（支持pad设备扫码和手动输入） -->
+            <div class="card mb-3" t-att-class="state.selectedComponentId ? '' : 'opacity-50'">
                 <div class="card-body">
                     <div class="mb-3">
                         <label class="form-label">
                             <i class="fa fa-barcode me-2"/>
-                            扫描组件条码/批次号：
+                            步骤2：扫描或输入组件条码/批次号
                         </label>
-                        <input type="text" 
-                               class="form-control form-control-lg" 
-                               placeholder="请使用pad设备扫描组件条码或批次号"
-                               t-on-input="onBarcodeScanned"
-                               t-on-keydown="onKeyDown"
-                               t-att-disabled="state.isScanning"
-                               autofocus="autofocus"/>
+                        <div class="input-group">
+                            <input type="text" 
+                                   class="form-control form-control-lg" 
+                                   placeholder="扫描条码或手动输入产品编码/批次号"
+                                   t-model="state.inputBarcode"
+                                   t-on-input="onInputChange"
+                                   t-on-keydown="onKeyDown"
+                                   t-att-disabled="state.isScanning or !state.selectedComponentId"
+                                   autofocus="autofocus"/>
+                            <button type="button" 
+                                    class="btn btn-primary btn-lg" 
+                                    t-on-click="onManualVerify"
+                                    t-att-disabled="state.isScanning or !state.inputBarcode or !state.selectedComponentId">
+                                <i class="fa fa-check me-1"/>
+                                验证
+                            </button>
+                        </div>
                         <small class="form-text text-muted">
                             <i class="fa fa-info-circle me-1"/>
-                            使用pad设备扫描组件的条码、产品编码或批次号进行验证
+                            支持扫码或手动输入：可使用pad设备扫描，也可手动输入产品编码、条码或批次号
+                            <t t-if="!state.selectedComponentId">
+                                <br/>
+                                <strong class="text-warning">请先选择待登记的组件！</strong>
+                            </t>
                         </small>
                     </div>
                 </div>
             </div>
             
-            <!-- 扫码结果 -->
-            <div t-if="state.scannedProduct" class="card mb-3">
+            <!-- 扫码结果（显示扫码的产品信息或错误信息） -->
+            <div t-if="state.scannedProduct or state.verificationResult === 'mismatched'" class="card mb-3">
                 <div class="card-body">
-                    <div class="mb-2">
+                    <div class="mb-2" t-if="state.scannedProduct">
                         <strong>扫码的组件：</strong>
                         <span t-esc="state.scannedProductName"/>
                         <small class="text-muted ms-2" t-esc="state.scannedProductCode"/>
+                    </div>
+                    
+                    <div class="mb-2" t-if="!state.scannedProduct and state.verificationResult === 'mismatched'">
+                        <strong>输入的条码/批次号：</strong>
+                        <span t-esc="state.scannedBarcode"/>
                     </div>
                     
                     <!-- 验证结果 -->
