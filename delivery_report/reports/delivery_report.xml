@@ -52,8 +52,12 @@
                                     </tr>
                                 </thead>
                                 <tbody>
+                                    <t t-set="lot_data" t-value="o._get_lot_serial_info()"/>
+                                    <t t-set="lot_info" t-value="lot_data.get('lot_info', [])"/>
+                                    <t t-set="total_length" t-value="lot_data.get('total_length', 0.0)"/>
+                                    <t t-set="total_quantity" t-value="lot_data.get('total_quantity', 0.0)"/>
                                     <t t-set="line_number" t-value="1"/>
-                                    <t t-foreach="o._get_lot_serial_info()" t-as="lot">
+                                    <t t-foreach="lot_info" t-as="lot">
                                         <tr>
                                             <td style="border: 1px solid #000; padding: 8px; text-align: center;"><span t-esc="line_number"/></td>
                                             <td style="border: 1px solid #000; padding: 8px; text-align: center;"><span t-esc="lot['product']"/></td>
@@ -77,6 +81,21 @@
                                         </tr>
                                         <t t-set="line_number" t-value="line_number + 1"/>
                                     </t>
+                                    <!-- 汇总行 -->
+                                    <tr style="background-color: #f0f0f0; font-weight: bold;">
+                                        <td colspan="4" style="border: 1px solid #000; padding: 8px; text-align: right;">合计：</td>
+                                        <td style="border: 1px solid #000; padding: 8px; text-align: center;">
+                                            <span t-esc="'%.2f' % total_length if total_length else '0.00'"/>
+                                        </td>
+                                        <td style="border: 1px solid #000; padding: 8px; text-align: center;">-</td>
+                                        <td style="border: 1px solid #000; padding: 8px; text-align: center;">
+                                            <span t-esc="'%.2f' % total_quantity if total_quantity else '0.00'"/>
+                                        </td>
+                                        <td style="border: 1px solid #000; padding: 8px; text-align: center;">-</td>
+                                        <td style="border: 1px solid #000; padding: 8px; text-align: center;">-</td>
+                                        <td style="border: 1px solid #000; padding: 8px; text-align: center;">-</td>
+                                        <td style="border: 1px solid #000; padding: 8px; text-align: center;">-</td>
+                                    </tr>
                                 </tbody>
                             </table>
 

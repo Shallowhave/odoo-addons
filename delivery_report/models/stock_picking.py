@@ -7,6 +7,9 @@ class StockPicking(models.Model):
     def _get_lot_serial_info(self):
         """获取批次/序列号信息"""
         lot_info = []
+        total_length = 0.0
+        total_quantity = 0.0
+        
         for move in self.move_ids_without_package:
             if move.move_line_ids:
                 for line in move.move_line_ids:
@@ -30,6 +33,7 @@ class StockPicking(models.Model):
                         # **关键修改**：从 stock.quant 获取计算长度(m)，而不是从产品模板获取
                         # 优先从目标位置的库存数量记录获取计算长度
                         length = '-'
+                        length_value = 0.0  # 用于汇总的数值
                         try:
                             # 查找对应的 stock.quant 记录
                             # 使用目标位置（location_dest_id）查找，因为这是交货单，货物会移动到目标位置
@@ -57,15 +61,22 @@ class StockPicking(models.Model):
                             # 如果找到了库存数量记录，获取计算长度
                             if quant and hasattr(quant, 'calculated_length_m') and quant.calculated_length_m:
                                 length = quant.calculated_length_m
+                                length_value = float(quant.calculated_length_m)
                             else:
                                 # 如果找不到或没有计算长度，回退到产品模板的长度
                                 length = getattr(product_tmpl, 'product_length', None)
-                                length = length if length else '-'
+                                if length:
+                                    length_value = float(length)
+                                else:
+                                    length = '-'
                         except Exception as e:
                             # 如果出错，回退到产品模板的长度
                             try:
                                 length = getattr(product_tmpl, 'product_length', None)
-                                length = length if length else '-'
+                                if length:
+                                    length_value = float(length)
+                                else:
+                                    length = '-'
                             except:
                                 length = '-'
                         
@@ -75,6 +86,10 @@ class StockPicking(models.Model):
                             package_name = line.result_package_id.name
                         elif line.package_id:
                             package_name = line.package_id.name
+                        
+                        # 累加汇总值
+                        total_length += length_value
+                        total_quantity += float(line.quantity) if line.quantity else 0.0
                         
                         lot_info.append({
                             'product': move.product_id.name,
@@ -87,7 +102,13 @@ class StockPicking(models.Model):
                             'length': length,
                             'package_name': package_name,
                         })
-        return lot_info
+        
+        # 将汇总信息添加到返回结果中
+        return {
+            'lot_info': lot_info,
+            'total_length': total_length,
+            'total_quantity': total_quantity,
+        }
 
     can_print_delivery_report = fields.Boolean(
         string='可打印交货单',
