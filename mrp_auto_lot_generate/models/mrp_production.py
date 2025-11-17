@@ -178,24 +178,27 @@ class MrpProduction(models.Model):
         return lot_name
 
     def _try_generate_lot(self):
-        """优化后的批次号生成检查逻辑"""
+        """优化后的批次号生成检查逻辑（包括主产品和副产品）"""
         for production in self:
             try:
                 # 检查是否所有组件就绪
                 all_ready = all(move.state == 'assigned' for move in production.move_raw_ids)
                 has_lot = bool(production.lot_producing_id)
                 
-                # 检查产品是否需要批次号
-                if not production.product_id.tracking in ['lot', 'serial']:
-                    _logger.debug("[AutoBatch] 产品 %s 不需要批次号", production.product_id.name)
-                    continue
+                # 检查主产品是否需要批次号
+                if production.product_id.tracking in ['lot', 'serial']:
+                    if self._is_logging_enabled():
+                        _logger.info("[自动批次] 检查制造单 %s - all_ready=%s has_lot=%s",
+                                     production.name, all_ready, has_lot)
 
-                if self._is_logging_enabled():
-                    _logger.info("[自动批次] 检查制造单 %s - all_ready=%s has_lot=%s",
-                                 production.name, all_ready, has_lot)
-
-                if all_ready and not has_lot:
-                    self._create_lot_for_production(production)
+                    if all_ready and not has_lot:
+                        self._create_lot_for_production(production)
+                else:
+                    _logger.debug("[AutoBatch] 主产品 %s 不需要批次号", production.product_id.name)
+                
+                # 检查并生成副产品的批次号
+                if all_ready:
+                    self._try_generate_byproduct_lots(production)
                     
             except Exception as e:
                 _logger.error("[自动批次] 为制造单 %s 生成批次号失败: %s", 
@@ -227,6 +230,151 @@ class MrpProduction(models.Model):
         production.lot_producing_id = lot.id
         if self._is_logging_enabled():
             _logger.info("[自动批次] 批次号 %s 已绑定到制造单 %s", lot_name, production.name)
+
+    def _try_generate_byproduct_lots(self, production):
+        """为制造单的副产品生成批次号"""
+        if not hasattr(production, 'move_byproduct_ids'):
+            return
+        
+        byproduct_moves = production.move_byproduct_ids.filtered(
+            lambda m: m.state != 'cancel' and m.product_id.tracking in ['lot', 'serial']
+        )
+        
+        if not byproduct_moves:
+            if self._is_logging_enabled():
+                _logger.debug("[自动批次] 制造单 %s 没有需要批次号的副产品", production.name)
+            return
+        
+        for byproduct_move in byproduct_moves:
+            try:
+                # 检查副产品移动是否已有批次号
+                has_byproduct_lot = False
+                if byproduct_move.move_line_ids:
+                    # 检查移动行是否已有批次号
+                    has_byproduct_lot = any(
+                        line.lot_id for line in byproduct_move.move_line_ids
+                    )
+                
+                if not has_byproduct_lot:
+                    if self._is_logging_enabled():
+                        _logger.info("[自动批次] 为副产品 %s 生成批次号（制造单：%s）",
+                                     byproduct_move.product_id.display_name, production.name)
+                    self._create_lot_for_byproduct(production, byproduct_move)
+                else:
+                    if self._is_logging_enabled():
+                        _logger.debug("[自动批次] 副产品 %s 已有批次号，跳过生成",
+                                     byproduct_move.product_id.display_name)
+            except Exception as e:
+                _logger.error("[自动批次] 为副产品 %s 生成批次号失败: %s",
+                             byproduct_move.product_id.display_name, str(e))
+                # 不抛出异常，继续处理其他副产品
+
+    def _create_lot_for_byproduct(self, production, byproduct_move):
+        """为副产品创建批次号"""
+        # 如果主产品已有批次号，使用主产品批次号作为基础生成副产品批次号
+        if production.lot_producing_id:
+            base_lot_name = production.lot_producing_id.name
+            # 生成带后缀的副产品批次号
+            lot_name = self._generate_byproduct_batch_with_suffix(
+                production, byproduct_move.product_id, base_lot_name
+            )
+        else:
+            # 如果主产品还没有批次号，先为主产品生成一个基础批次号（不创建，仅用于生成副产品批次号）
+            base_lot_name = production._generate_batch_number()
+            # 生成带后缀的副产品批次号
+            lot_name = self._generate_byproduct_batch_with_suffix(
+                production, byproduct_move.product_id, base_lot_name
+            )
+        
+        # 检查批次号是否已存在
+        existing_lot = self.env['stock.lot'].search([
+            ('name', '=', lot_name),
+            ('product_id', '=', byproduct_move.product_id.id),
+            ('company_id', '=', production.company_id.id)
+        ], limit=1)
+        
+        if existing_lot:
+            _logger.warning("[自动批次] 副产品批次号 %s 已存在，使用现有批次号", lot_name)
+            lot = existing_lot
+        else:
+            # 创建新的批次号
+            lot = self.env['stock.lot'].create({
+                'name': lot_name,
+                'product_id': byproduct_move.product_id.id,
+                'company_id': production.company_id.id,
+                'ref': f"{production.origin or production.name} - 副产品",
+            })
+        
+        # 将批次号关联到副产品的移动行
+        # 如果移动行已存在，直接更新批次号
+        if byproduct_move.move_line_ids:
+            for move_line in byproduct_move.move_line_ids:
+                if not move_line.lot_id:
+                    move_line.lot_id = lot.id
+        # 如果移动行不存在，批次号会在移动行创建时通过上下文或其他机制关联
+        # 这里我们先将批次号存储在移动的上下文中，以便后续使用
+        # 注意：Odoo标准流程会在适当时机创建移动行
+        
+        if self._is_logging_enabled():
+            _logger.info("[自动批次] 副产品批次号 %s 已绑定到副产品 %s（制造单：%s）",
+                         lot_name, byproduct_move.product_id.display_name, production.name)
+
+    def _generate_byproduct_batch_with_suffix(self, production, product, base_lot_name):
+        """为副产品生成带后缀的批次号（基于主产品批次号）"""
+        Lot = self.env['stock.lot']
+        
+        # 提取基础批次号（去掉可能的后缀）
+        # 格式：XQYYMMDDHHMMAxx 或 XQYYMMDDHHMMAxx-B
+        base_pattern = base_lot_name.split('-')[0] if '-' in base_lot_name else base_lot_name
+        
+        # 查找所有以基础批次号开头且属于同一产品的批次号
+        # 这样可以找到同一制造单的其他副产品批次号
+        existing_lots = Lot.search([
+            ('name', 'like', f'{base_pattern}-%'),
+            ('product_id', '=', product.id),
+            ('company_id', '=', production.company_id.id)
+        ])
+        
+        # 提取已使用的后缀（字母或数字）
+        used_letter_suffixes = set()
+        used_number_suffixes = set()
+        
+        for lot in existing_lots:
+            if '-' in lot.name:
+                try:
+                    suffix = lot.name.split('-')[-1].strip()
+                    # 检查是字母后缀还是数字后缀
+                    if len(suffix) == 1 and suffix.isalpha():
+                        # 单个字母后缀（B, C, D, ...）
+                        used_letter_suffixes.add(suffix.upper())
+                    elif suffix.isdigit():
+                        # 数字后缀（01, 02, ...）
+                        used_number_suffixes.add(int(suffix))
+                except (ValueError, IndexError):
+                    continue
+        
+        # 优先使用字母后缀（从B开始）
+        next_letter = 'B'
+        while next_letter in used_letter_suffixes and ord(next_letter) < ord('Z'):
+            next_letter = chr(ord(next_letter) + 1)
+        
+        if next_letter <= 'Z' and next_letter not in used_letter_suffixes:
+            # 使用字母后缀
+            lot_name = f"{base_pattern}-{next_letter}"
+        else:
+            # 如果字母用完了，使用数字后缀（从01开始）
+            next_number = 1
+            while next_number in used_number_suffixes and next_number < 99:
+                next_number += 1
+            if next_number >= 99:
+                raise UserError(f"副产品 {product.display_name} 的批次号后缀已用完（已尝试到 {next_number}）")
+            lot_name = f"{base_pattern}-{next_number:02d}"
+        
+        if self._is_logging_enabled():
+            _logger.info("[自动批次] 为副产品 %s 生成带后缀的批次号：%s（基于主产品批次号：%s）",
+                         product.display_name, lot_name, base_pattern)
+        
+        return lot_name
 
 
 class StockMove(models.Model):
@@ -263,4 +411,51 @@ class StockMove(models.Model):
             except Exception as e:
                 _logger.error("[自动批次] 检查制造单 %s 批次号生成失败: %s", 
                              production.name, str(e))
+
+
+class StockMoveLine(models.Model):
+    _inherit = 'stock.move.line'
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        """扩展创建方法，自动为副产品移动行关联预生成的批次号"""
+        # 先调用父类方法创建记录
+        move_lines = super().create(vals_list)
+        
+        # 为每个新创建的移动行检查是否需要关联副产品批次号
+        for move_line in move_lines:
+            if move_line.lot_id:
+                # 如果已有批次号，跳过
+                continue
+            
+            move = move_line.move_id
+            if not move or not hasattr(move, 'production_id'):
+                continue
+            
+            production = move.production_id
+            if not production:
+                continue
+            
+            # 检查是否是副产品移动
+            if hasattr(production, 'move_byproduct_ids') and move in production.move_byproduct_ids:
+                # 查找该副产品移动对应的批次号
+                if move.product_id.tracking in ['lot', 'serial']:
+                    # 查找该副产品产品的批次号（基于主产品批次号）
+                    if production.lot_producing_id:
+                        base_lot_name = production.lot_producing_id.name
+                        # 查找匹配的副产品批次号
+                        byproduct_lot = self.env['stock.lot'].search([
+                            ('name', 'like', f'{base_lot_name.split("-")[0]}-%'),
+                            ('product_id', '=', move.product_id.id),
+                            ('company_id', '=', production.company_id.id),
+                            ('ref', 'like', f'%{production.name}%'),
+                        ], limit=1)
+                        
+                        if byproduct_lot and not move_line.lot_id:
+                            move_line.lot_id = byproduct_lot.id
+                            if production._is_logging_enabled():
+                                _logger.info("[自动批次] 自动关联副产品批次号 %s 到移动行（制造单：%s）",
+                                             byproduct_lot.name, production.name)
+        
+        return move_lines
 
