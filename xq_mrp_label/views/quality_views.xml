@@ -1,13 +1,13 @@
 <odoo>
   <data>
-    <!-- 继承质检向导，增加“打印标签”按钮，仅在我们两个测试类型时显示 -->
+    <!-- 继承质检向导，增加"打印标签"按钮，仅在我们三个测试类型时显示 -->
     <record id="view_quality_check_wizard_form_print_label" model="ir.ui.view">
       <field name="name">quality.check.wizard.form.print.label</field>
       <field name="model">quality.check.wizard</field>
       <field name="inherit_id" ref="quality_control.view_quality_check_wizard"/>
       <field name="arch" type="xml">
         <xpath expr="//button[@name='do_pass']" position="after">
-          <button name="action_print_label" type="object" string="打印标签" class="btn-secondary" invisible="test_type not in ('product_label','qc_label')"/>
+          <button name="action_print_label" type="object" string="打印标签" class="btn-secondary" invisible="test_type not in ('product_label','qc_label','byproduct_label')"/>
         </xpath>
       </field>
     </record>

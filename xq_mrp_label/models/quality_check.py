@@ -32,11 +32,11 @@ class QualityCheck(models.Model):
         if test_type == 'product_label':
             xmlid = 'xq_mrp_label.action_report_mrp_label'
             action = self.env.ref(xmlid)
-            return action.report_action(production, context=ctx)
+            return action.with_context(**ctx).report_action(production.ids)
         elif test_type == 'qc_label':
             xmlid = 'xq_mrp_label.action_report_mrp_qc_label'
             action = self.env.ref(xmlid)
-            return action.report_action(production, context=ctx)
+            return action.with_context(**ctx).report_action(production.ids)
         elif test_type == 'byproduct_label':
             # 副产品标签：需要选择要打印的副产品
             return self._action_print_byproduct_label(production, ctx)
@@ -65,10 +65,11 @@ class QualityCheck(models.Model):
         # 如果只有一个副产品，直接打印
         if len(byproduct_moves) == 1:
             byproduct_move = byproduct_moves[0]
-            ctx['byproduct_move'] = byproduct_move
+            # 在 context 中传递副产品移动记录的 ID，而不是记录对象
+            ctx['byproduct_move_id'] = byproduct_move.id
             xmlid = 'xq_mrp_label.action_report_mrp_byproduct_label'
             action = self.env.ref(xmlid)
-            return action.report_action(production, context=ctx)
+            return action.with_context(**ctx).report_action(production.ids)
         
         # 如果有多个副产品，显示向导让用户选择
         return {

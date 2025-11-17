@@ -36,7 +36,8 @@
                   <td style="width: 25%;"><div><strong>品名</strong></div><span class="sub-en">name</span></td>
                   <td style="width: 75%;" colspan="3">
                     <!-- 从 context 中获取副产品信息 -->
-                    <t t-set="byproduct_move" t-value="context.get('byproduct_move', False)"/>
+                    <t t-set="byproduct_move_id" t-value="context.get('byproduct_move_id', False)"/>
+                    <t t-set="byproduct_move" t-value="byproduct_move_id and env['stock.move'].browse(byproduct_move_id) or False"/>
                     <t t-if="byproduct_move">
                       <span t-esc="byproduct_move.product_id.display_name"/>
                     </t>
@@ -48,11 +49,13 @@
                 <tr>
                   <td style="width: 25%;"><div><strong>规格</strong></div><span class="sub-en">spec</span></td>
                   <td style="width: 75%;" colspan="3">
-                    <t t-set="byproduct_move" t-value="context.get('byproduct_move', False)"/>
+                    <t t-set="byproduct_move_id" t-value="context.get('byproduct_move_id', False)"/>
+                    <t t-set="byproduct_move" t-value="byproduct_move_id and env['stock.move'].browse(byproduct_move_id) or False"/>
                     <t t-set="byproduct_product" t-value="byproduct_move and byproduct_move.product_id or o.product_id"/>
                     <t t-set="tmpl" t-value="byproduct_product.product_tmpl_id"/>
                     <t t-set="base_spec_list" t-value="[tmpl.product_thickness, tmpl.product_width]"/>
-                    <t t-set="byproduct_qty" t-value="byproduct_move and byproduct_move.quantity_done or (byproduct_move and byproduct_move.product_uom_qty) or 0.0"/>
+                    <!-- 使用 move 的 quantity 字段（实际处理数量），如果没有则使用 product_uom_qty（计划数量） -->
+                    <t t-set="byproduct_qty" t-value="byproduct_move and (byproduct_move.quantity or byproduct_move.product_uom_qty) or 0.0"/>
                     <t t-set="spec_vals" t-value="[str(v) for v in base_spec_list if v] + [str(byproduct_qty)]"/>
                     <t t-set="spec_text" t-value="'*'.join(spec_vals)"/>
                     <span t-esc="spec_text or (byproduct_product.default_code or '')"/> m
@@ -61,21 +64,27 @@
                 <tr>
                   <td style="width: 25%;"><div><strong>数量</strong></div><span class="sub-en">qty</span></td>
                   <td style="width: 75%;" colspan="3">
-                    <t t-set="byproduct_move" t-value="context.get('byproduct_move', False)"/>
+                    <t t-set="byproduct_move_id" t-value="context.get('byproduct_move_id', False)"/>
+                    <t t-set="byproduct_move" t-value="byproduct_move_id and env['stock.move'].browse(byproduct_move_id) or False"/>
                     <t t-set="byproduct_product" t-value="byproduct_move and byproduct_move.product_id or o.product_id"/>
                     <t t-set="tmpl" t-value="byproduct_product.product_tmpl_id"/>
-                    <t t-set="byproduct_qty" t-value="byproduct_move and byproduct_move.quantity_done or (byproduct_move and byproduct_move.product_uom_qty) or 0.0"/>
+                    <!-- 使用 move 的 quantity 字段（实际处理数量），如果没有则使用 product_uom_qty（计划数量） -->
+                    <t t-set="byproduct_qty" t-value="byproduct_move and (byproduct_move.quantity or byproduct_move.product_uom_qty) or 0.0"/>
+                    <t t-set="move_lines" t-value="byproduct_move and byproduct_move.move_line_ids or []"/>
                     <t t-set="length_m" t-value="byproduct_qty or 0.0"/>
                     <t t-set="width_m" t-value="tmpl.product_width and (tmpl.product_width / 1000.0) or 0.0"/>
                     <t t-set="area_sqm" t-value="(length_m and width_m) and (length_m * width_m) or False"/>
-                    <t t-set="qty_text" t-value="(area_sqm and ('%.2f ㎡' % area_sqm)) or (str(byproduct_qty) + ' ' + (byproduct_move and byproduct_move.product_uom_id.name or byproduct_product.uom_id.name or ''))"/>
+                    <!-- 获取单位名称：优先从 move_line_ids 获取，否则从 move 或 product 获取 -->
+                    <t t-set="uom_name" t-value="(move_lines and move_lines[0].product_uom_id.name) or (byproduct_move and byproduct_move.product_uom.name) or (byproduct_product.uom_id.name) or ''"/>
+                    <t t-set="qty_text" t-value="(area_sqm and ('%.2f ㎡' % area_sqm)) or (str(byproduct_qty) + ' ' + uom_name)"/>
                     <span t-esc="qty_text"/>
                   </td>
                 </tr>
                 <tr>
                   <td style="width: 25%;"><div><strong>批号</strong></div><span class="sub-en">lot</span></td>
                   <td style="width: 75%;" colspan="3">
-                    <t t-set="byproduct_move" t-value="context.get('byproduct_move', False)"/>
+                    <t t-set="byproduct_move_id" t-value="context.get('byproduct_move_id', False)"/>
+                    <t t-set="byproduct_move" t-value="byproduct_move_id and env['stock.move'].browse(byproduct_move_id) or False"/>
                     <t t-if="byproduct_move">
                       <t t-set="move_lines" t-value="byproduct_move.move_line_ids"/>
                       <t t-set="lot" t-value="(move_lines and move_lines[0].lot_id) or False"/>

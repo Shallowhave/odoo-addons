@@ -130,11 +130,11 @@ class ByproductLabelWizard(models.TransientModel):
         if paper:
             ctx['force_paperformat_id'] = paper.id
         
-        # 将副产品移动记录添加到 context 中
-        ctx['byproduct_move'] = byproduct_move
+        # 将副产品移动记录 ID 添加到 context 中（不能直接传递记录对象）
+        ctx['byproduct_move_id'] = byproduct_move.id
         
         # 打印标签
         xmlid = 'xq_mrp_label.action_report_mrp_byproduct_label'
         action = self.env.ref(xmlid)
-        return action.report_action(production, context=ctx)
+        return action.with_context(**ctx).report_action(production.ids)
 

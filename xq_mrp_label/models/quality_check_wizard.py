@@ -15,6 +15,7 @@ class QualityCheckWizard(models.TransientModel):
 
         - 当 test_type == 'product_label' 打印产品标签（action_report_mrp_label）
         - 当 test_type == 'qc_label' 打印质检标签（action_report_mrp_qc_label）
+        - 当 test_type == 'byproduct_label' 打印副产品标签（action_report_mrp_byproduct_label）
         - 其他类型不处理，返回 False
         """
         self.ensure_one()
@@ -50,6 +51,18 @@ class QualityCheckWizard(models.TransientModel):
             tt = getattr(check.point_id, 'test_type_id', False)
             derived_test_type = tt and getattr(tt, 'technical_name', False) or False
 
+        # 可选：强制 100x100 纸张
+        ctx = dict(self.env.context or {})
+        paper_xmlid = 'xq_mrp_label.paperformat_100x100'
+        paper = self.env.ref(paper_xmlid, raise_if_not_found=False)
+        if paper:
+            ctx['force_paperformat_id'] = paper.id
+
+        # 处理副产品标签（需要特殊处理，参考 quality_check.py 的实现）
+        if derived_test_type == 'byproduct_label':
+            return check._action_print_byproduct_label(production, ctx)
+
+        # 处理产品标签和质检标签
         report_action_xmlid = False
         if derived_test_type == 'product_label':
             report_action_xmlid = 'xq_mrp_label.action_report_mrp_label'
@@ -59,15 +72,8 @@ class QualityCheckWizard(models.TransientModel):
         if not report_action_xmlid:
             return False
 
-        # 可选：强制 100x100 纸张
-        ctx = dict(self.env.context or {})
-        paper_xmlid = 'xq_mrp_label.paperformat_100x100'
-        paper = self.env.ref(paper_xmlid, raise_if_not_found=False)
-        if paper:
-            ctx['force_paperformat_id'] = paper.id
-
         # 触发报表
         report_action = self.env.ref(report_action_xmlid, raise_if_not_found=False)
-        return report_action.report_action(production, context=ctx)
+        return report_action.with_context(**ctx).report_action(production.ids)
 
 
