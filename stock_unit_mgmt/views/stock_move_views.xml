@@ -26,6 +26,21 @@
             </field>
         </record>
 
+        <!-- 在操作视图的最后添加发货重量字段 -->
+        <record id="view_stock_move_line_operation_tree_delivery_weight" model="ir.ui.view">
+            <field name="name">stock.move.line.operations.list.delivery.weight</field>
+            <field name="model">stock.move.line</field>
+            <field name="inherit_id" ref="view_stock_move_line_operation_tree_inherit_inventory_unit_manager"/>
+            <field name="arch" type="xml">
+                <xpath expr="//list/field[last()]" position="after">
+                    <field name="delivery_weight" 
+                            string="发货重量 (kg)"
+                            sum="总重量"
+                            optional="show"/>
+                </xpath>
+            </field>
+        </record>
+
         <!-- 继承库存移动行表单视图 -->
         <record id="view_stock_move_line_form_inherit_inventory_unit_manager" model="ir.ui.view">
             <field name="name">stock.move.line.form.inherit.inventory_unit_manager</field>
@@ -36,6 +51,7 @@
                     <field name="lot_quantity" string="单位数量"/>
                     <field name="lot_unit_name"/>
                     <field name="lot_unit_name_custom" invisible="lot_unit_name != 'custom'"/>
+                    <field name="delivery_weight" string="发货重量 (kg)"/>
                     <field name="custom_unit_values" invisible="1"/>
                 </xpath>
             </field>
@@ -55,6 +71,21 @@
                             string="附加单位数量"
                             optional="show"
                             sum="附加单位总数"/>
+                </xpath>
+            </field>
+        </record>
+
+        <!-- 在树视图的最后添加发货重量字段 -->
+        <record id="view_move_line_tree_delivery_weight" model="ir.ui.view">
+            <field name="name">stock.move.line.tree.delivery.weight</field>
+            <field name="model">stock.move.line</field>
+            <field name="inherit_id" ref="view_move_line_tree_inherit_inventory_unit_manager"/>
+            <field name="arch" type="xml">
+                <xpath expr="//list/field[last()]" position="after">
+                    <field name="delivery_weight" 
+                            string="发货重量 (kg)"
+                            optional="show"
+                            sum="总重量"/>
                 </xpath>
             </field>
         </record>
@@ -79,6 +110,21 @@
                     <field name="custom_unit_values" 
                             column_invisible="1"
                             invisible="1"/>
+                </xpath>
+            </field>
+        </record>
+
+        <!-- 在详细操作树视图的最后添加发货重量字段 -->
+        <record id="view_stock_move_line_detailed_operation_tree_delivery_weight" model="ir.ui.view">
+            <field name="name">stock.move.line.detailed.operations.list.delivery.weight</field>
+            <field name="model">stock.move.line</field>
+            <field name="inherit_id" ref="view_stock_move_line_detailed_operation_tree_inherit_inventory_unit_manager"/>
+            <field name="arch" type="xml">
+                <xpath expr="//list/field[last()]" position="after">
+                    <field name="delivery_weight" 
+                            string="发货重量 (kg)"
+                            optional="show"
+                            sum="总重量"/>
                 </xpath>
             </field>
         </record>

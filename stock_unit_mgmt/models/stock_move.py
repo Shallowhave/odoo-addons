@@ -11,6 +11,14 @@ class StockMove(models.Model):
     
     # 计算字段：单位名称
     lot_unit_name = fields.Char(string='单位名称', compute='_compute_lot_unit_name')
+    
+    # 计算字段：总发货重量
+    total_delivery_weight = fields.Float(
+        string='总发货重量 (kg)',
+        compute='_compute_total_delivery_weight',
+        digits=(16, 2),
+        help='所有移动行的发货重量汇总，单位：千克'
+    )
 
     @api.depends('move_line_ids.lot_quantity')
     def _compute_lot_quantity(self):
@@ -24,6 +32,12 @@ class StockMove(models.Model):
         for move in self:
             unit_names = move.move_line_ids.mapped('lot_unit_name')
             move.lot_unit_name = next((name for name in unit_names if name), '')
+
+    @api.depends('move_line_ids.delivery_weight')
+    def _compute_total_delivery_weight(self):
+        """计算总发货重量"""
+        for move in self:
+            move.total_delivery_weight = sum(move.move_line_ids.mapped('delivery_weight') or [0.0])
 
     def _action_done(self, cancel_backorder=False):
         """完成库存移动时，将单位信息传递到库存数量记录"""

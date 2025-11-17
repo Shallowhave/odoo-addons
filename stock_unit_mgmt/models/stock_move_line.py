@@ -60,6 +60,15 @@ class StockMoveLine(models.Model):
         string='合同号',
         help='合同号，从制造订单自动获取'
     )
+    
+    # 发货重量字段（根据产品发货重量系数自动计算）
+    delivery_weight = fields.Float(
+        string='发货重量 (kg)',
+        compute='_compute_delivery_weight',
+        store=False,
+        digits=(16, 2),
+        help='根据产品发货重量系数和面积自动计算的发货重量，单位：千克'
+    )
 
     @api.model
     def _get_lot_unit_name_selection(self):
@@ -125,6 +134,79 @@ class StockMoveLine(models.Model):
                     record.lot_weight_label = record.lot_unit_name
             else:
                 record.lot_weight_label = 'kg'
+
+    @api.depends('product_id', 'qty_done', 'quantity', 'product_id.product_tmpl_id.weight_per_sqm',
+                 'product_id.product_tmpl_id.product_width', 'product_uom_id')
+    def _compute_delivery_weight(self):
+        """计算发货重量：根据产品发货重量系数和面积计算
+        
+        计算逻辑：
+        1. 如果产品没有配置发货重量系数，返回 0
+        2. 计算面积：
+           - 如果产品单位是平方米，直接用 qty_done 或 quantity 作为面积
+           - 如果产品单位不是平方米，根据 quantity 和产品宽度计算面积
+        3. 计算重量：面积 × 重量系数
+        """
+        for record in self:
+            if not record.product_id:
+                record.delivery_weight = 0.0
+                continue
+            
+            product = record.product_id
+            product_tmpl = product.product_tmpl_id
+            
+            # 检查产品是否有发货重量系数
+            if not hasattr(product_tmpl, 'weight_per_sqm') or not product_tmpl.weight_per_sqm:
+                record.delivery_weight = 0.0
+                continue
+            
+            weight_per_sqm = product_tmpl.weight_per_sqm
+            
+            # 获取数量（优先使用 qty_done，如果没有则使用 quantity）
+            qty = record.qty_done if record.qty_done > 0 else (record.quantity or 0.0)
+            if qty <= 0:
+                record.delivery_weight = 0.0
+                continue
+            
+            # 获取产品单位
+            uom_id = record.product_uom_id or product.uom_id
+            if not uom_id:
+                record.delivery_weight = 0.0
+                continue
+            
+            # 判断单位是否为平方米
+            uom_name = str(uom_id.name or '').lower()
+            is_sqm_unit = (
+                '平米' in uom_name or 
+                '平方米' in uom_name or 
+                'sqm' in uom_name or
+                'm²' in uom_name or
+                'm2' in uom_name or
+                (hasattr(uom_id, 'category_id') and uom_id.category_id and 
+                 ('面积' in (uom_id.category_id.name or '') or 
+                  'area' in (uom_id.category_id.name or '').lower()))
+            )
+            
+            # 计算面积
+            if is_sqm_unit:
+                # 如果单位是平方米，直接用数量作为面积
+                area_sqm = qty
+            else:
+                # 如果单位不是平方米，需要根据数量和产品宽度计算面积
+                # 面积 = 数量 × 宽度(mm) / 1000 (转换为平方米)
+                if not product_tmpl.product_width or product_tmpl.product_width <= 0:
+                    record.delivery_weight = 0.0
+                    continue
+                
+                # 假设数量单位是"米"或"卷"等，需要转换为面积
+                # 如果数量单位是"米"，面积 = 数量 × 宽度(mm) / 1000
+                # 如果数量单位是"卷"，需要知道每卷的面积，这里暂时按"米"处理
+                # 注意：这里假设数量单位是"米"，如果是其他单位可能需要调整
+                width_m = product_tmpl.product_width / 1000.0  # mm转m
+                area_sqm = qty * width_m
+            
+            # 计算重量：面积 × 重量系数
+            record.delivery_weight = round(area_sqm * weight_per_sqm, 2)
 
     @api.onchange('product_id')
     def _onchange_product_id_custom_units(self):
