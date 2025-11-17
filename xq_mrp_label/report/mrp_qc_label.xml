@@ -77,8 +77,8 @@
                         <div>规格：<span t-esc="spec_text or (o.product_id.default_code or '')"/>m</div>
                         <div>批号：<span t-esc="(lot and lot.name) or '-'"/></div>
                         <t t-if="lot">
-                          <div style="margin-top:4px;">
-                            <span t-field="lot.name" t-options-widget="'barcode'" t-options-width="200" t-options-height="30" t-options-type="'Code128'"/>
+                          <div style="margin-top:4px; text-align: center;">
+                            <span t-field="lot.name" t-options-widget="'barcode'" t-options-width="300" t-options-height="60" t-options-type="'Code128'" t-options-display_value="True"/>
                           </div>
                         </t>
                         <!-- <div>检测人：<span t-esc="testers_text or '-'"/></div> -->
