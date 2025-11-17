@@ -39,9 +39,9 @@ export class ComponentScanWizard extends Component {
                 await this.loadConfiguredComponent();
             }
             // 如果既没有已选择的组件，也没有配置的组件，则从生产订单加载待登记组件列表
-            if (!this.state.selectedComponentId) {
-                await this.loadRequiredComponents();
-            }
+            // 注意：即使已经选择了组件，也加载组件列表，以便用户可以切换组件（如果需要）
+            // 但组件选择列表的显示由模板中的条件控制（只在没有选择组件时显示）
+            await this.loadRequiredComponents();
         });
     }
 
@@ -50,10 +50,26 @@ export class ComponentScanWizard extends Component {
         const recordData = this.props.record.data;
         
         try {
+            // 如果 recordData 中没有 selected_component_id，尝试从后端读取完整的质检记录
+            let selectedComponentId = null;
             if (recordData.selected_component_id && recordData.selected_component_id[0]) {
+                selectedComponentId = recordData.selected_component_id[0];
+            } else if (recordData.id) {
+                // 从后端读取完整的质检记录，确保获取最新的 selected_component_id
+                const check = await this.orm.read(
+                    'quality.check',
+                    [recordData.id],
+                    ['selected_component_id']
+                );
+                if (check && check.length > 0 && check[0].selected_component_id && check[0].selected_component_id[0]) {
+                    selectedComponentId = check[0].selected_component_id[0];
+                }
+            }
+            
+            if (selectedComponentId) {
                 const product = await this.orm.read(
                     'product.product',
-                    [recordData.selected_component_id[0]],
+                    [selectedComponentId],
                     ['name', 'default_code']
                 );
                 
@@ -61,10 +77,15 @@ export class ComponentScanWizard extends Component {
                     this.state.selectedComponentId = product[0].id;
                     this.state.selectedComponentName = product[0].name;
                     this.state.selectedComponentCode = product[0].default_code || '';
+                    console.log('[组件扫码确认] 已加载选择的组件:', {
+                        id: product[0].id,
+                        name: product[0].name,
+                        code: product[0].default_code
+                    });
                 }
             }
         } catch (error) {
-            console.error('加载已选择的组件失败:', error);
+            console.error('[组件扫码确认] 加载已选择的组件失败:', error);
         }
     }
     
@@ -161,6 +182,8 @@ export class ComponentScanWizard extends Component {
         const recordData = this.props.record.data;
         
         try {
+            // 如果已经选择了组件，仍然加载组件列表（以便用户可以切换组件），
+            // 但组件选择列表的显示由模板条件控制（只在没有选择组件时显示）
             // 获取生产订单的待登记组件列表（只获取未完全消耗的组件）
             if (recordData.production_id && recordData.production_id[0]) {
                 const production = await this.orm.read(
@@ -258,28 +281,21 @@ export class ComponentScanWizard extends Component {
     }
 
     onInputChange(ev) {
-        // 监听输入变化，用于自动处理扫码（快速输入）
-        // 手动输入时，用户应该使用 Enter 键或点击验证按钮
-        const barcode = ev.target.value.trim();
+        // 更新输入框的值，确保扫码设备扫描的内容显示在输入框中
+        // 用户需要按 Enter 键或点击验证按钮来触发验证
+        const barcode = ev.target.value;
         this.state.inputBarcode = barcode;
         
-        if (!barcode) {
-            return;
+        // 清除之前的自动验证定时器（如果有）
+        if (this._scanTimeout) {
+            clearTimeout(this._scanTimeout);
+            this._scanTimeout = null;
         }
         
-        // 延迟处理，避免输入过程中的中间值触发
-        clearTimeout(this._scanTimeout);
-        this._scanTimeout = setTimeout(async () => {
-            // 检查输入是否完整（扫码通常是快速输入，手动输入较慢）
-            // 如果输入长度较长或包含空格，可能是手动输入，不自动处理
-            if (barcode.length > 20 || barcode.includes(' ')) {
-                // 可能是手动输入，不自动处理，等待用户按 Enter 或点击按钮
-                return;
-            }
-            // 自动处理扫码（快速输入，通常是扫码）
-            await this.processBarcode(barcode);
-            this.state.inputBarcode = ''; // 清空输入框，准备下次扫码
-        }, 500); // 500ms延迟，确保扫码完成（扫码通常很快）
+        // 记录输入框的值变化（用于调试）
+        if (barcode) {
+            console.log('[组件扫码确认] 输入框值变化:', barcode);
+        }
     }
     
     async onManualVerify() {
@@ -291,8 +307,11 @@ export class ComponentScanWizard extends Component {
             return;
         }
         
+        // 确保条码显示在输入框中（扫码设备扫描的内容应该已经显示）
+        // 然后触发验证
         await this.processBarcode(barcode);
-        this.state.inputBarcode = ''; // 清空输入框
+        // 验证完成后才清空输入框（成功或失败都清空，准备下次扫码）
+        this.state.inputBarcode = '';
     }
     
     async processBarcode(barcode) {
@@ -388,18 +407,26 @@ export class ComponentScanWizard extends Component {
     }
     
     async onKeyDown(ev) {
-        // 支持Enter键快速确认（pad设备扫码后通常会自动回车，或手动输入后按Enter）
+        // 支持Enter键触发验证（pad设备扫码后通常会自动回车，或手动输入后按Enter）
         if (ev.key === 'Enter') {
             ev.preventDefault();
-            // 取消自动处理的延迟
+            
+            // 清除自动验证定时器（如果有）
             if (this._scanTimeout) {
                 clearTimeout(this._scanTimeout);
+                this._scanTimeout = null;
             }
-            // 使用输入框的当前值
+            
+            // 使用输入框的当前值进行验证
             const barcode = this.state.inputBarcode.trim();
             if (barcode) {
+                // 先显示在输入框中（确保扫码设备扫描的内容可见）
+                // 然后触发验证
                 await this.processBarcode(barcode);
-                this.state.inputBarcode = ''; // 清空输入框
+                // 验证完成后才清空输入框（成功或失败都清空，准备下次扫码）
+                this.state.inputBarcode = '';
+            } else {
+                this.notification.add('请输入条码、产品编码或批次号', { type: 'warning' });
             }
         }
     }

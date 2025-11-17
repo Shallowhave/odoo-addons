@@ -11,6 +11,7 @@
             </div>
             
             <!-- 选择待登记组件（如果质检点未配置组件，则显示选择界面） -->
+            <!-- 只有在没有选择组件时才显示组件选择列表 -->
             <div class="card mb-3" t-if="state.requiredComponents.length > 0 and !state.selectedComponentId">
                 <div class="card-header">
                     <strong>步骤1：选择待登记组件</strong>
@@ -81,8 +82,10 @@
                                    t-model="state.inputBarcode"
                                    t-on-input="onInputChange"
                                    t-on-keydown="onKeyDown"
+                                   t-on-paste="onInputChange"
                                    t-att-disabled="state.isScanning or !state.selectedComponentId"
-                                   autofocus="autofocus"/>
+                                   autofocus="autofocus"
+                                   autocomplete="off"/>
                             <button type="button" 
                                     class="btn btn-primary btn-lg" 
                                     t-on-click="onManualVerify"
