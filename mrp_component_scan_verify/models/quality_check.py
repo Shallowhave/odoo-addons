@@ -97,16 +97,218 @@ class QualityCheck(models.Model):
                     self.component_verification_message or _('请确保扫码的组件匹配选中的待登记组件')
                 ))
             
+            # **关键修复**：确保组件的计量单位与生产订单移动行中的单位一致
+            # 这可以避免 register_consumed_materials 时的单位类别不匹配错误
+            if self.production_id and self.selected_component_id:
+                # **重要**：确保 Odoo 原生的 component_id 字段也被设置
+                # 因为 register_consumed_materials 可能使用这个字段
+                if not self.component_id:
+                    self.component_id = self.selected_component_id.id
+                
+                # 查找生产订单中该组件的移动行
+                component_move = self.production_id.move_raw_ids.filtered(
+                    lambda m: m.product_id.id == self.selected_component_id.id
+                )
+                
+                if component_move:
+                    # 使用第一个匹配的移动行
+                    move = component_move[0]
+                    component_product = self.selected_component_id
+                    
+                    # 添加详细日志
+                    _logger.info(
+                        _("[组件扫码确认] 开始检查单位一致性: 组件=%s, 移动行单位=%s"),
+                        component_product.name,
+                        move.product_uom.name if move.product_uom else 'None'
+                    )
+                    
+                    # 检查移动行是否有计量单位
+                    if not move.product_uom:
+                        _logger.warning(
+                            _("[组件扫码确认] 生产订单移动行中没有计量单位，无法验证单位一致性")
+                        )
+                    else:
+                        # 检查产品是否有计量单位
+                        current_uom = component_product.uom_id
+                        needs_update = False
+                        
+                        _logger.info(
+                            _("[组件扫码确认] 产品当前单位: %s, 移动行单位: %s"),
+                            current_uom.name if current_uom else 'None',
+                            move.product_uom.name
+                        )
+                        
+                        if not current_uom:
+                            # 如果产品没有计量单位，使用移动行中的单位
+                            needs_update = True
+                            old_uom_name = 'None'
+                            _logger.info(_("[组件扫码确认] 产品没有计量单位，需要更新"))
+                        elif current_uom.category_id != move.product_uom.category_id:
+                            # 如果产品有计量单位，检查是否与移动行中的单位类别一致
+                            needs_update = True
+                            old_uom_name = current_uom.name
+                            _logger.warning(
+                                _("[组件扫码确认] 单位类别不匹配: 产品单位类别=%s, 移动行单位类别=%s"),
+                                current_uom.category_id.name,
+                                move.product_uom.category_id.name
+                            )
+                        else:
+                            # 单位类别一致，不需要更新
+                            old_uom_name = current_uom.name
+                            _logger.info(_("[组件扫码确认] 单位类别一致，无需更新"))
+                        
+                        if needs_update:
+                            # **关键修复**：同时更新产品变体和产品模板的计量单位
+                            # 因为 register_consumed_materials 可能从产品模板读取单位
+                            component_product.sudo().write({'uom_id': move.product_uom.id})
+                            
+                            # 同时更新产品模板的计量单位
+                            if component_product.product_tmpl_id:
+                                component_product.product_tmpl_id.sudo().write({'uom_id': move.product_uom.id})
+                                _logger.info(
+                                    _("[组件扫码确认] 同时更新产品模板 %s 的计量单位: %s"),
+                                    component_product.product_tmpl_id.name,
+                                    move.product_uom.name
+                                )
+                            
+                            # **关键**：强制刷新环境，确保父类方法能获取到最新值
+                            # 使缓存失效（注意：invalidate_recordset 只能接受直接字段名，不能接受关联字段路径）
+                            component_product.invalidate_recordset(['uom_id'])
+                            if component_product.product_tmpl_id:
+                                component_product.product_tmpl_id.invalidate_recordset(['uom_id'])
+                            
+                            # 重新从数据库加载产品记录，确保获取最新值
+                            component_product = self.env['product.product'].browse(component_product.id)
+                            
+                            if old_uom_name == 'None':
+                                _logger.info(
+                                    _("[组件扫码确认] 为组件 %s 设置计量单位: %s (从移动行获取)"),
+                                    component_product.name,
+                                    move.product_uom.name
+                                )
+                            else:
+                                _logger.warning(
+                                    _("[组件扫码确认] 组件 %s 的计量单位类别不匹配（产品: %s, 移动行: %s），已更新为移动行的单位: %s"),
+                                    component_product.name,
+                                    old_uom_name,
+                                    move.product_uom.name,
+                                    move.product_uom.name
+                                )
+                            
+                            # **关键**：确保 component_id 也使用更新后的产品
+                            if self.component_id != component_product.id:
+                                self.component_id = component_product.id
+            
+            # **关键**：在调用父类方法之前，确保所有可能被 register_consumed_materials 使用的产品都有正确的单位
+            # register_consumed_materials 可能使用：
+            # 1. self.component_id
+            # 2. self.point_id.component_id
+            # 3. self.selected_component_id
+            
+            # 检查并更新 component_id 指向的产品
+            if self.component_id:
+                component_from_id = self.component_id
+                _logger.info(
+                    _("[组件扫码确认] component_id 指向的产品: %s (ID=%s), 单位: %s"),
+                    component_from_id.name,
+                    component_from_id.id,
+                    component_from_id.uom_id.name if component_from_id.uom_id else 'None'
+                )
+                # 如果 component_id 指向的产品单位与移动行不一致，也需要更新
+                if self.production_id:
+                    component_move_for_id = self.production_id.move_raw_ids.filtered(
+                        lambda m: m.product_id.id == component_from_id.id
+                    )
+                    if component_move_for_id and component_move_for_id[0].product_uom:
+                        move_for_id = component_move_for_id[0]
+                        if not component_from_id.uom_id or (component_from_id.uom_id and component_from_id.uom_id.category_id != move_for_id.product_uom.category_id):
+                            component_from_id.sudo().write({'uom_id': move_for_id.product_uom.id})
+                            if component_from_id.product_tmpl_id:
+                                component_from_id.product_tmpl_id.sudo().write({'uom_id': move_for_id.product_uom.id})
+                            component_from_id.invalidate_recordset(['uom_id'])
+                            if component_from_id.product_tmpl_id:
+                                component_from_id.product_tmpl_id.invalidate_recordset(['uom_id'])
+                            _logger.info(
+                                _("[组件扫码确认] 已更新 component_id 指向的产品 %s 的计量单位: %s"),
+                                component_from_id.name,
+                                move_for_id.product_uom.name
+                            )
+            
+            # 检查并更新 point_id.component_id 指向的产品（如果存在且不同）
+            if self.point_id and self.point_id.component_id:
+                point_component = self.point_id.component_id
+                if not self.component_id or point_component.id != self.component_id.id:
+                    _logger.info(
+                        _("[组件扫码确认] point_id.component_id 指向的产品: %s (ID=%s), 单位: %s"),
+                        point_component.name,
+                        point_component.id,
+                        point_component.uom_id.name if point_component.uom_id else 'None'
+                    )
+                    # 如果 point_id.component_id 指向的产品单位与移动行不一致，也需要更新
+                    if self.production_id:
+                        component_move_for_point = self.production_id.move_raw_ids.filtered(
+                            lambda m: m.product_id.id == point_component.id
+                        )
+                        if component_move_for_point and component_move_for_point[0].product_uom:
+                            move_for_point = component_move_for_point[0]
+                            if not point_component.uom_id or (point_component.uom_id and point_component.uom_id.category_id != move_for_point.product_uom.category_id):
+                                point_component.sudo().write({'uom_id': move_for_point.product_uom.id})
+                                if point_component.product_tmpl_id:
+                                    point_component.product_tmpl_id.sudo().write({'uom_id': move_for_point.product_uom.id})
+                                point_component.invalidate_recordset(['uom_id'])
+                                if point_component.product_tmpl_id:
+                                    point_component.product_tmpl_id.invalidate_recordset(['uom_id'])
+                                _logger.info(
+                                    _("[组件扫码确认] 已更新 point_id.component_id 指向的产品 %s 的计量单位: %s"),
+                                    point_component.name,
+                                    move_for_point.product_uom.name
+                                )
+            
+            # **关键修复**：在调用父类方法之前，强制刷新环境并重新加载所有相关记录
+            # 确保 register_consumed_materials 能获取到最新的产品单位
+            if self.component_id:
+                # 强制刷新 component_id 的缓存（注意：invalidate_recordset 只能接受直接字段名，不能接受关联字段路径）
+                self.component_id.invalidate_recordset(['uom_id'])
+                # 同时刷新产品模板的缓存
+                if self.component_id.product_tmpl_id:
+                    self.component_id.product_tmpl_id.invalidate_recordset(['uom_id'])
+                # 重新从数据库加载
+                fresh_component = self.env['product.product'].browse(self.component_id.id)
+                fresh_template = fresh_component.product_tmpl_id
+                _logger.info(
+                    _("[组件扫码确认] 刷新后 component_id 产品单位: %s, 产品模板单位: %s"),
+                    fresh_component.uom_id.name if fresh_component.uom_id else 'None',
+                    fresh_template.uom_id.name if fresh_template and fresh_template.uom_id else 'None'
+                )
+                # 如果产品模板没有单位，也设置一下
+                if fresh_template and not fresh_template.uom_id and fresh_component.uom_id:
+                    fresh_template.sudo().write({'uom_id': fresh_component.uom_id.id})
+                    fresh_template.invalidate_recordset(['uom_id'])
+                    _logger.info(
+                        _("[组件扫码确认] 已为产品模板 %s 设置计量单位: %s"),
+                        fresh_template.name,
+                        fresh_component.uom_id.name
+                    )
+                # 确保 self.component_id 使用最新的记录
+                self.component_id = fresh_component
+            
             # 如果已经验证成功，记录日志
             _logger.info(
-                _("[组件扫码确认] 质检通过: 质检ID=%s, 选择的组件=%s, 扫码的组件=%s, 生产订单=%s"),
+                _("[组件扫码确认] 质检通过: 质检ID=%s, 选择的组件=%s, 扫码的组件=%s, component_id=%s, 生产订单=%s"),
                 self.id, 
                 self.selected_component_id.name if self.selected_component_id else 'N/A',
                 self.scanned_component_id.name if self.scanned_component_id else 'N/A',
+                self.component_id.name if self.component_id else 'N/A',
                 self.production_id.name if self.production_id else 'N/A'
             )
+            
+            # **关键**：在调用父类方法之前，确保环境已提交，使数据库更新生效
+            # 但注意：在事务中，write 操作可能还没有提交
+            # 所以我们需要确保在同一个事务中，register_consumed_materials 能读取到最新值
+            # 通过 invalidate_recordset 和重新加载应该足够了
         
         # 调用父类方法执行质检通过
+        # 注意：register_consumed_materials 可能在父类的 do_pass 中被调用
         res = super(QualityCheck, self).do_pass()
         
         return res
@@ -228,7 +430,34 @@ class QualityCheck(models.Model):
             self.id, selected_product.name, scanned_product.name, production.name
         )
         
-        return {'success': True, 'message': self.component_verification_message}
+        # **关键修改**：验证成功后，自动通过质检并结束作业
+        # 确保 component_id 字段被设置（register_consumed_materials 需要）
+        if not self.component_id:
+            self.component_id = selected_product.id
+        
+        # 自动调用 do_pass() 通过质检
+        try:
+            self.do_pass()
+            _logger.info(
+                _("[组件扫码确认] 自动通过质检: 质检ID=%s, 组件=%s"),
+                self.id, selected_product.name
+            )
+            return {
+                'success': True, 
+                'message': self.component_verification_message,
+                'auto_passed': True  # 标记已自动通过
+            }
+        except Exception as e:
+            _logger.error(
+                _("[组件扫码确认] 自动通过质检失败: 质检ID=%s, 错误=%s"),
+                self.id, str(e)
+            )
+            # 即使自动通过失败，也返回验证成功，让用户可以手动点击验证按钮
+            return {
+                'success': True, 
+                'message': self.component_verification_message + '\n' + _('请手动点击验证按钮完成质检。'),
+                'auto_passed': False
+            }
     
     def action_scan_component(self):
         """

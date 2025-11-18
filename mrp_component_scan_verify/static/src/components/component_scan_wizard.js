@@ -29,6 +29,7 @@ export class ComponentScanWizard extends Component {
             verificationResult: 'pending',
             verificationMessage: '',
             isScanning: false,
+            autoPassed: false, // 标记是否已自动通过
         });
 
         onWillStart(async () => {
@@ -283,7 +284,7 @@ export class ComponentScanWizard extends Component {
     onInputChange(ev) {
         // 更新输入框的值，确保扫码设备扫描的内容显示在输入框中
         // 用户需要按 Enter 键或点击验证按钮来触发验证
-        const barcode = ev.target.value;
+        const barcode = ev.target ? ev.target.value : ev;
         this.state.inputBarcode = barcode;
         
         // 清除之前的自动验证定时器（如果有）
@@ -298,9 +299,42 @@ export class ComponentScanWizard extends Component {
         }
     }
     
+    onKeyUp(ev) {
+        // 监听 keyup 事件，确保扫码设备输入的内容被捕获
+        // 有些扫码设备可能在 keyup 时才更新输入框的值
+        if (ev.target && ev.target.value !== this.state.inputBarcode) {
+            this.state.inputBarcode = ev.target.value;
+            console.log('[组件扫码确认] keyup 事件，更新输入框值:', ev.target.value);
+        }
+    }
+    
+    onKeyPress(ev) {
+        // 监听 keypress 事件，确保所有按键都被捕获
+        // 扫码设备可能会快速输入多个字符
+        if (ev.target && ev.target.value !== this.state.inputBarcode) {
+            this.state.inputBarcode = ev.target.value;
+        }
+    }
+    
     async onManualVerify() {
         // 手动验证按钮点击事件
-        const barcode = this.state.inputBarcode.trim();
+        // 尝试从 DOM 元素获取最新的值（如果可能）
+        let barcode = this.state.inputBarcode.trim();
+        
+        // 如果可能，尝试从 DOM 获取最新值
+        try {
+            const inputElement = document.querySelector('.o_component_scan_wizard input[type="text"]');
+            if (inputElement && inputElement.value) {
+                const domValue = inputElement.value.trim();
+                if (domValue && domValue !== barcode) {
+                    barcode = domValue;
+                    this.state.inputBarcode = domValue;
+                    console.log('[组件扫码确认] 从 DOM 获取输入框值:', domValue);
+                }
+            }
+        } catch (e) {
+            console.warn('[组件扫码确认] 无法从 DOM 获取输入框值:', e);
+        }
         
         if (!barcode) {
             this.notification.add('请输入条码、产品编码或批次号', { type: 'warning' });
@@ -417,8 +451,16 @@ export class ComponentScanWizard extends Component {
                 this._scanTimeout = null;
             }
             
-            // 使用输入框的当前值进行验证
-            const barcode = this.state.inputBarcode.trim();
+            // 确保从输入框获取最新的值（扫码设备可能在 Enter 之前才完成输入）
+            const inputValue = ev.target ? ev.target.value : this.state.inputBarcode;
+            const barcode = inputValue.trim();
+            
+            // 更新状态，确保值同步
+            if (inputValue !== this.state.inputBarcode) {
+                this.state.inputBarcode = inputValue;
+                console.log('[组件扫码确认] Enter 键，同步输入框值:', inputValue);
+            }
+            
             if (barcode) {
                 // 先显示在输入框中（确保扫码设备扫描的内容可见）
                 // 然后触发验证
@@ -463,6 +505,34 @@ export class ComponentScanWizard extends Component {
                 this.state.verificationResult = 'matched';
                 this.state.verificationMessage = result.message || '组件验证成功！';
                 this.notification.add('组件验证成功', { type: 'success' });
+                
+                // **关键修改**：如果自动通过，则自动调用 action_next 结束作业
+                if (result.auto_passed === true) {
+                    console.log('[组件扫码确认] 自动通过质检，准备结束作业');
+                    this.state.autoPassed = true; // 标记已自动通过
+                    this.notification.add('组件验证成功，已自动通过质检', { type: 'success' });
+                    
+                    // 延迟一下，让用户看到成功消息，然后自动结束作业
+                    setTimeout(async () => {
+                        try {
+                            // 调用 action_next 结束作业
+                            await this.orm.call(
+                                'quality.check',
+                                'action_next',
+                                [recordData.id]
+                            );
+                            console.log('[组件扫码确认] 已自动结束作业');
+                            // 如果有关闭回调，调用它来关闭对话框
+                            if (this.props.close) {
+                                this.props.close();
+                            }
+                        } catch (error) {
+                            console.error('[组件扫码确认] 自动结束作业失败:', error);
+                            this.notification.add('自动结束作业失败，请手动点击验证按钮', { type: 'warning' });
+                            this.state.autoPassed = false; // 自动通过失败，重置标记
+                        }
+                    }, 500); // 延迟 500ms
+                }
             } else {
                 // 验证失败或不匹配
                 this.state.verificationResult = 'mismatched';
@@ -491,6 +561,15 @@ export class ComponentScanWizard extends Component {
     }
 
     async onValidate() {
+        // 如果已自动通过，直接返回（不需要再次验证）
+        if (this.state.autoPassed) {
+            console.log('[组件扫码确认] 已自动通过，无需再次验证');
+            if (this.props.validate) {
+                return this.props.validate();
+            }
+            return;
+        }
+        
         if (this.state.verificationResult === 'matched') {
             // 调用父类的 validate 方法继续流程
             if (this.props.validate) {
