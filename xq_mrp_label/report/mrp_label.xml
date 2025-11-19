@@ -33,6 +33,11 @@
                 font-family: 'Calibri','DejaVu Sans','Noto Sans CJK SC','Source Han Sans SC','WenQuanYi Micro Hei','Noto Sans SC','Microsoft YaHei','SimSun',sans-serif !important;
                 font-size: 10pt;
               }
+              .page { margin: 0; padding: 0; }
+              html, body { margin: 0; padding: 0; }
+              .o_report_layout_standard { padding: 0 !important; }
+              /* 隐藏页眉页脚，避免打印时出现多余的日期和logo */
+              .header, .footer, .o_standard_footer { display: none !important; height: 0 !important; padding: 0 !important; border: 0 !important; margin: 0 !important; }
               table { width: 100%; border-collapse: collapse; }
               table, th, td { border: 1px solid black; padding: 5px; }
               .no-border { border: none !important; }
@@ -40,27 +45,65 @@
               .section-title { font-size: 12pt; font-weight: bold; background-color: rgb(192,192,192); color: black; padding: 5px; }
               td, th { font-size: 10pt; }
               strong { font-size: 10pt; font-weight: bold; }
-              .label-page { width: 100mm; height: 100mm; box-sizing: border-box; }
-              .label-table { width: 100mm; height: 100mm; }
+              .label-page { width: 100mm; height: 100mm; box-sizing: border-box; margin: 0; padding: 1mm 2mm 1mm 0mm !important; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; }
+              .label-table { width: 100% !important; max-width: 98mm !important; box-sizing: border-box; margin: 0 0 0 0 !important; padding: 0; border-collapse: collapse; }
               .company-table, .company-table td { border: 1px solid black; }
-              .label-table td, .label-table th { text-align: center; vertical-align: middle; }
-              .sub-en { color:#666; font-size:9pt; display:block; }
+              .label-table td, .label-table th { text-align: center; vertical-align: middle; padding: 2px 1px !important; font-size: 10pt !important; }
+              .sub-en { color:#666; font-size:9pt !important; display:block; }
+              /* 确保内容不超出打印区域，并居中显示 */
+              .label-page { max-width: 100mm; max-height: 100mm; overflow: hidden; }
+              /* 调整列宽比例，让内容更靠左，左侧更窄 */
+              .label-table td[style*="width: 13%"] { width: 12% !important; padding-left: 1px; padding-right: 1px; }
+              .label-table td[style*="width: 87%"] { width: 88% !important; padding-left: 2px; padding-right: 1px; }
+              /* 调整条形码宽度，确保不超出并居中，优化打印质量 */
+              .label-table .barcode { max-width: 98% !important; margin: 0 auto; display: block; }
+              .label-table .barcode img, .label-table .barcode svg { 
+                image-rendering: -webkit-optimize-contrast !important;
+                image-rendering: crisp-edges !important;
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+              }
+              /* 确保表格内容居中 */
+              .label-table { text-align: center; }
+              /* 确保所有单元格内容居中 */
+              .label-table td { text-align: center !important; }
+              /* 增大字体 */
+              .label-table strong { font-size: 10pt !important; }
+              .label-table td span { font-size: 10pt !important; }
+              /* 打印时也使用 flexbox */
+              @media print {
+                .label-page { display: flex !important; flex-direction: column !important; align-items: flex-start !important; justify-content: center !important; padding: 1mm 2mm 1mm 0mm !important; }
+                .label-table { margin: 0 0 0 0 !important; max-width: 98mm !important; width: 100% !important; }
+                .label-table td, .label-table th { font-size: 10pt !important; padding: 2px 1px !important; }
+                .label-table strong { font-size: 10pt !important; }
+                .sub-en { font-size: 9pt !important; }
+                .label-table .barcode img, .label-table .barcode svg { 
+                  image-rendering: -webkit-optimize-contrast !important;
+                  image-rendering: crisp-edges !important;
+                  -webkit-print-color-adjust: exact !important;
+                  print-color-adjust: exact !important;
+                }
+              }
+              /* 打印时隐藏页眉页脚 */
+              @media print {
+                .header, .footer, .o_standard_footer { display: none !important; }
+                @page { margin: 0; }
+              }
             </style>
 
-            <div class="page">
-
+            <div class="page" style="width: 100mm; height: 100mm; margin: 0; padding: 0; box-sizing: border-box;">
               <div class="label-page">
-              <table class="label-table">
+                <table class="label-table">
                 <tr>
-                  <td colspan="4" style="text-align: center; font-weight: bold; font-size: 16pt; padding: 8px;">江西鑫桥新材料科技有限公司</td>
+                  <td colspan="4" style="text-align: center; font-weight: bold; font-size: 13pt !important; padding: 3px 2px !important;">江西鑫桥新材料科技有限公司</td>
                 </tr>
                 <tr>
-                  <td style="width: 25%;"><div><strong>品名</strong></div><span class="sub-en">name</span></td>
-                  <td style="width: 75%;" colspan="3"><span t-esc="o.product_id.display_name"/></td>
+                  <td style="width: 12%;"><div><strong>品名</strong></div><span class="sub-en">name</span></td>
+                  <td style="width: 88%;" colspan="3"><span t-esc="o.product_id.display_name"/></td>
                 </tr>
                 <tr>
-                  <td style="width: 25%;"><div><strong>规格</strong></div><span class="sub-en">spec</span></td>
-                  <td style="width: 75%;" colspan="3">
+                  <td style="width: 12%;"><div><strong>规格</strong></div><span class="sub-en">spec</span></td>
+                  <td style="width: 88%;" colspan="3">
                     <t t-set="tmpl" t-value="o.product_id.product_tmpl_id"/>
                     <t t-set="base_spec_list" t-value="[tmpl.product_thickness, tmpl.product_width]"/>
                     <t t-set="spec_vals" t-value="[str(v) for v in base_spec_list if v] + [str(o.qty_producing)]"/>
@@ -69,8 +112,8 @@
                   </td>
                 </tr>
                 <tr>
-                  <td style="width: 25%;"><div><strong>数量</strong></div><span class="sub-en">qty</span></td>
-                  <td style="width: 75%;" colspan="3">
+                  <td style="width: 12%;"><div><strong>数量</strong></div><span class="sub-en">qty</span></td>
+                  <td style="width: 88%;" colspan="3">
                     <t t-set="tmpl" t-value="o.product_id.product_tmpl_id"/>
                     <t t-set="length_m" t-value="o.qty_producing or 0.0"/>
                     <t t-set="width_m" t-value="tmpl.product_width and (tmpl.product_width / 1000.0) or 0.0"/>
@@ -80,27 +123,37 @@
                   </td>
                 </tr>
                 <tr>
-                  <td style="width: 25%;"><div><strong>批号</strong></div><span class="sub-en">lot</span></td>
-                  <td style="width: 75%;" colspan="3">
+                  <td style="width: 12%;"><div><strong>批号</strong></div><span class="sub-en">lot</span></td>
+                  <td style="width: 88%;" colspan="3">
                     <t t-set="lot_from_mo" t-value="('lot_producing_id' in o._fields) and o.lot_producing_id or False"/>
                     <t t-set="move_lines" t-value="o.move_finished_ids and o.move_finished_ids.move_line_ids or []"/>
                     <t t-set="lot_from_moves" t-value="(move_lines and move_lines[0].lot_id) or False"/>
                     <t t-set="lot" t-value="lot_from_mo or lot_from_moves"/>
-                    <div><span t-esc="(lot and lot.name) or '-'"/></div>
+                    <div style="text-align: center; margin-bottom: 2px;"><span t-esc="(lot and lot.name) or '-'"/></div>
                     <t t-if="lot">
-                      <div style="margin-top:4px; text-align: center;">
-                        <span t-field="lot.name" t-options-widget="'barcode'" t-options-width="300" t-options-height="60" t-options-type="'Code128'" t-options-display_value="True"/>
+                      <div style="text-align: center; width: 100%; overflow: hidden; box-sizing: border-box; padding: 0;">
+                        <span t-field="lot.name" t-options-widget="'barcode'" t-options-width="330" t-options-height="72" t-options-type="'Code128'" t-options-display_value="True" style="display: block; margin: 0 auto; max-width: 97%; image-rendering: crisp-edges; -webkit-print-color-adjust: exact; print-color-adjust: exact;"/>
                       </div>
                     </t>
                   </td>
                 </tr>
                 <!-- 条形码显示行 -->
-              </table>
+                </table>
               </div>
             </div>
           </t>
         </t>
       </t>
+      
+      <!-- 自动打印脚本：页面加载后自动触发打印对话框 -->
+      <script>
+        // 等待页面完全加载后自动触发打印
+        window.addEventListener('load', function() {
+          setTimeout(function() {
+            window.print();
+          }, 500); // 延迟500ms确保内容完全渲染
+        });
+      </script>
     </template>
 
     <!-- 自定义 external_layout，参考 avt_service_memo 的结构（精简头/脚） -->
@@ -123,26 +176,25 @@
     </template>
 
     <template id="external_layout_point_mrp_label">
-      <div t-attf-class="header o_company_#{company.id}_layout" t-att-style="report_header_style">
-        <div class="row" style="display: flex; justify-content: space-between; align-items: center; margin: 0; padding: 0 15px;"></div>
+      <!-- 完全隐藏页眉，不渲染任何内容 -->
+      <div t-attf-class="header o_company_#{company.id}_layout" style="display: none !important; height: 0 !important; padding: 0 !important; margin: 0 !important; border: 0 !important;">
       </div>
 
-      <div t-attf-class="article o_report_layout_standard o_company_#{company.id}_layout" t-att-data-oe-model="o and o._name" t-att-data-oe-id="o and o.id" t-att-data-oe-lang="o and o.env.context.get('lang')">
+      <div t-attf-class="article o_report_layout_standard o_company_#{company.id}_layout" t-att-data-oe-model="o and o._name" t-att-data-oe-id="o and o.id" t-att-data-oe-lang="o and o.env.context.get('lang')" style="margin: 0 !important; padding: 0 !important;">
         <t t-raw="0"/>
       </div>
 
-      <div t-attf-class="footer o_standard_footer o_company_#{company.id}_layout" style="text-align: left;">
-        <div style="font-size: 10px; color: #ffffff;">
-          <div t-esc="company.name"/>
-        </div>
+      <!-- 完全隐藏页脚，不渲染任何内容 -->
+      <div t-attf-class="footer o_standard_footer o_company_#{company.id}_layout" style="display: none !important; height: 0 !important; padding: 0 !important; margin: 0 !important; border: 0 !important;">
       </div>
     </template>
 
     <!-- 报表动作：绑定自定义纸张格式 -->
+    <!-- 使用 qweb-html 以便直接打印，而不是下载PDF -->
     <record id="action_report_mrp_label" model="ir.actions.report">
       <field name="name">产品标签</field>
       <field name="model">mrp.production</field>
-      <field name="report_type">qweb-pdf</field>
+      <field name="report_type">qweb-html</field>
       <field name="report_name">xq_mrp_label.mrp_label_document</field>
       <field name="report_file">xq_mrp_label.mrp_label_document</field>
       <field name="print_report_name">(object.name or 'MO') + '-label'</field>
