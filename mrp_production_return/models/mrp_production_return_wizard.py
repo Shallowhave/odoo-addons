@@ -26,7 +26,6 @@ class MrpProductionReturnWizard(models.TransientModel):
     return_strategy = fields.Selection([
         ('before', '返回至生产前'),
         ('after', '返回至生产后'),
-        ('defective', '返回至不良品仓'),
         ('scrap', '报废处理'),
     ], string='返回策略', required=True, default='before')
     
