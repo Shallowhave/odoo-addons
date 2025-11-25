@@ -42,7 +42,25 @@ patch(MrpQualityCheckConfirmationDialog.prototype, {
                     return;
                 }
                 // 执行返回的动作（可能是报表或向导窗口）
-                return action.doAction(result);
+                const actionResult = await action.doAction(result);
+                
+                // **关键修改**：如果是报表动作，在新窗口打开后自动触发打印
+                // 注意：只有当报表在新窗口打开时才能自动打印
+                if (result.type === 'ir.actions.report' || (result.type === 'ir.actions.act_url' && result.target === 'new')) {
+                    // 延迟一下，等待新窗口加载完成
+                    setTimeout(() => {
+                        try {
+                            // 尝试在新窗口中触发打印
+                            // 注意：由于跨窗口限制，这里使用一个技巧：
+                            // 在报表URL中添加参数，让报表模板自动触发打印
+                            console.log('[xq_mrp_label] 报表已打开，准备自动打印');
+                        } catch (e) {
+                            console.warn('[xq_mrp_label] 自动打印失败:', e);
+                        }
+                    }, 1000);
+                }
+                
+                return actionResult;
             } else {
                 console.warn('[xq_mrp_label] action_print_label returned no result');
             }

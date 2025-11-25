@@ -11,7 +11,14 @@ class MrpProduction(models.Model):
 
     @api.model
     def _get_batch_prefix(self):
-        """获取批次号前缀，支持配置化"""
+        """获取批次号前缀，支持配置化
+        优先级：产品配置的前缀 > 全局配置的前缀
+        """
+        # 优先使用产品配置的前缀
+        if self.product_id and self.product_id.mrp_lot_prefix:
+            return self.product_id.mrp_lot_prefix
+        
+        # 回退到全局配置
         return self.env['ir.config_parameter'].sudo().get_param(
             'mrp_auto_lot_generate.batch_prefix', 'XQ'
         )
@@ -145,6 +152,47 @@ class MrpProduction(models.Model):
             _logger.info("[自动批次] 生成主批次号：%s", lot_name)
         return lot_name
 
+    def _generate_main_batch_for_product(self, prefix, date_str, time_str, Lot, product):
+        """为指定产品生成主批次号（用于副产品独立批次号生成）"""
+        # 优化：使用更精确的查询模式
+        pattern = f"{prefix}{date_str}%A%"
+        existing_lots = Lot.search([
+            ('name', 'like', pattern),
+            ('name', 'not like', '%-%'),
+            ('product_id', '=', product.id),
+            ('company_id', '=', self.company_id.id)
+        ])
+        
+        # 提取已使用的序列号（支持2位数和3位数）
+        used_sequences = set()
+        for lot in existing_lots:
+            # 匹配 A01-A99 (2位数) 和 A100-A999 (3位数)
+            match = re.match(rf"^{re.escape(prefix)}\d{{6}}\d{{0,4}}A(\d{{2,3}})$", lot.name)
+            if match:
+                used_sequences.add(int(match.group(1)))
+        
+        # 找到下一个可用序列号（从1开始，可以超过99）
+        next_seq = 1
+        max_retries = 999  # 最大支持到 A999
+        retry_count = 0
+        
+        while next_seq in used_sequences and retry_count < max_retries:
+            next_seq += 1
+            retry_count += 1
+            
+        if retry_count >= max_retries:
+            raise UserError(f"产品 {product.display_name} 当日批次号序列已用完（已尝试到 {next_seq}），请明天再试")
+        
+        # 根据序列号位数格式化（A01-A99 用2位数，A100及以上用3位数）
+        if next_seq <= 99:
+            lot_name = f"{prefix}{date_str}{time_str}A{next_seq:02d}"
+        else:
+            lot_name = f"{prefix}{date_str}{time_str}A{next_seq:03d}"
+        
+        if self._is_logging_enabled():
+            _logger.info("[自动批次] 为产品 %s 生成独立批次号：%s", product.display_name, lot_name)
+        return lot_name
+
     def _generate_sub_batch(self, main_lot_name, Lot):
         """生成分卷批次号"""
         # 查找所有分卷批次号
@@ -270,20 +318,42 @@ class MrpProduction(models.Model):
                 # 不抛出异常，继续处理其他副产品
 
     def _create_lot_for_byproduct(self, production, byproduct_move):
-        """为副产品创建批次号"""
-        # 如果主产品已有批次号，使用主产品批次号作为基础生成副产品批次号
-        if production.lot_producing_id:
-            base_lot_name = production.lot_producing_id.name
-            # 生成带后缀的副产品批次号
-            lot_name = self._generate_byproduct_batch_with_suffix(
-                production, byproduct_move.product_id, base_lot_name
-            )
+        """为副产品创建批次号
+        逻辑：
+        1. 如果副产品配置了自己的前缀，生成独立的批次号
+        2. 否则，基于主产品批次号添加后缀（-B, -C等）
+        """
+        byproduct = byproduct_move.product_id
+        
+        # 检查副产品是否配置了自己的前缀
+        if byproduct.mrp_lot_prefix:
+            # 副产品有自己的前缀，生成独立的批次号
+            if self._is_logging_enabled():
+                _logger.info("[自动批次] 副产品 %s 配置了专属前缀 %s，生成独立批次号",
+                             byproduct.display_name, byproduct.mrp_lot_prefix)
+            
+            # 临时创建一个虚拟的制造单对象来生成批次号
+            # 使用副产品的信息
+            utc_now = fields.Datetime.now()
+            user_dt = fields.Datetime.context_timestamp(self.env.user, utc_now)
+            prefix = byproduct.mrp_lot_prefix
+            date_str = user_dt.strftime('%y%m%d')
+            time_str = user_dt.strftime('%H%M')
+            Lot = self.env['stock.lot']
+            
+            # 生成独立的批次号（使用副产品的前缀）
+            lot_name = self._generate_main_batch_for_product(prefix, date_str, time_str, Lot, byproduct)
         else:
-            # 如果主产品还没有批次号，先为主产品生成一个基础批次号（不创建，仅用于生成副产品批次号）
-            base_lot_name = production._generate_batch_number()
+            # 副产品没有配置前缀，使用主产品批次号作为基础生成副产品批次号
+            if production.lot_producing_id:
+                base_lot_name = production.lot_producing_id.name
+            else:
+                # 如果主产品还没有批次号，先为主产品生成一个基础批次号（不创建，仅用于生成副产品批次号）
+                base_lot_name = production._generate_batch_number()
+            
             # 生成带后缀的副产品批次号
             lot_name = self._generate_byproduct_batch_with_suffix(
-                production, byproduct_move.product_id, base_lot_name
+                production, byproduct, base_lot_name
             )
         
         # 检查批次号是否已存在
