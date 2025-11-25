@@ -97,12 +97,23 @@
                     <t t-set="byproduct_move" t-value="byproduct_move_id and env['stock.move'].browse(byproduct_move_id) or False"/>
                     <t t-set="byproduct_product" t-value="byproduct_move and byproduct_move.product_id or o.product_id"/>
                     <t t-set="tmpl" t-value="byproduct_product.product_tmpl_id"/>
-                    <t t-set="base_spec_list" t-value="[tmpl.product_thickness, tmpl.product_width]"/>
-                    <!-- 使用 move 的 quantity 字段（实际处理数量），如果没有则使用 product_uom_qty（计划数量） -->
-                    <t t-set="byproduct_qty" t-value="byproduct_move and (byproduct_move.quantity or byproduct_move.product_uom_qty) or 0.0"/>
-                    <t t-set="spec_vals" t-value="[str(v) for v in base_spec_list if v] + [str(byproduct_qty)]"/>
-                    <t t-set="spec_text" t-value="'*'.join(spec_vals)"/>
-                    <span t-esc="spec_text or (byproduct_product.default_code or '')"/> m
+                    <!-- 规格只显示产品的厚度和宽度，不包含数量 -->
+                    <t t-set="thickness_str" t-value="tmpl.product_thickness and tmpl.product_thickness > 0 and str(int(tmpl.product_thickness)) or ''"/>
+                    <t t-set="width_str" t-value="tmpl.product_width and tmpl.product_width > 0 and str(int(tmpl.product_width)) or ''"/>
+                    <t t-set="spec_parts" t-value="[]"/>
+                    <t t-if="thickness_str">
+                      <t t-set="spec_parts" t-value="spec_parts + [thickness_str]"/>
+                    </t>
+                    <t t-if="width_str">
+                      <t t-set="spec_parts" t-value="spec_parts + [width_str]"/>
+                    </t>
+                    <t t-set="spec_text" t-value="'*'.join(spec_parts) if spec_parts else ''"/>
+                    <t t-if="spec_text">
+                      <span t-esc="spec_text"/> m
+                    </t>
+                    <t t-else="">
+                      <span t-esc="byproduct_product.default_code or ''"/>
+                    </t>
                   </td>
                 </tr>
                 <tr>
@@ -112,15 +123,49 @@
                     <t t-set="byproduct_move" t-value="byproduct_move_id and env['stock.move'].browse(byproduct_move_id) or False"/>
                     <t t-set="byproduct_product" t-value="byproduct_move and byproduct_move.product_id or o.product_id"/>
                     <t t-set="tmpl" t-value="byproduct_product.product_tmpl_id"/>
-                    <!-- 使用 move 的 quantity 字段（实际处理数量），如果没有则使用 product_uom_qty（计划数量） -->
-                    <t t-set="byproduct_qty" t-value="byproduct_move and (byproduct_move.quantity or byproduct_move.product_uom_qty) or 0.0"/>
                     <t t-set="move_lines" t-value="byproduct_move and byproduct_move.move_line_ids or []"/>
-                    <t t-set="length_m" t-value="byproduct_qty or 0.0"/>
-                    <t t-set="width_m" t-value="tmpl.product_width and (tmpl.product_width / 1000.0) or 0.0"/>
-                    <t t-set="area_sqm" t-value="(length_m and width_m) and (length_m * width_m) or False"/>
-                    <!-- 获取单位名称：优先从 move_line_ids 获取，否则从 move 或 product 获取 -->
+                    <!-- 优先从 move_line_ids 获取实际数量（已完成的移动行数量），否则使用 move 的 quantity 或 product_uom_qty -->
+                    <t t-set="byproduct_qty" t-value="0.0"/>
+                    <t t-if="move_lines">
+                      <!-- 从移动行获取实际数量（已完成的数量） -->
+                      <t t-set="total_qty" t-value="0.0"/>
+                      <t t-foreach="move_lines" t-as="line">
+                        <t t-if="line.quantity">
+                          <t t-set="total_qty" t-value="total_qty + line.quantity"/>
+                        </t>
+                      </t>
+                      <t t-set="byproduct_qty" t-value="total_qty"/>
+                    </t>
+                    <t t-if="not byproduct_qty or byproduct_qty == 0.0">
+                      <!-- 如果没有移动行或移动行数量为0，使用 move 的 quantity（实际处理数量）或 product_uom_qty（计划数量） -->
+                      <t t-set="byproduct_qty" t-value="byproduct_move and (byproduct_move.quantity or byproduct_move.product_uom_qty) or 0.0"/>
+                    </t>
+                    <!-- 计算面积（如果产品单位是平米或平方米，且数量大于0） -->
                     <t t-set="uom_name" t-value="(move_lines and move_lines[0].product_uom_id.name) or (byproduct_move and byproduct_move.product_uom.name) or (byproduct_product.uom_id.name) or ''"/>
-                    <t t-set="qty_text" t-value="(area_sqm and ('%.2f ㎡' % area_sqm)) or (str(byproduct_qty) + ' ' + uom_name)"/>
+                    <t t-set="uom_name_lower" t-value="uom_name.lower() if uom_name else ''"/>
+                    <t t-set="is_area_uom" t-value="'平米' in uom_name_lower or '平方米' in uom_name_lower or 'sqm' in uom_name_lower or 'm²' in uom_name_lower"/>
+                    <t t-set="width_m" t-value="tmpl.product_width and (tmpl.product_width / 1000.0) or 0.0"/>
+                    <t t-set="area_sqm" t-value="False"/>
+                    <t t-if="is_area_uom and byproduct_qty and byproduct_qty > 0">
+                      <!-- 如果单位是面积单位，直接使用数量作为面积 -->
+                      <t t-set="area_sqm" t-value="byproduct_qty"/>
+                    </t>
+                    <t t-elif="not is_area_uom and byproduct_qty and byproduct_qty > 0 and width_m and width_m > 0">
+                      <!-- 如果单位是长度单位（如米），计算面积 = 长度 × 宽度 -->
+                      <t t-set="length_m" t-value="byproduct_qty"/>
+                      <t t-set="area_sqm" t-value="length_m * width_m"/>
+                    </t>
+                    <!-- 显示数量：优先显示面积，否则显示原始数量 -->
+                    <t t-set="qty_text" t-value="''"/>
+                    <t t-if="area_sqm and area_sqm > 0">
+                      <t t-set="qty_text" t-value="'%.2f 平米' % area_sqm"/>
+                    </t>
+                    <t t-elif="byproduct_qty and byproduct_qty > 0">
+                      <t t-set="qty_text" t-value="'%.2f %s' % (byproduct_qty, uom_name)"/>
+                    </t>
+                    <t t-else="">
+                      <t t-set="qty_text" t-value="'-'"/>
+                    </t>
                     <span t-esc="qty_text"/>
                   </td>
                 </tr>

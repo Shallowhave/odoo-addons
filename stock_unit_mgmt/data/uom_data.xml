@@ -12,6 +12,7 @@
             <field name="category_id" ref="uom_categ_custom"/>
             <field name="uom_type">reference</field>
             <field name="factor">1.0</field>
+            <field name="rounding">0.01</field>
         </record>
 
         <record id="uom_barrel" model="uom.uom">
@@ -19,6 +20,7 @@
             <field name="category_id" ref="uom_categ_custom"/>
             <field name="uom_type">bigger</field>
             <field name="factor">1.0</field>
+            <field name="rounding">0.01</field>
         </record>
 
         <record id="uom_box" model="uom.uom">
@@ -26,6 +28,7 @@
             <field name="category_id" ref="uom_categ_custom"/>
             <field name="uom_type">bigger</field>
             <field name="factor">1.0</field>
+            <field name="rounding">0.01</field>
         </record>
 
         <record id="uom_bag" model="uom.uom">
@@ -33,6 +36,7 @@
             <field name="category_id" ref="uom_categ_custom"/>
             <field name="uom_type">bigger</field>
             <field name="factor">1.0</field>
+            <field name="rounding">0.01</field>
         </record>
     </data>
 </odoo>
