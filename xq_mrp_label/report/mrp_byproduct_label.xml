@@ -81,108 +81,198 @@
                   <td style="width: 88%;" colspan="3">
                     <!-- 从 context 中获取副产品信息 -->
                     <t t-set="byproduct_move_id" t-value="context.get('byproduct_move_id', False)"/>
-                    <t t-set="byproduct_move" t-value="byproduct_move_id and env['stock.move'].browse(byproduct_move_id) or False"/>
-                    <t t-if="byproduct_move">
+                    <t t-set="byproduct_move" t-value="False"/>
+                    <t t-if="byproduct_move_id">
+                      <t t-set="byproduct_move" t-value="env['stock.move'].browse(byproduct_move_id)"/>
+                      <t t-if="not byproduct_move.exists()">
+                        <t t-set="byproduct_move" t-value="False"/>
+                      </t>
+                    </t>
+                    <!-- 如果 context 中没有 byproduct_move_id，从生产订单的副产品移动中获取第一个 -->
+                    <t t-if="not byproduct_move">
+                      <t t-set="byproduct_moves" t-value="o.move_byproduct_ids.filtered(lambda m: m.state in ('done', 'assigned') and m.product_uom_qty > 0)"/>
+                      <t t-if="byproduct_moves">
+                        <t t-set="byproduct_move" t-value="byproduct_moves[0]"/>
+                      </t>
+                    </t>
+                    <t t-if="byproduct_move and byproduct_move.product_id">
                       <span t-esc="byproduct_move.product_id.display_name"/>
                     </t>
                     <t t-else="">
-                      <span t-esc="o.product_id.display_name"/>
+                      <span t-esc="'-'"/>
                     </t>
                   </td>
                 </tr>
                 <tr>
                   <td style="width: 12%;"><div><strong>规格</strong></div><span class="sub-en">spec</span></td>
                   <td style="width: 88%;" colspan="3">
+                    <!-- 使用和品名部分相同的逻辑获取副产品移动 -->
                     <t t-set="byproduct_move_id" t-value="context.get('byproduct_move_id', False)"/>
-                    <t t-set="byproduct_move" t-value="byproduct_move_id and env['stock.move'].browse(byproduct_move_id) or False"/>
-                    <t t-set="byproduct_product" t-value="byproduct_move and byproduct_move.product_id or o.product_id"/>
-                    <t t-set="tmpl" t-value="byproduct_product.product_tmpl_id"/>
-                    <!-- 规格只显示产品的厚度和宽度，不包含数量 -->
-                    <t t-set="thickness_str" t-value="tmpl.product_thickness and tmpl.product_thickness > 0 and str(int(tmpl.product_thickness)) or ''"/>
-                    <t t-set="width_str" t-value="tmpl.product_width and tmpl.product_width > 0 and str(int(tmpl.product_width)) or ''"/>
-                    <t t-set="spec_parts" t-value="[]"/>
-                    <t t-if="thickness_str">
-                      <t t-set="spec_parts" t-value="spec_parts + [thickness_str]"/>
+                    <t t-set="byproduct_move" t-value="False"/>
+                    <t t-if="byproduct_move_id">
+                      <t t-set="byproduct_move" t-value="env['stock.move'].browse(byproduct_move_id)"/>
+                      <t t-if="not byproduct_move.exists()">
+                        <t t-set="byproduct_move" t-value="False"/>
+                      </t>
                     </t>
-                    <t t-if="width_str">
-                      <t t-set="spec_parts" t-value="spec_parts + [width_str]"/>
+                    <!-- 如果 context 中没有 byproduct_move_id，从生产订单的副产品移动中获取第一个 -->
+                    <t t-if="not byproduct_move">
+                      <t t-set="byproduct_moves" t-value="o.move_byproduct_ids.filtered(lambda m: m.state in ('done', 'assigned') and m.product_uom_qty > 0)"/>
+                      <t t-if="byproduct_moves">
+                        <t t-set="byproduct_move" t-value="byproduct_moves[0]"/>
+                      </t>
                     </t>
-                    <t t-set="spec_text" t-value="'*'.join(spec_parts) if spec_parts else ''"/>
-                    <t t-if="spec_text">
-                      <span t-esc="spec_text"/> m
+                    <t t-if="byproduct_move and byproduct_move.product_id">
+                      <t t-set="byproduct_product" t-value="byproduct_move.product_id"/>
+                      <t t-set="tmpl" t-value="byproduct_product.product_tmpl_id"/>
+                      <!-- 规格显示：厚度*宽度*长度（长度使用实际生产数量） -->
+                      <t t-set="thickness_str" t-value="tmpl.product_thickness and tmpl.product_thickness > 0 and str(int(tmpl.product_thickness)) or ''"/>
+                      <t t-set="width_str" t-value="tmpl.product_width and tmpl.product_width > 0 and str(int(tmpl.product_width)) or ''"/>
+                      <!-- 获取实际生产的数量作为长度 -->
+                      <t t-set="move_lines" t-value="byproduct_move.move_line_ids"/>
+                      <t t-set="actual_length" t-value="0.0"/>
+                      <t t-if="move_lines">
+                        <t t-set="total_qty" t-value="0.0"/>
+                        <t t-foreach="move_lines" t-as="line">
+                          <t t-if="line.quantity">
+                            <t t-set="total_qty" t-value="total_qty + line.quantity"/>
+                          </t>
+                        </t>
+                        <t t-set="actual_length" t-value="total_qty"/>
+                      </t>
+                      <t t-if="not actual_length or actual_length == 0.0">
+                        <t t-set="actual_length" t-value="byproduct_move.quantity or byproduct_move.product_uom_qty or 0.0"/>
+                      </t>
+                      <!-- 检查单位是否为长度单位（米） -->
+                      <t t-set="uom_name" t-value="(move_lines and move_lines[0].product_uom_id.name) or (byproduct_move.product_uom.name) or (byproduct_product.uom_id.name) or ''"/>
+                      <t t-set="uom_name_lower" t-value="uom_name.lower() if uom_name else ''"/>
+                      <t t-set="is_length_uom" t-value="'米' in uom_name_lower or 'm' in uom_name_lower and '平米' not in uom_name_lower and '平方米' not in uom_name_lower"/>
+                      <!-- 如果单位是长度单位，使用实际数量作为长度；否则使用产品模板的长度 -->
+                      <t t-set="length_str" t-value="''"/>
+                      <t t-if="is_length_uom and actual_length and actual_length > 0">
+                        <t t-set="length_str" t-value="str(int(actual_length))"/>
+                      </t>
+                      <t t-elif="tmpl.product_length and tmpl.product_length > 0">
+                        <t t-set="length_str" t-value="str(int(tmpl.product_length))"/>
+                      </t>
+                      <t t-set="spec_parts" t-value="[]"/>
+                      <t t-if="thickness_str">
+                        <t t-set="spec_parts" t-value="spec_parts + [thickness_str]"/>
+                      </t>
+                      <t t-if="width_str">
+                        <t t-set="spec_parts" t-value="spec_parts + [width_str]"/>
+                      </t>
+                      <t t-if="length_str">
+                        <t t-set="spec_parts" t-value="spec_parts + [length_str]"/>
+                      </t>
+                      <t t-set="spec_text" t-value="'*'.join(spec_parts) if spec_parts else ''"/>
+                      <t t-if="spec_text">
+                        <span t-esc="spec_text"/> m
+                      </t>
+                      <t t-else="">
+                        <span t-esc="byproduct_product.default_code or ''"/>
+                      </t>
                     </t>
                     <t t-else="">
-                      <span t-esc="byproduct_product.default_code or ''"/>
+                      <span t-esc="'-'"/>
                     </t>
                   </td>
                 </tr>
                 <tr>
                   <td style="width: 12%;"><div><strong>数量</strong></div><span class="sub-en">qty</span></td>
                   <td style="width: 88%;" colspan="3">
+                    <!-- 使用和品名部分相同的逻辑获取副产品移动 -->
                     <t t-set="byproduct_move_id" t-value="context.get('byproduct_move_id', False)"/>
-                    <t t-set="byproduct_move" t-value="byproduct_move_id and env['stock.move'].browse(byproduct_move_id) or False"/>
-                    <t t-set="byproduct_product" t-value="byproduct_move and byproduct_move.product_id or o.product_id"/>
-                    <t t-set="tmpl" t-value="byproduct_product.product_tmpl_id"/>
-                    <t t-set="move_lines" t-value="byproduct_move and byproduct_move.move_line_ids or []"/>
-                    <!-- 优先从 move_line_ids 获取实际数量（已完成的移动行数量），否则使用 move 的 quantity 或 product_uom_qty -->
-                    <t t-set="byproduct_qty" t-value="0.0"/>
-                    <t t-if="move_lines">
-                      <!-- 从移动行获取实际数量（已完成的数量） -->
-                      <t t-set="total_qty" t-value="0.0"/>
-                      <t t-foreach="move_lines" t-as="line">
-                        <t t-if="line.quantity">
-                          <t t-set="total_qty" t-value="total_qty + line.quantity"/>
-                        </t>
+                    <t t-set="byproduct_move" t-value="False"/>
+                    <t t-if="byproduct_move_id">
+                      <t t-set="byproduct_move" t-value="env['stock.move'].browse(byproduct_move_id)"/>
+                      <t t-if="not byproduct_move.exists()">
+                        <t t-set="byproduct_move" t-value="False"/>
                       </t>
-                      <t t-set="byproduct_qty" t-value="total_qty"/>
                     </t>
-                    <t t-if="not byproduct_qty or byproduct_qty == 0.0">
-                      <!-- 如果没有移动行或移动行数量为0，使用 move 的 quantity（实际处理数量）或 product_uom_qty（计划数量） -->
-                      <t t-set="byproduct_qty" t-value="byproduct_move and (byproduct_move.quantity or byproduct_move.product_uom_qty) or 0.0"/>
+                    <!-- 如果 context 中没有 byproduct_move_id，从生产订单的副产品移动中获取第一个 -->
+                    <t t-if="not byproduct_move">
+                      <t t-set="byproduct_moves" t-value="o.move_byproduct_ids.filtered(lambda m: m.state in ('done', 'assigned') and m.product_uom_qty > 0)"/>
+                      <t t-if="byproduct_moves">
+                        <t t-set="byproduct_move" t-value="byproduct_moves[0]"/>
+                      </t>
                     </t>
-                    <!-- 计算面积（如果产品单位是平米或平方米，且数量大于0） -->
-                    <t t-set="uom_name" t-value="(move_lines and move_lines[0].product_uom_id.name) or (byproduct_move and byproduct_move.product_uom.name) or (byproduct_product.uom_id.name) or ''"/>
-                    <t t-set="uom_name_lower" t-value="uom_name.lower() if uom_name else ''"/>
-                    <t t-set="is_area_uom" t-value="'平米' in uom_name_lower or '平方米' in uom_name_lower or 'sqm' in uom_name_lower or 'm²' in uom_name_lower"/>
-                    <t t-set="width_m" t-value="tmpl.product_width and (tmpl.product_width / 1000.0) or 0.0"/>
-                    <t t-set="area_sqm" t-value="False"/>
-                    <t t-if="is_area_uom and byproduct_qty and byproduct_qty > 0">
-                      <!-- 如果单位是面积单位，直接使用数量作为面积 -->
-                      <t t-set="area_sqm" t-value="byproduct_qty"/>
-                    </t>
-                    <t t-elif="not is_area_uom and byproduct_qty and byproduct_qty > 0 and width_m and width_m > 0">
-                      <!-- 如果单位是长度单位（如米），计算面积 = 长度 × 宽度 -->
-                      <t t-set="length_m" t-value="byproduct_qty"/>
-                      <t t-set="area_sqm" t-value="length_m * width_m"/>
-                    </t>
-                    <!-- 显示数量：优先显示面积，否则显示原始数量 -->
-                    <t t-set="qty_text" t-value="''"/>
-                    <t t-if="area_sqm and area_sqm > 0">
-                      <t t-set="qty_text" t-value="'%.2f 平米' % area_sqm"/>
-                    </t>
-                    <t t-elif="byproduct_qty and byproduct_qty > 0">
-                      <t t-set="qty_text" t-value="'%.2f %s' % (byproduct_qty, uom_name)"/>
+                    <t t-if="byproduct_move and byproduct_move.product_id">
+                      <t t-set="byproduct_product" t-value="byproduct_move.product_id"/>
+                      <t t-set="tmpl" t-value="byproduct_product.product_tmpl_id"/>
+                      <t t-set="move_lines" t-value="byproduct_move.move_line_ids"/>
+                      <!-- 优先从 move_line_ids 获取实际数量（已完成的移动行数量），否则使用 move 的 quantity 或 product_uom_qty -->
+                      <t t-set="byproduct_qty" t-value="0.0"/>
+                      <t t-if="move_lines">
+                        <!-- 从移动行获取实际数量（已完成的数量） -->
+                        <t t-set="total_qty" t-value="0.0"/>
+                        <t t-foreach="move_lines" t-as="line">
+                          <t t-if="line.quantity">
+                            <t t-set="total_qty" t-value="total_qty + line.quantity"/>
+                          </t>
+                        </t>
+                        <t t-set="byproduct_qty" t-value="total_qty"/>
+                      </t>
+                      <t t-if="not byproduct_qty or byproduct_qty == 0.0">
+                        <!-- 如果没有移动行或移动行数量为0，使用 move 的 quantity（实际处理数量）或 product_uom_qty（计划数量） -->
+                        <t t-set="byproduct_qty" t-value="byproduct_move.quantity or byproduct_move.product_uom_qty or 0.0"/>
+                      </t>
+                      <!-- 计算面积（如果产品单位是平米或平方米，且数量大于0） -->
+                      <t t-set="uom_name" t-value="(move_lines and move_lines[0].product_uom_id.name) or (byproduct_move.product_uom.name) or (byproduct_product.uom_id.name) or ''"/>
+                      <t t-set="uom_name_lower" t-value="uom_name.lower() if uom_name else ''"/>
+                      <t t-set="is_area_uom" t-value="'平米' in uom_name_lower or '平方米' in uom_name_lower or 'sqm' in uom_name_lower or 'm²' in uom_name_lower"/>
+                      <t t-set="width_m" t-value="tmpl.product_width and (tmpl.product_width / 1000.0) or 0.0"/>
+                      <t t-set="area_sqm" t-value="False"/>
+                      <t t-if="is_area_uom and byproduct_qty and byproduct_qty > 0">
+                        <!-- 如果单位是面积单位，直接使用数量作为面积 -->
+                        <t t-set="area_sqm" t-value="byproduct_qty"/>
+                      </t>
+                      <t t-elif="not is_area_uom and byproduct_qty and byproduct_qty > 0 and width_m and width_m > 0">
+                        <!-- 如果单位是长度单位（如米），计算面积 = 长度 × 宽度 -->
+                        <t t-set="length_m" t-value="byproduct_qty"/>
+                        <t t-set="area_sqm" t-value="length_m * width_m"/>
+                      </t>
+                      <!-- 显示数量：优先显示面积，否则显示原始数量 -->
+                      <t t-set="qty_text" t-value="''"/>
+                      <t t-if="area_sqm and area_sqm > 0">
+                        <t t-set="qty_text" t-value="'%.2f 平米' % area_sqm"/>
+                      </t>
+                      <t t-elif="byproduct_qty and byproduct_qty > 0">
+                        <t t-set="qty_text" t-value="'%.2f %s' % (byproduct_qty, uom_name)"/>
+                      </t>
+                      <t t-else="">
+                        <t t-set="qty_text" t-value="'-'"/>
+                      </t>
+                      <span t-esc="qty_text"/>
                     </t>
                     <t t-else="">
-                      <t t-set="qty_text" t-value="'-'"/>
+                      <span t-esc="'-'"/>
                     </t>
-                    <span t-esc="qty_text"/>
                   </td>
                 </tr>
                 <tr>
                   <td style="width: 12%;"><div><strong>批号</strong></div><span class="sub-en">lot</span></td>
                   <td style="width: 88%;" colspan="3">
+                    <!-- 使用和品名部分相同的逻辑获取副产品移动 -->
                     <t t-set="byproduct_move_id" t-value="context.get('byproduct_move_id', False)"/>
-                    <t t-set="byproduct_move" t-value="byproduct_move_id and env['stock.move'].browse(byproduct_move_id) or False"/>
+                    <t t-set="byproduct_move" t-value="False"/>
+                    <t t-if="byproduct_move_id">
+                      <t t-set="byproduct_move" t-value="env['stock.move'].browse(byproduct_move_id)"/>
+                      <t t-if="not byproduct_move.exists()">
+                        <t t-set="byproduct_move" t-value="False"/>
+                      </t>
+                    </t>
+                    <!-- 如果 context 中没有 byproduct_move_id，从生产订单的副产品移动中获取第一个 -->
+                    <t t-if="not byproduct_move">
+                      <t t-set="byproduct_moves" t-value="o.move_byproduct_ids.filtered(lambda m: m.state in ('done', 'assigned') and m.product_uom_qty > 0)"/>
+                      <t t-if="byproduct_moves">
+                        <t t-set="byproduct_move" t-value="byproduct_moves[0]"/>
+                      </t>
+                    </t>
+                    <t t-set="lot" t-value="False"/>
                     <t t-if="byproduct_move">
                       <t t-set="move_lines" t-value="byproduct_move.move_line_ids"/>
                       <t t-set="lot" t-value="(move_lines and move_lines[0].lot_id) or False"/>
-                    </t>
-                    <t t-else="">
-                      <t t-set="lot_from_mo" t-value="('lot_producing_id' in o._fields) and o.lot_producing_id or False"/>
-                      <t t-set="move_lines" t-value="o.move_finished_ids and o.move_finished_ids.move_line_ids or []"/>
-                      <t t-set="lot_from_moves" t-value="(move_lines and move_lines[0].lot_id) or False"/>
-                      <t t-set="lot" t-value="lot_from_mo or lot_from_moves"/>
                     </t>
                     <div style="text-align: center; margin-bottom: 2px;"><span t-esc="(lot and lot.name) or '-'"/></div>
                     <t t-if="lot">
