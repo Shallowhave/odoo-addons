@@ -1,4 +1,4 @@
-from odoo import models, fields, api
+from odoo import models, fields, api, _
 from datetime import datetime
 import logging
 import re
@@ -278,6 +278,62 @@ class MrpProduction(models.Model):
         production.lot_producing_id = lot.id
         if self._is_logging_enabled():
             _logger.info("[自动批次] 批次号 %s 已绑定到制造单 %s", lot_name, production.name)
+    
+    def action_create_lot_producing(self):
+        """手动创建批次号按钮动作
+        当用户点击"创建新序列号/批号"按钮时调用此方法
+        """
+        self.ensure_one()
+        
+        # 检查产品是否需要批次号
+        if self.product_id.tracking not in ['lot', 'serial']:
+            raise UserError(_('产品 %s 不需要批次号/序列号') % self.product_id.display_name)
+        
+        # 如果已经有批次号，提示用户
+        if self.lot_producing_id:
+            raise UserError(_('制造订单 %s 已有批次号：%s') % (self.name, self.lot_producing_id.name))
+        
+        # 调用生成批次号的方法
+        try:
+            self._create_lot_for_production(self)
+            
+            # 返回成功消息
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _('批次号生成成功'),
+                    'message': _('已为制造订单 %s 生成批次号：%s') % (self.name, self.lot_producing_id.name),
+                    'type': 'success',
+                    'sticky': False,
+                }
+            }
+        except Exception as e:
+            raise UserError(_('生成批次号失败：%s') % str(e))
+    
+    def action_generate_serial(self):
+        """覆盖原生的 action_generate_serial 方法，使用我们的自动批次号生成逻辑"""
+        self.ensure_one()
+        
+        # 检查产品是否需要批次号
+        if self.product_id.tracking not in ['lot', 'serial']:
+            # 如果不需要批次号，调用父类方法
+            return super(MrpProduction, self).action_generate_serial()
+        
+        # 如果已经有批次号，提示用户
+        if self.lot_producing_id:
+            raise UserError(_('制造订单 %s 已有批次号：%s') % (self.name, self.lot_producing_id.name))
+        
+        # 使用我们的自动生成逻辑
+        try:
+            # 直接调用 _create_lot_for_production，它会设置 lot_producing_id
+            self._create_lot_for_production(self)
+            
+            # 不返回任何动作，让前端自动更新显示（就像原生方法一样）
+            # 前端会检测到 lot_producing_id 字段的变化并自动更新显示
+            return True
+        except Exception as e:
+            raise UserError(_('生成批次号失败：%s') % str(e))
 
     def _try_generate_byproduct_lots(self, production):
         """为制造单的副产品生成批次号"""

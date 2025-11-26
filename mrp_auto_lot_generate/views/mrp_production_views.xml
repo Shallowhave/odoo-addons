@@ -10,6 +10,8 @@
             <xpath expr="//field[@name='lot_producing_id']" position="attributes">
                 <attribute name="readonly">0</attribute>
                 <attribute name="required">0</attribute>
+                <!-- 不禁用原生创建按钮，通过上下文传递制造订单ID，让 create 方法自动生成批次号 -->
+                <attribute name="context">{'default_production_id': id, 'production_id': id}</attribute>
             </xpath>
         </field>
     </record>

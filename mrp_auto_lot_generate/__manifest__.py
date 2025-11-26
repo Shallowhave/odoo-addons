@@ -18,6 +18,12 @@
         'views/mrp_production_views.xml',
         'views/product_template_views.xml',
     ],
+    # 暂时注释掉 JavaScript 资源，避免导致页面无法加载
+    # 'assets': {
+    #     'web.assets_backend': [
+    #         'mrp_auto_lot_generate/static/src/js/mrp_production_form.js',
+    #     ],
+    # },
     'installable': True,
     'application': False,
     'auto_install': False,
