@@ -1,78 +1,12 @@
 # -*- coding: utf-8 -*-
 
 from odoo import models, fields, api
-import math
 
 
 class StockMove(models.Model):
     _inherit = 'stock.move'
 
-    # 覆盖 product_uom_qty 字段，设置3位小数精度（仅影响显示）
-    # 注意：这会影响所有 stock.move，但主要是为了在制造订单组件列表中显示3位小数
-    product_uom_qty = fields.Float(
-        digits=(16, 3),  # 3位小数精度
-    )
 
-    @api.model_create_multi
-    def create(self, vals_list):
-        """覆盖 create 方法，对制造订单的组件移动使用向下取整"""
-        # 在创建前修正数量
-        for vals in vals_list:
-            if 'product_uom_qty' in vals and vals.get('product_uom_qty'):
-                # 检查是否是制造订单的组件移动
-                if vals.get('raw_material_production_id'):
-                    original_qty = vals['product_uom_qty']
-                    
-                    # 获取 UOM 的 rounding 值
-                    uom = None
-                    if 'product_uom' in vals and vals['product_uom']:
-                        uom = self.env['uom.uom'].browse(vals['product_uom'])
-                    elif 'product_id' in vals and vals['product_id']:
-                        product = self.env['product.product'].browse(vals['product_id'])
-                        if product.exists() and product.uom_id:
-                            uom = product.uom_id
-                    
-                    if uom and uom.exists() and uom.rounding and uom.rounding > 0:
-                        # 使用向下取整
-                        rounded_qty = math.floor(original_qty / uom.rounding) * uom.rounding
-                        if abs(rounded_qty - original_qty) > 1e-10:
-                            vals['product_uom_qty'] = rounded_qty
-        
-        moves = super(StockMove, self).create(vals_list)
-        
-        # 创建后再次检查并修正（以防创建时没有正确获取 UOM）
-        for move in moves:
-            if move.raw_material_production_id and move.product_uom_qty:
-                uom = move.product_uom
-                if uom and uom.rounding and uom.rounding > 0:
-                    original_qty = move.product_uom_qty
-                    rounded_qty = math.floor(original_qty / uom.rounding) * uom.rounding
-                    if abs(rounded_qty - original_qty) > 1e-10:
-                        move.sudo().write({'product_uom_qty': rounded_qty})
-                        move.invalidate_recordset(['product_uom_qty'])
-        
-        return moves
-
-    def write(self, vals):
-        """覆盖 write 方法，对制造订单的组件移动使用向下取整"""
-        # 如果设置了 product_uom_qty，且是制造订单的组件移动，使用向下取整
-        if 'product_uom_qty' in vals and vals.get('product_uom_qty'):
-            for move in self:
-                # 只处理制造订单的组件移动（原材料移动）
-                if move.raw_material_production_id:
-                    original_qty = vals['product_uom_qty']
-                    # 获取 UOM 的 rounding 值
-                    uom = move.product_uom or (move.product_id and move.product_id.uom_id)
-                    if not uom and 'product_uom' in vals:
-                        uom = self.env['uom.uom'].browse(vals['product_uom'])
-                    
-                    if uom and uom.rounding and uom.rounding > 0:
-                        # 使用向下取整
-                        rounded_qty = math.floor(original_qty / uom.rounding) * uom.rounding
-                        if abs(rounded_qty - original_qty) > 1e-10:
-                            vals['product_uom_qty'] = rounded_qty
-        
-        return super(StockMove, self).write(vals)
 
     # 计算字段：总单位数量
     lot_quantity = fields.Float(string='总单位数量', compute='_compute_lot_quantity', digits=(16, 2))
