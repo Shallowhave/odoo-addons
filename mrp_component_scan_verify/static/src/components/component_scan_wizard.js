@@ -2,7 +2,7 @@
 
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
-import { Component, useState, onWillStart } from "@odoo/owl";
+import { Component, useState, onWillStart, onMounted } from "@odoo/owl";
 
 export class ComponentScanWizard extends Component {
     static props = {
@@ -10,6 +10,7 @@ export class ComponentScanWizard extends Component {
         record: Object,
         close: Function,
         validate: Function,
+        registerInstance: { type: Function, optional: true }, // 注册实例的回调函数
     };
 
     setup() {
@@ -43,6 +44,17 @@ export class ComponentScanWizard extends Component {
             // 注意：即使已经选择了组件，也加载组件列表，以便用户可以切换组件（如果需要）
             // 但组件选择列表的显示由模板中的条件控制（只在没有选择组件时显示）
             await this.loadRequiredComponents();
+        });
+        
+        // 注册组件实例到父组件
+        // 使用 onMounted 确保组件完全初始化后再注册
+        onMounted(() => {
+            if (this.props.registerInstance) {
+                console.log('[ComponentScanWizard] 注册实例到父组件');
+                this.props.registerInstance(this);
+            } else {
+                console.warn('[ComponentScanWizard] registerInstance 回调不存在');
+            }
         });
     }
 
@@ -504,34 +516,12 @@ export class ComponentScanWizard extends Component {
             if (result && result.success === true) {
                 this.state.verificationResult = 'matched';
                 this.state.verificationMessage = result.message || '组件验证成功！';
-                this.notification.add('组件验证成功', { type: 'success' });
+                this.notification.add('组件验证成功，请点击验证按钮完成质检', { type: 'success' });
                 
-                // **关键修改**：如果自动通过，则自动调用 action_next 结束作业
+                // 如果自动通过，标记状态，但不自动调用 validate（让用户手动点击验证按钮）
                 if (result.auto_passed === true) {
-                    console.log('[组件扫码确认] 自动通过质检，准备结束作业');
+                    console.log('[组件扫码确认] 自动通过质检，等待用户点击验证按钮');
                     this.state.autoPassed = true; // 标记已自动通过
-                    this.notification.add('组件验证成功，已自动通过质检', { type: 'success' });
-                    
-                    // 延迟一下，让用户看到成功消息，然后自动结束作业
-                    setTimeout(async () => {
-                        try {
-                            // 调用 action_next 结束作业
-                            await this.orm.call(
-                                'quality.check',
-                                'action_next',
-                                [recordData.id]
-                            );
-                            console.log('[组件扫码确认] 已自动结束作业');
-                            // 如果有关闭回调，调用它来关闭对话框
-                            if (this.props.close) {
-                                this.props.close();
-                            }
-                        } catch (error) {
-                            console.error('[组件扫码确认] 自动结束作业失败:', error);
-                            this.notification.add('自动结束作业失败，请手动点击验证按钮', { type: 'warning' });
-                            this.state.autoPassed = false; // 自动通过失败，重置标记
-                        }
-                    }, 500); // 延迟 500ms
                 }
             } else {
                 // 验证失败或不匹配
@@ -561,24 +551,93 @@ export class ComponentScanWizard extends Component {
     }
 
     async onValidate() {
-        // 如果已自动通过，直接返回（不需要再次验证）
+        console.log('[组件扫码确认] onValidate 被调用');
+        console.log('[组件扫码确认] 当前状态:', {
+            autoPassed: this.state.autoPassed,
+            verificationResult: this.state.verificationResult,
+            inputBarcode: this.state.inputBarcode,
+        });
+        
+        // 如果已自动通过，直接返回 true，让父组件继续
         if (this.state.autoPassed) {
-            console.log('[组件扫码确认] 已自动通过，无需再次验证');
-            if (this.props.validate) {
-                return this.props.validate();
-            }
-            return;
+            console.log('[组件扫码确认] 已自动通过，返回 true');
+            return true;
         }
         
-        if (this.state.verificationResult === 'matched') {
-            // 调用父类的 validate 方法继续流程
-            if (this.props.validate) {
-                return this.props.validate();
+        // 如果还没有验证过，尝试从输入框获取条码并处理
+        if (this.state.verificationResult !== 'matched') {
+            // 先尝试从 DOM 获取最新的输入框值（多种选择器）
+            let barcode = this.state.inputBarcode ? this.state.inputBarcode.trim() : '';
+            
+            // 尝试多种方式获取输入框的值
+            try {
+                // 方法1: 通过类名查找
+                let inputElement = document.querySelector('.o_component_scan_wizard input[type="text"]');
+                // 方法2: 如果方法1没找到，尝试查找所有输入框
+                if (!inputElement) {
+                    inputElement = document.querySelector('.workorder_component_scan input[type="text"]');
+                }
+                // 方法3: 如果还是没找到，尝试查找所有文本输入框
+                if (!inputElement) {
+                    const allInputs = document.querySelectorAll('input[type="text"]');
+                    // 查找包含条码值的输入框
+                    for (const input of allInputs) {
+                        if (input.value && input.value.length > 5) {
+                            inputElement = input;
+                            break;
+                        }
+                    }
+                }
+                
+                if (inputElement && inputElement.value) {
+                    const domValue = inputElement.value.trim();
+                    if (domValue) {
+                        barcode = domValue;
+                        this.state.inputBarcode = domValue;
+                        console.log('[组件扫码确认] 从 DOM 获取输入框值:', domValue);
+                    }
+                } else {
+                    console.log('[组件扫码确认] 未找到输入框或输入框为空');
+                }
+            } catch (e) {
+                console.warn('[组件扫码确认] 无法从 DOM 获取输入框值:', e);
             }
+            
+            console.log('[组件扫码确认] 最终获取的条码:', barcode);
+            
+            // 如果有条码，先处理条码
+            if (barcode) {
+                console.log('[组件扫码确认] 点击验证按钮，先处理条码:', barcode);
+                await this.processBarcode(barcode);
+                // 清空输入框
+                this.state.inputBarcode = '';
+                // 处理完条码后，检查验证结果
+                if (this.state.verificationResult === 'matched') {
+                    console.log('[组件扫码确认] 验证成功，返回 true');
+                    return true; // 返回 true，让父组件继续调用 super.validate()
+                } else {
+                    // 验证失败，阻止继续
+                    console.log('[组件扫码确认] 验证失败，返回 false');
+                    return false;
+                }
+            } else {
+                // 没有条码，提示用户
+                console.log('[组件扫码确认] 没有条码，提示用户');
+                this.notification.add('请先扫码确认组件', { type: 'warning' });
+                return false;
+            }
+        }
+        
+        // 如果验证成功，返回 true，让父组件继续
+        if (this.state.verificationResult === 'matched') {
+            console.log('[组件扫码确认] 验证已成功，返回 true');
+            return true;
         } else if (this.state.verificationResult === 'mismatched') {
             this.notification.add('组件不匹配，无法通过验证', { type: 'danger' });
+            return false; // 阻止继续
         } else {
             this.notification.add('请先扫码确认组件', { type: 'warning' });
+            return false; // 阻止继续
         }
     }
 }

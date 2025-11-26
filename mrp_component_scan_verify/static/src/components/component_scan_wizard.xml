@@ -86,19 +86,10 @@
                                    t-on-keypress="onKeyPress"
                                    t-on-paste="onInputChange"
                                    t-on-change="onInputChange"
-                                   t-att-disabled="state.isScanning or !state.selectedComponentId"
+                                   t-att-disabled="state.isScanning or !state.selectedComponentId or state.verificationResult === 'matched'"
                                    autofocus="autofocus"
                                    autocomplete="off"
                                    spellcheck="false"/>
-                            <!-- 验证按钮：验证成功后隐藏，因为已自动通过 -->
-                            <button type="button" 
-                                    class="btn btn-primary btn-lg" 
-                                    t-on-click="onManualVerify"
-                                    t-att-disabled="state.isScanning or !state.inputBarcode or !state.selectedComponentId or state.verificationResult === 'matched'"
-                                    t-if="state.verificationResult !== 'matched'">
-                                <i class="fa fa-check me-1"/>
-                                验证
-                            </button>
                         </div>
                         <small class="form-text text-muted">
                             <i class="fa fa-info-circle me-1"/>
