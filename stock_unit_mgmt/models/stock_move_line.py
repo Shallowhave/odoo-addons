@@ -67,7 +67,7 @@ class StockMoveLine(models.Model):
         compute='_compute_delivery_weight',
         store=False,
         digits=(16, 2),
-        help='根据产品发货重量系数和面积自动计算的发货重量，单位：千克'
+        help='根据产品发货重量系数和面积自动计算的发货重量，单位：千克（仅在发货类型的移动中计算）'
     )
 
     @api.model
@@ -136,18 +136,28 @@ class StockMoveLine(models.Model):
                 record.lot_weight_label = 'kg'
 
     @api.depends('product_id', 'qty_done', 'quantity', 'product_id.product_tmpl_id.weight_per_sqm',
-                 'product_id.product_tmpl_id.product_width', 'product_uom_id')
+                 'product_id.product_tmpl_id.product_width', 'product_uom_id', 
+                 'move_id', 'move_id.picking_id', 'move_id.picking_id.picking_type_id', 'move_id.picking_id.picking_type_id.code')
     def _compute_delivery_weight(self):
         """计算发货重量：根据产品发货重量系数和面积计算
         
         计算逻辑：
-        1. 如果产品没有配置发货重量系数，返回 0
-        2. 计算面积：
+        1. 仅在发货类型的库存移动中计算，其他类型返回 0
+        2. 如果产品没有配置发货重量系数，返回 0
+        3. 计算面积：
            - 如果产品单位是平方米，直接用 qty_done 或 quantity 作为面积
            - 如果产品单位不是平方米，根据 quantity 和产品宽度计算面积
-        3. 计算重量：面积 × 重量系数
+        4. 计算重量：面积 × 重量系数
         """
         for record in self:
+            # 仅在发货类型的移动中计算发货重量
+            if not (record.move_id and 
+                    record.move_id.picking_id and 
+                    record.move_id.picking_id.picking_type_id and 
+                    record.move_id.picking_id.picking_type_id.code == 'outgoing'):
+                record.delivery_weight = 0.0
+                continue
+            
             if not record.product_id:
                 record.delivery_weight = 0.0
                 continue

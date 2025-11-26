@@ -36,7 +36,8 @@
                     <field name="delivery_weight" 
                             string="发货重量 (kg)"
                             sum="总重量"
-                            optional="show"/>
+                            optional="show"
+                            invisible="delivery_weight == 0"/>
                 </xpath>
             </field>
         </record>
@@ -51,7 +52,9 @@
                     <field name="lot_quantity" string="单位数量"/>
                     <field name="lot_unit_name"/>
                     <field name="lot_unit_name_custom" invisible="lot_unit_name != 'custom'"/>
-                    <field name="delivery_weight" string="发货重量 (kg)"/>
+                    <field name="delivery_weight" 
+                           string="发货重量 (kg)"
+                           invisible="delivery_weight == 0"/>
                     <field name="custom_unit_values" invisible="1"/>
                 </xpath>
             </field>
@@ -85,7 +88,8 @@
                     <field name="delivery_weight" 
                             string="发货重量 (kg)"
                             optional="show"
-                            sum="总重量"/>
+                            sum="总重量"
+                            invisible="delivery_weight == 0"/>
                 </xpath>
             </field>
         </record>
@@ -124,7 +128,8 @@
                     <field name="delivery_weight" 
                             string="发货重量 (kg)"
                             optional="show"
-                            sum="总重量"/>
+                            sum="总重量"
+                            invisible="delivery_weight == 0"/>
                 </xpath>
             </field>
         </record>
