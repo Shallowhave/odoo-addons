@@ -3,6 +3,7 @@
 from odoo import fields, models, api, _
 from odoo.exceptions import UserError
 from odoo.tools.float_utils import float_round
+import math
 import logging
 
 _logger = logging.getLogger(__name__)
@@ -531,8 +532,13 @@ class QualityCheck(models.Model):
             _logger.error(_("[组件数量更新] 计算新数量失败: %s"), str(e))
             return super(QualityCheck, self)._update_component_quantity()
         
-        # 使用有效的 rounding 值进行四舍五入
-        qty_todo = float_round(new_qty, precision_rounding=rounding)
+        # 使用向下取整而不是四舍五入，避免 0.255 被四舍五入到 0.26
+        # 先向下取整到 rounding 的倍数，保留原始精度
+        if rounding > 0:
+            # 向下取整：将数量向下取整到 rounding 的倍数
+            qty_todo = math.floor(new_qty / rounding) * rounding
+        else:
+            qty_todo = new_qty
         
         # 如果 move 已拣选且质检状态不是通过，需要减去已拣选的数量
         if (move.picked and self.quality_state != 'pass'):
