@@ -16,6 +16,12 @@
                     <setting id="mrp_auto_lot_logging_setting" string="启用详细日志" help="启用批次生成过程的详细日志记录">
                         <field name="mrp_auto_lot_enable_logging"/>
                     </setting>
+                    <setting id="mrp_auto_lot_override_generate_serial_setting" string="覆盖原生批次号生成" help="启用后，点击创建新序列号/批号按钮时将使用自定义批次号格式">
+                        <field name="mrp_auto_lot_override_generate_serial"/>
+                        <div class="text-muted">
+                            默认启用。启用后使用自定义格式（如：XQ2511261421A10），关闭后使用 Odoo 原生格式。
+                        </div>
+                    </setting>
                 </block>
             </xpath>
         </field>

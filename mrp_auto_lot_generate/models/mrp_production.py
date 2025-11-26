@@ -29,6 +29,13 @@ class MrpProduction(models.Model):
         return self.env['ir.config_parameter'].sudo().get_param(
             'mrp_auto_lot_generate.enable_logging', 'False'
         ).lower() == 'true'
+    
+    @api.model
+    def _is_override_generate_serial_enabled(self):
+        """检查是否启用覆盖原生批次号生成"""
+        return self.env['ir.config_parameter'].sudo().get_param(
+            'mrp_auto_lot_generate.override_generate_serial', 'True'
+        ).lower() == 'true'
 
     def _find_main_lot_for_production(self, Lot):
         """查找与当前制造单相关的主批次号"""
@@ -314,6 +321,11 @@ class MrpProduction(models.Model):
     def action_generate_serial(self):
         """覆盖原生的 action_generate_serial 方法，使用我们的自动批次号生成逻辑"""
         self.ensure_one()
+        
+        # 检查是否启用覆盖原生批次号生成
+        if not self._is_override_generate_serial_enabled():
+            # 如果未启用，使用原生方法
+            return super(MrpProduction, self).action_generate_serial()
         
         # 检查产品是否需要批次号
         if self.product_id.tracking not in ['lot', 'serial']:

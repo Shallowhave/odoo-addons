@@ -13,6 +13,15 @@ class StockLot(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         """覆盖 create 方法，当从制造订单创建批次号时，自动生成批次号名称"""
+        # 检查是否启用覆盖原生批次号生成
+        override_enabled = self.env['ir.config_parameter'].sudo().get_param(
+            'mrp_auto_lot_generate.override_generate_serial', 'True'
+        ).lower() == 'true'
+        
+        if not override_enabled:
+            # 如果未启用，使用原生行为
+            return super(StockLot, self).create(vals_list)
+        
         # 检查是否从制造订单上下文创建
         production_id = self.env.context.get('default_production_id') or self.env.context.get('production_id')
         
