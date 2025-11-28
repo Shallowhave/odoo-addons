@@ -49,12 +49,7 @@ class StockQuant(models.Model):
     # 备注字段
     o_note1 = fields.Char(string='备注1')
     o_note2 = fields.Char(string='备注2')
-    contract_no = fields.Char(
-        string='合同号',
-        compute='_compute_contract_no',
-        store=True,
-        help='合同号，从制造订单的移动行中自动获取'
-    )
+    contract_no = fields.Char(string='合同号')
 
     # 计算字段：长度（根据面积和宽度计算）
     calculated_length_m = fields.Float(
@@ -273,6 +268,27 @@ class StockQuant(models.Model):
                         quant.lot_unit_name = False
                         quant.lot_unit_name_custom = False
                 
+                # **关键修复**：从移动行获取合同号
+                # 优先从入库移动行获取，如果没有则从出库移动行获取
+                if incoming_move_lines:
+                    # 从入库移动行获取合同号（优先最新的）
+                    latest_incoming = incoming_move_lines.sorted(key='id', reverse=True)[:1]
+                    if latest_incoming and latest_incoming.contract_no:
+                        quant.contract_no = latest_incoming.contract_no
+                    elif relevant_move_lines:
+                        # 如果入库移动行没有合同号，尝试从所有移动行获取
+                        latest_all = relevant_move_lines.sorted(key='id', reverse=True)[:1]
+                        if latest_all and latest_all.contract_no:
+                            quant.contract_no = latest_all.contract_no
+                        else:
+                            # 如果所有移动行都没有合同号，保持原值或设为 False
+                            pass
+                elif relevant_move_lines:
+                    # 如果没有入库移动行，尝试从所有移动行获取
+                    latest_all = relevant_move_lines.sorted(key='id', reverse=True)[:1]
+                    if latest_all and latest_all.contract_no:
+                        quant.contract_no = latest_all.contract_no
+                
                 # 设置单位数量（确保不为负数）
                 quant.lot_quantity = max(0.0, current_lot_quantity)
             except Exception as e:
@@ -387,55 +403,3 @@ class StockQuant(models.Model):
             except (ZeroDivisionError, TypeError, ValueError) as e:
                 _logger.error(f"[计算长度错误] 产品={product.name}, 错误={str(e)}", exc_info=True)
                 quant.calculated_length_m = 0.0
-    
-    @api.depends('lot_id', 'product_id', 'location_id', 'quantity')
-    def _compute_contract_no(self):
-        """从移动行获取合同号"""
-        for quant in self:
-            if not quant.lot_id or not quant.product_id:
-                quant.contract_no = False
-                continue
-            
-            try:
-                # 查找所有相关的移动行（已完成状态）
-                move_lines = self.env['stock.move.line'].search([
-                    ('lot_id', '=', quant.lot_id.id),
-                    ('product_id', '=', quant.product_id.id),
-                    ('state', '=', 'done')
-                ])
-                
-                if not move_lines:
-                    quant.contract_no = False
-                    continue
-                
-                # 优先从入库移动行获取合同号（优先最新的）
-                incoming_move_lines = move_lines.filtered(
-                    lambda ml: ml.location_dest_id.id == quant.location_id.id
-                )
-                
-                if incoming_move_lines:
-                    latest_incoming = incoming_move_lines.sorted(key='id', reverse=True)[:1]
-                    if latest_incoming and latest_incoming.contract_no:
-                        quant.contract_no = latest_incoming.contract_no
-                    else:
-                        # 如果入库移动行没有合同号，尝试从所有移动行获取
-                        latest_all = move_lines.sorted(key='id', reverse=True)[:1]
-                        if latest_all and latest_all.contract_no:
-                            quant.contract_no = latest_all.contract_no
-                        else:
-                            quant.contract_no = False
-                else:
-                    # 如果没有入库移动行，尝试从所有移动行获取
-                    latest_all = move_lines.sorted(key='id', reverse=True)[:1]
-                    if latest_all and latest_all.contract_no:
-                        quant.contract_no = latest_all.contract_no
-                    else:
-                        quant.contract_no = False
-            except Exception as e:
-                _logger.warning(
-                    f"[计算合同号] 批次={quant.lot_id.name if quant.lot_id else 'None'}, "
-                    f"产品={quant.product_id.name if quant.product_id else 'None'}, "
-                    f"错误={str(e)}",
-                    exc_info=True
-                )
-                quant.contract_no = False

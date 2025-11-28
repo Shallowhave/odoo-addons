@@ -951,15 +951,38 @@ class StockMoveLine(models.Model):
                         elif move.raw_material_production_id and move.raw_material_production_id.contract_no:
                             contract_no = move.raw_material_production_id.contract_no
                         
+                        
+                        # **关键修复**：如果无法从制造订单获取，尝试从源库存记录获取（调拨场景）
+                        if not contract_no and move.location_id and move.location_id.usage == 'internal':
+                            # 这是内部调拨，尝试从源位置的库存记录获取合同号
+                            location_id = vals.get('location_id') or (move.location_id.id if move.location_id else None)
+                            lot_id = vals.get('lot_id')
+                            product_id = vals.get('product_id') or (move.product_id.id if move.product_id else None)
+                            
+                            if location_id and lot_id and product_id:
+                                source_quant = self.env['stock.quant'].search([
+                                    ('location_id', '=', location_id),
+                                    ('lot_id', '=', lot_id),
+                                    ('product_id', '=', product_id)
+                                ], limit=1, order='id desc')
+                                
+                                if source_quant and source_quant.contract_no:
+                                    contract_no = source_quant.contract_no
+                                    _logger.info(
+                                        f"[合同号创建] 从源库存记录获取合同号: move_id={move_id}, "
+                                        f"合同号={contract_no}, source_quant_id={source_quant.id}, "
+                                        f"location_id={location_id}, lot_id={lot_id}, product_id={product_id}"
+                                    )
+                        
                         if contract_no:
                             vals['contract_no'] = contract_no
                             _logger.info(
-                                f"[合同号创建] 从制造订单获取合同号: move_id={move_id}, "
+                                f"[合同号创建] 设置合同号: move_id={move_id}, "
                                 f"合同号={contract_no}, production_id={move.production_id.id if move.production_id else None}, "
                                 f"raw_material_production_id={move.raw_material_production_id.id if move.raw_material_production_id else None}"
                             )
                 except Exception as e:
-                    _logger.warning(f"[合同号创建] 从制造订单获取合同号时出错: {str(e)}")
+                    _logger.warning(f"[合同号创建] 获取合同号时出错: {str(e)}")
         
         # **关键修复**：检查是否是扫码操作
         is_barcode_scan = (
@@ -1411,16 +1434,34 @@ class StockMoveLine(models.Model):
                         elif move.raw_material_production_id and move.raw_material_production_id.contract_no:
                             contract_no = move.raw_material_production_id.contract_no
                         
+                        
+                        # **关键修复**：如果无法从制造订单获取，尝试从源库存记录获取（调拨场景）
+                        if not contract_no and move.location_id and move.location_id.usage == 'internal':
+                            # 这是内部调拨，尝试从源位置的库存记录获取合同号
+                            if record.location_id and record.lot_id and record.product_id:
+                                source_quant = self.env['stock.quant'].search([
+                                    ('location_id', '=', record.location_id.id),
+                                    ('lot_id', '=', record.lot_id.id),
+                                    ('product_id', '=', record.product_id.id)
+                                ], limit=1, order='id desc')
+                                
+                                if source_quant and source_quant.contract_no:
+                                    contract_no = source_quant.contract_no
+                                    _logger.info(
+                                        f"[合同号更新] 从源库存记录获取合同号: record_id={record.id}, move_id={move.id}, "
+                                        f"合同号={contract_no}, source_quant_id={source_quant.id}"
+                                    )
+                        
                         if contract_no and contract_no != record.contract_no:
                             # 只有在合同号不同时才更新
                             records_to_update.append((record, contract_no))
                             _logger.info(
-                                f"[合同号更新] 从制造订单获取合同号: record_id={record.id}, move_id={move.id}, "
+                                f"[合同号更新] 设置合同号: record_id={record.id}, move_id={move.id}, "
                                 f"合同号={contract_no}, production_id={move.production_id.id if move.production_id else None}, "
                                 f"raw_material_production_id={move.raw_material_production_id.id if move.raw_material_production_id else None}"
                             )
                     except Exception as e:
-                        _logger.warning(f"[合同号更新] 从制造订单获取合同号时出错: {str(e)}")
+                        _logger.warning(f"[合同号更新] 获取合同号时出错: {str(e)}")
             
             # 如果只有一个记录需要更新，且所有记录都来自同一个制造订单，则统一设置
             if records_to_update:
@@ -1430,9 +1471,6 @@ class StockMoveLine(models.Model):
                     vals['contract_no'] = records_to_update[0][1]
                 # 如果有多个记录但合同号不同，需要在 write 后单独处理
                 # 这种情况比较少见，暂时不处理
-        
-        # 记录是否需要更新合同号
-        contract_no_updated = 'contract_no' in vals
         
         # **关键修复**：在批次号验证之前，先检查每个记录是否已经有包裹
         # 这样可以提前检测到包裹操作，避免在循环中重复检测
@@ -2015,30 +2053,6 @@ class StockMoveLine(models.Model):
         
         # 调用父类的 write 方法
         result = super(StockMoveLine, self).write(vals)
-        
-        # **关键修复**：当合同号更新时，触发相关 stock.quant 的重新计算
-        if contract_no_updated:
-            # 查找所有相关的 stock.quant 记录并触发重新计算
-            for record in self:
-                if record.exists() and record.lot_id and record.product_id and record.state == 'done':
-                    try:
-                        # 查找所有相关的 stock.quant 记录
-                        quants = self.env['stock.quant'].search([
-                            ('lot_id', '=', record.lot_id.id),
-                            ('product_id', '=', record.product_id.id)
-                        ])
-                        if quants:
-                            # 触发重新计算合同号
-                            quants._compute_contract_no()
-                            _logger.debug(
-                                f"[合同号更新] 触发 stock.quant 重新计算: move_line_id={record.id}, "
-                                f"合同号={record.contract_no}, quants={quants.ids}"
-                            )
-                    except Exception as e:
-                        _logger.warning(
-                            f"[合同号更新] 触发 stock.quant 重新计算时出错: {str(e)}",
-                            exc_info=True
-                        )
         
         # **关键修复**：在调用父类 write 之后，如果启用增强条码验证，且有批次号，强制设置 quantity = 1.0
         # 因为 Odoo 的标准逻辑可能会根据 qty_done 自动更新 quantity，我们需要再次强制设置
