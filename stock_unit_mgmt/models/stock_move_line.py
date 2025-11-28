@@ -1431,6 +1431,9 @@ class StockMoveLine(models.Model):
                 # 如果有多个记录但合同号不同，需要在 write 后单独处理
                 # 这种情况比较少见，暂时不处理
         
+        # 记录是否需要更新合同号
+        contract_no_updated = 'contract_no' in vals
+        
         # **关键修复**：在批次号验证之前，先检查每个记录是否已经有包裹
         # 这样可以提前检测到包裹操作，避免在循环中重复检测
         # 放入包裹时，可能先设置了包裹，然后再更新批次号
@@ -2012,6 +2015,30 @@ class StockMoveLine(models.Model):
         
         # 调用父类的 write 方法
         result = super(StockMoveLine, self).write(vals)
+        
+        # **关键修复**：当合同号更新时，触发相关 stock.quant 的重新计算
+        if contract_no_updated:
+            # 查找所有相关的 stock.quant 记录并触发重新计算
+            for record in self:
+                if record.exists() and record.lot_id and record.product_id and record.state == 'done':
+                    try:
+                        # 查找所有相关的 stock.quant 记录
+                        quants = self.env['stock.quant'].search([
+                            ('lot_id', '=', record.lot_id.id),
+                            ('product_id', '=', record.product_id.id)
+                        ])
+                        if quants:
+                            # 触发重新计算合同号
+                            quants._compute_contract_no()
+                            _logger.debug(
+                                f"[合同号更新] 触发 stock.quant 重新计算: move_line_id={record.id}, "
+                                f"合同号={record.contract_no}, quants={quants.ids}"
+                            )
+                    except Exception as e:
+                        _logger.warning(
+                            f"[合同号更新] 触发 stock.quant 重新计算时出错: {str(e)}",
+                            exc_info=True
+                        )
         
         # **关键修复**：在调用父类 write 之后，如果启用增强条码验证，且有批次号，强制设置 quantity = 1.0
         # 因为 Odoo 的标准逻辑可能会根据 qty_done 自动更新 quantity，我们需要再次强制设置
