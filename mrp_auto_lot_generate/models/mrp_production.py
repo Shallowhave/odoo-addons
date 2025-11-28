@@ -388,20 +388,19 @@ class MrpProduction(models.Model):
     def _create_lot_for_byproduct(self, production, byproduct_move):
         """为副产品创建批次号
         逻辑：
-        1. 如果副产品配置了自己的前缀，生成独立的批次号
-        2. 否则，基于主产品批次号添加后缀（-B, -C等）
+        1. 如果副产品配置了自己的前缀，生成基础批次号后添加 -(A-Z) 后缀
+        2. 否则，基于主产品批次号添加 -(A-Z) 后缀
         """
         byproduct = byproduct_move.product_id
         
         # 检查副产品是否配置了自己的前缀
         if byproduct.mrp_lot_prefix:
-            # 副产品有自己的前缀，生成独立的批次号
+            # 副产品有自己的前缀，生成基础批次号后添加 -(A-Z) 后缀
             if self._is_logging_enabled():
-                _logger.info("[自动批次] 副产品 %s 配置了专属前缀 %s，生成独立批次号",
+                _logger.info("[自动批次] 副产品 %s 配置了专属前缀 %s，生成带后缀的批次号",
                              byproduct.display_name, byproduct.mrp_lot_prefix)
             
-            # 临时创建一个虚拟的制造单对象来生成批次号
-            # 使用副产品的信息
+            # 使用副产品的信息生成基础批次号
             utc_now = fields.Datetime.now()
             user_dt = fields.Datetime.context_timestamp(self.env.user, utc_now)
             prefix = byproduct.mrp_lot_prefix
@@ -409,8 +408,13 @@ class MrpProduction(models.Model):
             time_str = user_dt.strftime('%H%M')
             Lot = self.env['stock.lot']
             
-            # 生成独立的批次号（使用副产品的前缀）
-            lot_name = self._generate_main_batch_for_product(prefix, date_str, time_str, Lot, byproduct)
+            # 生成基础批次号（使用副产品的前缀）
+            base_lot_name = self._generate_main_batch_for_product(prefix, date_str, time_str, Lot, byproduct)
+            
+            # 为基础批次号添加 -(A-Z) 后缀
+            lot_name = self._generate_byproduct_batch_with_suffix(
+                production, byproduct, base_lot_name
+            )
         else:
             # 副产品没有配置前缀，使用主产品批次号作为基础生成副产品批次号
             if production.lot_producing_id:
@@ -483,7 +487,7 @@ class MrpProduction(models.Model):
                     suffix = lot.name.split('-')[-1].strip()
                     # 检查是字母后缀还是数字后缀
                     if len(suffix) == 1 and suffix.isalpha():
-                        # 单个字母后缀（B, C, D, ...）
+                        # 单个字母后缀（A, B, C, D, ...），统一转换为大写
                         used_letter_suffixes.add(suffix.upper())
                     elif suffix.isdigit():
                         # 数字后缀（01, 02, ...）
@@ -491,14 +495,14 @@ class MrpProduction(models.Model):
                 except (ValueError, IndexError):
                     continue
         
-        # 优先使用字母后缀（从B开始）
-        next_letter = 'B'
+        # 优先使用字母后缀（从A开始，A-Z）
+        next_letter = 'A'
         while next_letter in used_letter_suffixes and ord(next_letter) < ord('Z'):
             next_letter = chr(ord(next_letter) + 1)
         
         if next_letter <= 'Z' and next_letter not in used_letter_suffixes:
-            # 使用字母后缀
-            lot_name = f"{base_pattern}-{next_letter}"
+            # 使用字母后缀（确保是大写）
+            lot_name = f"{base_pattern}-{next_letter.upper()}"
         else:
             # 如果字母用完了，使用数字后缀（从01开始）
             next_number = 1
