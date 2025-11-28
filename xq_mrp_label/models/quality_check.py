@@ -45,18 +45,70 @@ class QualityCheck(models.Model):
 
     def _action_print_byproduct_label(self, production, ctx):
         """打印副产品标签"""
-        # 获取制造订单的所有副产品移动记录
-        byproduct_moves = production.move_byproduct_ids.filtered(
-            lambda m: m.state in ('done', 'assigned') and m.product_uom_qty > 0
-        )
+        # 首先检查是否有副产品移动记录
+        all_byproduct_moves = production.move_byproduct_ids
         
-        if not byproduct_moves:
+        if not all_byproduct_moves:
             return {
                 'type': 'ir.actions.client',
                 'tag': 'display_notification',
                 'params': {
                     'title': _('提示'),
-                    'message': _('该制造订单没有副产品，无法打印副产品标签！'),
+                    'message': _('该制造订单没有配置副产品，无法打印副产品标签！'),
+                    'type': 'warning',
+                    'sticky': False,
+                }
+            }
+        
+        # 获取制造订单的所有副产品移动记录（放宽状态过滤条件）
+        # 允许更多状态：done, assigned, confirmed, waiting, partially_available
+        # 只要数量大于0即可
+        byproduct_moves = all_byproduct_moves.filtered(
+            lambda m: m.state in ('done', 'assigned', 'confirmed', 'waiting', 'partially_available') and m.product_uom_qty > 0
+        )
+        
+        # 如果过滤后没有符合条件的副产品，检查是否有其他状态的副产品
+        if not byproduct_moves:
+            # 检查是否有数量为0的副产品
+            zero_qty_moves = all_byproduct_moves.filtered(
+                lambda m: m.product_uom_qty <= 0
+            )
+            if zero_qty_moves:
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'title': _('提示'),
+                        'message': _('该制造订单的副产品数量为0，无法打印副产品标签！'),
+                        'type': 'warning',
+                        'sticky': False,
+                    }
+                }
+            
+            # 检查是否有其他状态的副产品
+            other_state_moves = all_byproduct_moves.filtered(
+                lambda m: m.state not in ('done', 'assigned', 'confirmed', 'waiting', 'partially_available')
+            )
+            if other_state_moves:
+                states = ', '.join(set(other_state_moves.mapped('state')))
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'title': _('提示'),
+                        'message': _('该制造订单的副产品状态为：%s，无法打印标签。请等待副产品移动完成后再试。') % states,
+                        'type': 'warning',
+                        'sticky': False,
+                    }
+                }
+            
+            # 如果都没有，说明确实没有可用的副产品
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _('提示'),
+                    'message': _('该制造订单没有可用的副产品，无法打印副产品标签！'),
                     'type': 'warning',
                     'sticky': False,
                 }

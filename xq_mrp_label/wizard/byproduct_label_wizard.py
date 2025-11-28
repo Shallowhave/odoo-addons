@@ -71,8 +71,9 @@ class ByproductLabelWizard(models.TransientModel):
         """计算可用的副产品列表"""
         for record in self:
             if record.production_id:
+                # 放宽状态过滤条件，允许更多状态的副产品
                 byproduct_moves = record.production_id.move_byproduct_ids.filtered(
-                    lambda m: m.state in ('done', 'assigned') and m.product_uom_qty > 0
+                    lambda m: m.state in ('done', 'assigned', 'confirmed', 'waiting', 'partially_available') and m.product_uom_qty > 0
                 )
                 record.available_byproduct_move_ids = byproduct_moves
             else:
