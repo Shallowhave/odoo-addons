@@ -334,16 +334,23 @@ class QualityCheck(models.Model):
                 scanned_product.default_code or ''
             )
             
-            # 记录日志
-            self.message_post(
-                body=_('组件验证失败<br/>选择的待登记组件：%s (%s)<br/>扫码的组件：%s (%s)<br/>生产订单：%s') % (
-                    selected_product.name,
-                    selected_product.default_code or '',
-                    scanned_product.name,
-                    scanned_product.default_code or '',
-                    production.name
+            # 记录日志（跳过邮件发送，避免未配置邮件时报错）
+            try:
+                self.with_context(mail_notrack=True).message_post(
+                    body=_('组件验证失败<br/>选择的待登记组件：%s (%s)<br/>扫码的组件：%s (%s)<br/>生产订单：%s') % (
+                        selected_product.name,
+                        selected_product.default_code or '',
+                        scanned_product.name,
+                        scanned_product.default_code or '',
+                        production.name
+                    )
                 )
-            )
+            except Exception as e:
+                # 如果 message_post 失败（例如未配置邮件），只记录日志，不抛出异常
+                _logger.warning(
+                    _("[组件扫码确认] 记录验证失败消息时出错（已跳过）: %s"),
+                    str(e)
+                )
             
             _logger.warning(
                 _("[组件扫码确认] 验证失败: 质检ID=%s, 选择的组件=%s(ID:%s), 扫码的组件=%s(ID:%s), 生产订单=%s"),
@@ -369,16 +376,23 @@ class QualityCheck(models.Model):
             scanned_product.default_code or ''
         )
         
-        # 记录日志
-        self.message_post(
-            body=_('组件验证成功<br/>选择的待登记组件：%s (%s)<br/>扫码的组件：%s (%s)<br/>生产订单：%s') % (
-                selected_product.name,
-                selected_product.default_code or '',
-                scanned_product.name,
-                scanned_product.default_code or '',
-                production.name
+        # 记录日志（跳过邮件发送，避免未配置邮件时报错）
+        try:
+            self.with_context(mail_notrack=True).message_post(
+                body=_('组件验证成功<br/>选择的待登记组件：%s (%s)<br/>扫码的组件：%s (%s)<br/>生产订单：%s') % (
+                    selected_product.name,
+                    selected_product.default_code or '',
+                    scanned_product.name,
+                    scanned_product.default_code or '',
+                    production.name
+                )
             )
-        )
+        except Exception as e:
+            # 如果 message_post 失败（例如未配置邮件），只记录日志，不抛出异常
+            _logger.warning(
+                _("[组件扫码确认] 记录验证成功消息时出错（已跳过）: %s"),
+                str(e)
+            )
         
         _logger.info(
             _("[组件扫码确认] 验证成功: 质检ID=%s, 选择的组件=%s, 扫码的组件=%s, 生产订单=%s"),

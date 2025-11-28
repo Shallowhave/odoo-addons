@@ -1190,6 +1190,70 @@ class StockMoveLine(models.Model):
         # 调用父类的 create 方法
         result = super(StockMoveLine, self).create(vals_list)
         
+        # **关键修复**：从采购订单行复制附加单位数量和名称到库存移动行
+        # 如果采购订单行填写了附加单位数量，需要复制到入库的库存移动行
+        # 参考提交 01300f3558a86de843aa39adc1cf3f3437f1c5c8 的正常逻辑
+        for record in result:
+            if record.move_id and record.move_id.purchase_line_id:
+                # 检查库存移动行是否已经有附加单位数量和名称
+                # 如果已经有值，则保留（用户可能已经手动填写）
+                # 如果没有值，则从采购订单行复制
+                try:
+                    purchase_line = record.move_id.purchase_line_id
+                    if purchase_line.exists():
+                        # 从采购订单行获取附加单位数量和名称
+                        # 注意：采购订单行可能没有这些字段，需要安全获取
+                        update_vals = {}
+                        
+                        # 检查 lot_quantity（如果库存移动行没有值，则从采购订单行复制）
+                        if not record.lot_quantity or record.lot_quantity == 0:
+                            # 尝试从采购订单行获取附加单位数量
+                            # 注意：采购订单行可能没有 lot_quantity 字段，需要安全获取
+                            purchase_lot_quantity = None
+                            if hasattr(purchase_line, 'lot_quantity'):
+                                purchase_lot_quantity = purchase_line.lot_quantity
+                            
+                            # 如果采购订单行有附加单位数量，则复制
+                            if purchase_lot_quantity and purchase_lot_quantity > 0:
+                                update_vals['lot_quantity'] = purchase_lot_quantity
+                                _logger.info(
+                                    f"[采购入库] 从采购订单行复制附加单位数量: move_line_id={record.id}, "
+                                    f"purchase_line_id={purchase_line.id}, lot_quantity={purchase_lot_quantity}"
+                                )
+                        
+                        # 检查 lot_unit_name（如果库存移动行没有值，则从采购订单行复制）
+                        if not record.lot_unit_name:
+                            # 尝试从采购订单行获取附加单位名称
+                            purchase_lot_unit_name = None
+                            if hasattr(purchase_line, 'lot_unit_name'):
+                                purchase_lot_unit_name = purchase_line.lot_unit_name
+                            
+                            # 如果采购订单行有附加单位名称，则复制
+                            if purchase_lot_unit_name:
+                                update_vals['lot_unit_name'] = purchase_lot_unit_name
+                                # 如果是自定义单位，也需要复制自定义单位名称
+                                if purchase_lot_unit_name == 'custom' and hasattr(purchase_line, 'lot_unit_name_custom'):
+                                    purchase_lot_unit_name_custom = purchase_line.lot_unit_name_custom
+                                    if purchase_lot_unit_name_custom:
+                                        update_vals['lot_unit_name_custom'] = purchase_lot_unit_name_custom
+                                
+                                _logger.info(
+                                    f"[采购入库] 从采购订单行复制附加单位名称: move_line_id={record.id}, "
+                                    f"purchase_line_id={purchase_line.id}, lot_unit_name={purchase_lot_unit_name}"
+                                )
+                        
+                        # 如果有需要更新的值，则更新
+                        if update_vals:
+                            record.with_context(skip_quantity_fix=True, skip_duplicate_check=True).write(update_vals)
+                            _logger.info(
+                                f"[采购入库] 更新附加单位信息: move_line_id={record.id}, update_vals={update_vals}"
+                            )
+                except Exception as e:
+                    _logger.warning(
+                        f"[采购入库] 从采购订单行复制附加单位信息时出错: move_line_id={record.id}, "
+                        f"错误={str(e)}", exc_info=True
+                    )
+        
         _logger.info(
             f"[扫码创建验证] 记录创建完成: 创建的记录数={len(result)}, "
             f"创建的记录ID={[r.id for r in result]}"
