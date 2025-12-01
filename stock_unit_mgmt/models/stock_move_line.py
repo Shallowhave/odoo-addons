@@ -948,9 +948,29 @@ class StockMoveLine(models.Model):
                         contract_no = None
                         if move.production_id and move.production_id.contract_no:
                             contract_no = move.production_id.contract_no
+                            _logger.info(
+                                f"[合同号创建] 从 production_id 获取合同号: move_id={move_id}, "
+                                f"production_id={move.production_id.id}, 合同号={contract_no}"
+                            )
                         elif move.raw_material_production_id and move.raw_material_production_id.contract_no:
                             contract_no = move.raw_material_production_id.contract_no
+                            _logger.info(
+                                f"[合同号创建] 从 raw_material_production_id 获取合同号: move_id={move_id}, "
+                                f"raw_material_production_id={move.raw_material_production_id.id}, 合同号={contract_no}"
+                            )
                         
+                        # **关键修复**：如果无法从移动的 production_id 获取，尝试通过制造订单的 move_finished_ids 反向查找
+                        if not contract_no:
+                            # 尝试查找包含此移动的制造订单（通过 move_finished_ids）
+                            production = self.env['mrp.production'].search([
+                                ('move_finished_ids', 'in', [move_id])
+                            ], limit=1)
+                            if production and production.contract_no:
+                                contract_no = production.contract_no
+                                _logger.info(
+                                    f"[合同号创建] 通过 move_finished_ids 反向查找获取合同号: move_id={move_id}, "
+                                    f"production_id={production.id}, 合同号={contract_no}"
+                                )
                         
                         # **关键修复**：如果无法从制造订单获取，尝试从源库存记录获取（调拨场景）
                         if not contract_no and move.location_id and move.location_id.usage == 'internal':
@@ -1431,9 +1451,29 @@ class StockMoveLine(models.Model):
                         contract_no = None
                         if move.production_id and move.production_id.contract_no:
                             contract_no = move.production_id.contract_no
+                            _logger.info(
+                                f"[合同号更新] 从 production_id 获取合同号: record_id={record.id}, move_id={move.id}, "
+                                f"production_id={move.production_id.id}, 合同号={contract_no}"
+                            )
                         elif move.raw_material_production_id and move.raw_material_production_id.contract_no:
                             contract_no = move.raw_material_production_id.contract_no
+                            _logger.info(
+                                f"[合同号更新] 从 raw_material_production_id 获取合同号: record_id={record.id}, move_id={move.id}, "
+                                f"raw_material_production_id={move.raw_material_production_id.id}, 合同号={contract_no}"
+                            )
                         
+                        # **关键修复**：如果无法从移动的 production_id 获取，尝试通过制造订单的 move_finished_ids 反向查找
+                        if not contract_no:
+                            # 尝试查找包含此移动的制造订单（通过 move_finished_ids）
+                            production = self.env['mrp.production'].search([
+                                ('move_finished_ids', 'in', [move.id])
+                            ], limit=1)
+                            if production and production.contract_no:
+                                contract_no = production.contract_no
+                                _logger.info(
+                                    f"[合同号更新] 通过 move_finished_ids 反向查找获取合同号: record_id={record.id}, move_id={move.id}, "
+                                    f"production_id={production.id}, 合同号={contract_no}"
+                                )
                         
                         # **关键修复**：如果无法从制造订单获取，尝试从源库存记录获取（调拨场景）
                         if not contract_no and move.location_id and move.location_id.usage == 'internal':
