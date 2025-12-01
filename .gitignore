@@ -1,0 +1,67 @@
+# Python 缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Odoo 特定文件
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 编译文件
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE 文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 日志文件
+*.log
+*.log.*
+
+# 临时文件
+*.tmp
+*.bak
+*.backup
+*.orig
+
+# 测试覆盖率
+.coverage
+htmlcov/
+.pytest_cache/
+
+# 环境变量文件
+.env
+.env.local
+.venv/
+venv/
+ENV/
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 文档生成
+docs/_build/
+docs/.doctrees/
+
+# 其他
+*.mo
+*.pot
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.py[cod]
+*$py.class
+
