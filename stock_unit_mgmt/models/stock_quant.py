@@ -149,22 +149,34 @@ class StockQuant(models.Model):
                     lambda ml: ml.location_id.id == quant.location_id.id
                 )
                 
-                # 累加入库的单位数量（只累加有 lot_quantity 的移动行）
-                # 重要：确保读取所有移动行的 lot_quantity 值
-                incoming_with_lot_qty = incoming_move_lines.filtered(
-                    lambda ml: ml.lot_quantity and ml.lot_quantity > 0
-                )
+                # 累加入库的单位数量
+                # **关键修复**：如果移动行有 lot_unit_name 但 lot_quantity 为空，使用默认值 1.0
                 total_incoming = 0.0
-                for ml in incoming_with_lot_qty:
-                    total_incoming += ml.lot_quantity
+                for ml in incoming_move_lines:
+                    if ml.lot_quantity and ml.lot_quantity > 0:
+                        total_incoming += ml.lot_quantity
+                    elif ml.lot_unit_name:
+                        # 如果移动行有单位名称但没有单位数量，使用默认值 1.0
+                        # 这通常发生在入库时没有正确设置 lot_quantity 的情况
+                        total_incoming += 1.0
+                        _logger.debug(
+                            f"[批次数量计算] 移动行 {ml.id} 有单位名称但无单位数量，使用默认值 1.0: "
+                            f"lot_unit_name={ml.lot_unit_name}, lot_id={ml.lot_id.id if ml.lot_id else None}"
+                        )
                 
-                # 累加出库的单位数量（只累加有 lot_quantity 的移动行）
-                outgoing_with_lot_qty = outgoing_move_lines.filtered(
-                    lambda ml: ml.lot_quantity and ml.lot_quantity > 0
-                )
+                # 累加出库的单位数量
+                # **关键修复**：如果移动行有 lot_unit_name 但 lot_quantity 为空，使用默认值 1.0
                 total_outgoing = 0.0
-                for ml in outgoing_with_lot_qty:
-                    total_outgoing += ml.lot_quantity
+                for ml in outgoing_move_lines:
+                    if ml.lot_quantity and ml.lot_quantity > 0:
+                        total_outgoing += ml.lot_quantity
+                    elif ml.lot_unit_name:
+                        # 如果移动行有单位名称但没有单位数量，使用默认值 1.0
+                        total_outgoing += 1.0
+                        _logger.debug(
+                            f"[批次数量计算] 移动行 {ml.id} 有单位名称但无单位数量，使用默认值 1.0: "
+                            f"lot_unit_name={ml.lot_unit_name}, lot_id={ml.lot_id.id if ml.lot_id else None}"
+                        )
                 
                 # 计算当前剩余的单位数量
                 current_lot_quantity = total_incoming - total_outgoing
@@ -183,16 +195,18 @@ class StockQuant(models.Model):
                 
                 if should_log:
                     # 记录详细信息用于调试（使用 DEBUG 级别）
+                    incoming_with_lot_qty_count = len([ml for ml in incoming_move_lines if ml.lot_quantity and ml.lot_quantity > 0])
+                    incoming_with_unit_name_count = len([ml for ml in incoming_move_lines if ml.lot_unit_name])
                     _logger.debug(
                         _("[批次数量计算] 产品=%s, 批次=%s, 位置=%s, 位置ID=%s, "
                           "库存数量=%s, 所有移动行数=%s, 入库移动行数=%s, "
-                          "有数量入库行数=%s, 总入库数量=%s, 总出库数量=%s, 计算出的单位数量=%s"),
+                          "有数量入库行数=%s, 有单位名称入库行数=%s, 总入库数量=%s, 总出库数量=%s, 计算出的单位数量=%s"),
                         product_code, lot_name,
                         quant.location_id.name if quant.location_id else 'None',
                         quant.location_id.id if quant.location_id else 'None',
                         quant.quantity, len(relevant_move_lines),
-                        len(incoming_move_lines), len(incoming_with_lot_qty),
-                        total_incoming, total_outgoing, current_lot_quantity
+                        len(incoming_move_lines), incoming_with_lot_qty_count,
+                        incoming_with_unit_name_count, total_incoming, total_outgoing, current_lot_quantity
                     )
                     # 记录移动行详情
                     if relevant_move_lines:
@@ -212,12 +226,13 @@ class StockQuant(models.Model):
                 
                 # 详细调试日志（仅在启用详细日志时输出）
                 if self.env['ir.config_parameter'].sudo().get_param('stock_unit_mgmt.enable_debug_logging', 'False').lower() == 'true':
-                    incoming_details = [(ml.id, ml.lot_quantity) for ml in incoming_with_lot_qty]
+                    incoming_with_lot_qty_count = len([ml for ml in incoming_move_lines if ml.lot_quantity and ml.lot_quantity > 0])
+                    incoming_details = [(ml.id, ml.lot_quantity or (1.0 if ml.lot_unit_name else 0.0)) for ml in incoming_move_lines]
                     _logger.debug(f"[批次数量计算] 批次={quant.lot_id.name if quant.lot_id else 'None'}, "
                                  f"位置={quant.location_id.name if quant.location_id else 'None'}, "
                                  f"所有移动行数={len(relevant_move_lines)}, "
                                  f"入库移动行数={len(incoming_move_lines)}, "
-                                 f"有数量入库行数={len(incoming_with_lot_qty)}, "
+                                 f"有数量入库行数={incoming_with_lot_qty_count}, "
                                  f"总入库数量={total_incoming}, "
                                  f"总出库数量={total_outgoing}")
                 

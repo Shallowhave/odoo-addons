@@ -1530,10 +1530,8 @@ class StockMoveLine(models.Model):
                             expected_lot_quantity = vals.get('lot_quantity')
                             if expected_lot_quantity is not None:
                                 # **关键修复**：直接从数据库读取，确保获取最新值
-                                # 先清除缓存，然后刷新记录，最后从数据库读取
+                                # 先清除字段缓存，然后使用 SQL 直接从数据库读取
                                 record.invalidate_recordset(['lot_quantity'])
-                                record.env.clear_upon_failure()
-                                record._cache.clear()
                                 
                                 # 使用 SQL 直接从数据库读取，避免缓存问题
                                 try:
@@ -1572,8 +1570,6 @@ class StockMoveLine(models.Model):
                             if expected_lot_unit_name:
                                 # **关键修复**：直接从数据库读取，确保获取最新值
                                 record.invalidate_recordset(['lot_unit_name'])
-                                record.env.clear_upon_failure()
-                                record._cache.clear()
                                 
                                 # 使用 SQL 直接从数据库读取，避免缓存问题
                                 try:
@@ -1627,7 +1623,6 @@ class StockMoveLine(models.Model):
                                 record_sudo.invalidate_recordset(['lot_quantity', 'lot_unit_name', 'lot_unit_name_custom'])
                                 
                                 # 验证更新是否成功
-                                record_sudo.env.clear_upon_failure()
                                 updated_lot_quantity = record_sudo.lot_quantity
                                 updated_lot_unit_name = record_sudo.lot_unit_name
                                 
