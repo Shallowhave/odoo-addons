@@ -59,6 +59,31 @@ class StockQuant(models.Model):
         digits=(16, 2),
         help='根据库存数量（面积）和产品宽度自动计算的长度'
     )
+    
+    # 原膜产品专用字段：实际米数
+    actual_length_m = fields.Float(
+        string='实际米数 (m)',
+        compute='_compute_roll_dimensions',
+        store=True,
+        digits=(16, 2),
+        help='原膜产品的实际米数（根据卷数和每卷长度计算，或根据面积和宽度计算）'
+    )
+    
+    # 原膜产品专用字段：实际平方
+    actual_area_sqm = fields.Float(
+        string='实际平方 (㎡)',
+        compute='_compute_roll_dimensions',
+        store=True,
+        digits=(16, 2),
+        help='原膜产品的实际平方（根据卷数和每卷面积计算，或直接使用库存数量）'
+    )
+    
+    # 计算字段：是否为原膜产品（用于视图显示控制）
+    is_roll_product = fields.Boolean(
+        string='是否原膜产品',
+        compute='_compute_is_roll_product',
+        help='用于控制原膜产品专用字段的显示'
+    )
 
     @api.depends('lot_id', 'product_id', 'quantity', 'location_id')
     def _compute_lot_unit_info(self):
@@ -418,3 +443,99 @@ class StockQuant(models.Model):
             except (ZeroDivisionError, TypeError, ValueError) as e:
                 _logger.error(f"[计算长度错误] 产品={product.name}, 错误={str(e)}", exc_info=True)
                 quant.calculated_length_m = 0.0
+    
+    @api.depends('quantity', 'product_id', 
+                 'product_id.product_tmpl_id.categ_id',
+                 'product_id.product_tmpl_id.product_width',
+                 'product_id.product_tmpl_id.product_length')
+    def _compute_roll_dimensions(self):
+        """计算原膜产品的实际米数和实际平方
+        
+        适用条件：产品类别为原膜（categ_id 对应的类别名称包含"原膜"）
+        
+        计算规则：根据产品的产品属性中的宽度(mm)和长度(m)，以及产品的数量计算
+        
+        计算公式：
+        - 实际米数 = 数量 × 长度(m)
+        - 实际平方 = 数量 × 宽度(mm) / 1000 × 长度(m)
+        """
+        for quant in self:
+            if not quant.product_id:
+                quant.actual_length_m = 0.0
+                quant.actual_area_sqm = 0.0
+                continue
+            
+            product = quant.product_id
+            product_tmpl = product.product_tmpl_id
+            
+            # 检查产品类别是否为原膜
+            if not product_tmpl.categ_id:
+                quant.actual_length_m = 0.0
+                quant.actual_area_sqm = 0.0
+                continue
+            
+            # 判断类别名称是否包含"原膜"
+            category_name = product_tmpl.categ_id.name or ''
+            is_roll_category = '原膜' in category_name
+            
+            if not is_roll_category:
+                quant.actual_length_m = 0.0
+                quant.actual_area_sqm = 0.0
+                continue
+            
+            try:
+                # 获取产品属性：宽度(mm)和长度(m)
+                product_width = product_tmpl.product_width or 0.0
+                product_length = product_tmpl.product_length or 0.0
+                
+                if not product_width or not product_length:
+                    _logger.warning(
+                        f"[原膜计算] 产品={product.name}, 缺少产品属性: "
+                        f"宽度={product_width}mm, 长度={product_length}m"
+                    )
+                    quant.actual_length_m = 0.0
+                    quant.actual_area_sqm = 0.0
+                    continue
+                
+                # 对于原膜产品，直接根据数量、宽度和长度计算
+                # 实际米数 = 数量 × 长度(m)
+                quant.actual_length_m = round(quant.quantity * product_length, 2)
+                
+                # 实际平方 = 数量 × 宽度(mm) / 1000 × 长度(m)
+                width_m = product_width / 1000.0
+                quant.actual_area_sqm = round(quant.quantity * width_m * product_length, 2)
+                
+                _logger.info(
+                    f"[原膜计算] 产品={product.name}, 类别={category_name}, 数量={quant.quantity}, "
+                    f"宽度={product_width}mm, 长度={product_length}m, "
+                    f"实际米数={quant.actual_length_m}m, 实际平方={quant.actual_area_sqm}㎡"
+                )
+                        
+            except Exception as e:
+                _logger.warning(
+                    f"[原膜计算] 计算失败: 产品={product.name}, 错误={str(e)}",
+                    exc_info=True
+                )
+                quant.actual_length_m = 0.0
+                quant.actual_area_sqm = 0.0
+    
+    @api.depends('product_id', 'product_id.product_tmpl_id.categ_id')
+    def _compute_is_roll_product(self):
+        """计算是否为原膜产品（用于视图显示控制）
+        
+        判断条件：产品类别名称包含"原膜"
+        """
+        for quant in self:
+            if not quant.product_id or not quant.product_id.product_tmpl_id:
+                quant.is_roll_product = False
+                continue
+            
+            product_tmpl = quant.product_id.product_tmpl_id
+            
+            # 根据产品类别判断是否为原膜产品
+            if not product_tmpl.categ_id:
+                quant.is_roll_product = False
+                continue
+            
+            category_name = product_tmpl.categ_id.name or ''
+            quant.is_roll_product = '原膜' in category_name
