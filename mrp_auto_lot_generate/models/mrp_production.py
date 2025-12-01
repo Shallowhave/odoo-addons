@@ -388,45 +388,71 @@ class MrpProduction(models.Model):
     def _create_lot_for_byproduct(self, production, byproduct_move):
         """为副产品创建批次号
         逻辑：
-        1. 如果副产品配置了自己的前缀，生成基础批次号后添加 -(A-Z) 后缀
-        2. 否则，基于主产品批次号添加 -(A-Z) 后缀
+        1. 从主产品批次号中提取日期时间序列部分（去掉前缀）
+        2. 如果副产品配置了自己的前缀，使用副产品的前缀；否则使用主产品的前缀
+        3. 组合：副产品前缀 + 主产品的日期时间序列 + -(A-Z) 后缀
+        格式：{副产品前缀}YYMMDDHHMMAxx-x
+        示例：主产品 XQ2412011200A01，副产品前缀MQ -> MQ2412011200A01-A
         """
         byproduct = byproduct_move.product_id
         
-        # 检查副产品是否配置了自己的前缀
-        if byproduct.mrp_lot_prefix:
-            # 副产品有自己的前缀，生成基础批次号后添加 -(A-Z) 后缀
-            if self._is_logging_enabled():
-                _logger.info("[自动批次] 副产品 %s 配置了专属前缀 %s，生成带后缀的批次号",
-                             byproduct.display_name, byproduct.mrp_lot_prefix)
-            
-            # 使用副产品的信息生成基础批次号
-            utc_now = fields.Datetime.now()
-            user_dt = fields.Datetime.context_timestamp(self.env.user, utc_now)
-            prefix = byproduct.mrp_lot_prefix
-            date_str = user_dt.strftime('%y%m%d')
-            time_str = user_dt.strftime('%H%M')
-            Lot = self.env['stock.lot']
-            
-            # 生成基础批次号（使用副产品的前缀）
-            base_lot_name = self._generate_main_batch_for_product(prefix, date_str, time_str, Lot, byproduct)
-            
-            # 为基础批次号添加 -(A-Z) 后缀
-            lot_name = self._generate_byproduct_batch_with_suffix(
-                production, byproduct, base_lot_name
-            )
+        # 获取主产品批次号
+        if production.lot_producing_id:
+            main_lot_name = production.lot_producing_id.name
         else:
-            # 副产品没有配置前缀，使用主产品批次号作为基础生成副产品批次号
-            if production.lot_producing_id:
-                base_lot_name = production.lot_producing_id.name
+            # 如果主产品还没有批次号，先为主产品生成一个基础批次号（不创建，仅用于生成副产品批次号）
+            main_lot_name = production._generate_batch_number()
+            if self._is_logging_enabled():
+                _logger.info("[自动批次] 主产品还没有批次号，生成临时批次号用于副产品：%s", main_lot_name)
+        
+        # **优化**：从主产品批次号中提取日期时间序列部分（去掉前缀）
+        # 主产品批次号格式：{PREFIX}YYMMDDHHMMAxx
+        # 例如：XQ2412011200A01 -> 提取 2412011200A01
+        main_lot_name_clean = main_lot_name.split('-')[0] if '-' in main_lot_name else main_lot_name
+        
+        # 提取主产品的前缀（假设前缀是2-3个字母）
+        # 尝试匹配：前缀 + 日期时间序列（YYMMDDHHMMAxx）
+        # 日期时间序列格式：6位日期 + 4位时间 + A + 2-3位序列号
+        main_prefix_match = re.match(r'^([A-Za-z]{2,3})(\d{6}\d{0,4}A\d{2,3})$', main_lot_name_clean)
+        if main_prefix_match:
+            main_prefix = main_prefix_match.group(1)
+            date_time_sequence = main_prefix_match.group(2)  # YYMMDDHHMMAxx
+        else:
+            # 如果无法解析，尝试简单方式：去掉前2-3个字符作为前缀
+            # 假设前缀是2-3个字符
+            if len(main_lot_name_clean) > 5:
+                main_prefix = main_lot_name_clean[:2]  # 默认2个字符前缀
+                date_time_sequence = main_lot_name_clean[2:]
             else:
-                # 如果主产品还没有批次号，先为主产品生成一个基础批次号（不创建，仅用于生成副产品批次号）
-                base_lot_name = production._generate_batch_number()
-            
-            # 生成带后缀的副产品批次号
-            lot_name = self._generate_byproduct_batch_with_suffix(
-                production, byproduct, base_lot_name
-            )
+                # 如果批次号太短，使用原样
+                main_prefix = ''
+                date_time_sequence = main_lot_name_clean
+        
+        # 确定副产品使用的前缀
+        if byproduct.mrp_lot_prefix:
+            # 副产品配置了自己的前缀，使用副产品的前缀
+            byproduct_prefix = byproduct.mrp_lot_prefix
+            if self._is_logging_enabled():
+                _logger.info("[自动批次] 副产品 %s 配置了专属前缀 %s，使用该前缀",
+                             byproduct.display_name, byproduct_prefix)
+        else:
+            # 副产品没有配置前缀，使用主产品的前缀
+            byproduct_prefix = main_prefix
+            if self._is_logging_enabled():
+                _logger.info("[自动批次] 副产品 %s 没有配置前缀，使用主产品前缀 %s",
+                             byproduct.display_name, byproduct_prefix)
+        
+        # 组合基础批次号：副产品前缀 + 主产品的日期时间序列
+        base_lot_name = f"{byproduct_prefix}{date_time_sequence}"
+        
+        if self._is_logging_enabled():
+            _logger.info("[自动批次] 为副产品 %s 生成批次号，前缀=%s，日期时间序列=%s，基础批次号=%s",
+                         byproduct.display_name, byproduct_prefix, date_time_sequence, base_lot_name)
+        
+        # 生成带后缀的副产品批次号（格式：副产品前缀+主产品日期时间序列-A）
+        lot_name = self._generate_byproduct_batch_with_suffix(
+            production, byproduct, base_lot_name
+        )
         
         # 检查批次号是否已存在
         existing_lot = self.env['stock.lot'].search([
@@ -462,20 +488,32 @@ class MrpProduction(models.Model):
                          lot_name, byproduct_move.product_id.display_name, production.name)
 
     def _generate_byproduct_batch_with_suffix(self, production, product, base_lot_name):
-        """为副产品生成带后缀的批次号（基于主产品批次号）"""
+        """为副产品生成带后缀的批次号（基于主产品批次号）
+        
+        格式：xxxxxxxx-x，其中 xxxxxxxx 是主产品的批次号，x 是后缀（A-Z 或 01-99）
+        """
         Lot = self.env['stock.lot']
         
-        # 提取基础批次号（去掉可能的后缀）
+        # **优化**：提取基础批次号（去掉可能的后缀）
         # 格式：XQYYMMDDHHMMAxx 或 XQYYMMDDHHMMAxx-B
+        # 确保使用主产品的完整批次号作为基础
         base_pattern = base_lot_name.split('-')[0] if '-' in base_lot_name else base_lot_name
         
-        # 查找所有以基础批次号开头且属于同一产品的批次号
-        # 这样可以找到同一制造单的其他副产品批次号
-        existing_lots = Lot.search([
+        # **优化**：查找所有以基础批次号开头且属于同一制造单的所有副产品批次号
+        # 不限制产品，这样可以确保同一制造单的所有副产品使用统一的后缀序列
+        # 查找同一制造单的所有副产品移动
+        all_byproduct_moves = production.move_byproduct_ids
+        all_byproduct_product_ids = all_byproduct_moves.mapped('product_id.id') if all_byproduct_moves else []
+        
+        # 查找所有以基础批次号开头的副产品批次号（同一制造单的所有副产品）
+        domain = [
             ('name', 'like', f'{base_pattern}-%'),
-            ('product_id', '=', product.id),
             ('company_id', '=', production.company_id.id)
-        ])
+        ]
+        if all_byproduct_product_ids:
+            domain.append(('product_id', 'in', all_byproduct_product_ids))
+        
+        existing_lots = Lot.search(domain)
         
         # 提取已使用的后缀（字母或数字）
         used_letter_suffixes = set()
