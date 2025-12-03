@@ -26,6 +26,7 @@ export class ComponentScanWizard extends Component {
             scannedProduct: null,
             scannedProductName: '',
             scannedProductCode: '',
+            scannedLotId: null, // 扫码的批次号ID
             requiredComponents: [],
             verificationResult: 'pending',
             verificationMessage: '',
@@ -386,61 +387,65 @@ export class ComponentScanWizard extends Component {
             
             console.log('[组件扫码确认] 产品查询结果:', products);
             
-            if (products && products.length > 0) {
+            // **关键修复**：先尝试通过批次号查找（因为批次号更精确）
+            const lots = await this.orm.searchRead(
+                'stock.lot',
+                [['name', '=', barcode]],
+                ['product_id', 'id'],
+                { limit: 1 }
+            );
+            
+            console.log('[组件扫码确认] 批次号查询结果:', lots);
+            
+            if (lots && lots.length > 0 && lots[0].product_id) {
+                // 通过批次号找到了产品
+                const productId = lots[0].product_id[0];
+                const lotId = lots[0].id;
+                const product = await this.orm.read(
+                    'product.product',
+                    [productId],
+                    ['name', 'default_code', 'barcode']
+                );
+                
+                if (product && product.length > 0) {
+                    this.state.scannedProduct = product[0].id;
+                    this.state.scannedProductName = product[0].name;
+                    this.state.scannedProductCode = product[0].default_code || product[0].barcode || '';
+                    this.state.scannedLotId = lotId; // 保存批次号ID
+                    
+                    // 验证组件是否匹配（传递批次号ID）
+                    await this.verifyComponent(product[0].id, lotId);
+                } else {
+                    // 批次号存在但产品不存在
+                    console.log('[组件扫码确认] 批次号存在但产品不存在');
+                    this.state.scannedProduct = null;
+                    this.state.scannedProductName = '';
+                    this.state.scannedProductCode = '';
+                    this.state.scannedLotId = null;
+                    this.state.verificationResult = 'mismatched';
+                    this.state.verificationMessage = '批次号存在但对应的产品不存在';
+                    this.notification.add('批次号存在但对应的产品不存在', { type: 'warning', sticky: true });
+                }
+            } else if (products && products.length > 0) {
+                // 通过产品条码/编码找到了产品（没有批次号）
                 const product = products[0];
                 this.state.scannedProduct = product.id;
                 this.state.scannedProductName = product.name;
                 this.state.scannedProductCode = product.default_code || product.barcode || '';
+                this.state.scannedLotId = null; // 没有批次号
                 
-                // 验证组件是否匹配
-                await this.verifyComponent(product.id);
+                // 验证组件是否匹配（没有批次号）
+                await this.verifyComponent(product.id, null);
             } else {
-                // 尝试通过批次号查找
-                console.log('[组件扫码确认] 未找到产品，尝试通过批次号查找:', barcode);
-                const lots = await this.orm.searchRead(
-                    'stock.lot',
-                    [['name', '=', barcode]],
-                    ['product_id'],
-                    { limit: 1 }
-                );
-                
-                console.log('[组件扫码确认] 批次号查询结果:', lots);
-                
-                if (lots && lots.length > 0 && lots[0].product_id) {
-                    const productId = lots[0].product_id[0];
-                    const product = await this.orm.read(
-                        'product.product',
-                        [productId],
-                        ['name', 'default_code', 'barcode']
-                    );
-                    
-                    if (product && product.length > 0) {
-                        this.state.scannedProduct = product[0].id;
-                        this.state.scannedProductName = product[0].name;
-                        this.state.scannedProductCode = product[0].default_code || product[0].barcode || '';
-                        
-                        // 验证组件是否匹配
-                        await this.verifyComponent(product[0].id);
-                    } else {
-                        // 批次号存在但产品不存在
-                        console.log('[组件扫码确认] 批次号存在但产品不存在');
-                        this.state.scannedProduct = null;
-                        this.state.scannedProductName = '';
-                        this.state.scannedProductCode = '';
-                        this.state.verificationResult = 'mismatched';
-                        this.state.verificationMessage = '批次号存在但对应的产品不存在';
-                        this.notification.add('批次号存在但对应的产品不存在', { type: 'warning', sticky: true });
-                    }
-                } else {
-                    // 未找到产品或批次号
-                    console.log('[组件扫码确认] 未找到产品或批次号:', barcode);
-                    this.state.scannedProduct = null;
-                    this.state.scannedProductName = '';
-                    this.state.scannedProductCode = '';
-                    this.state.verificationResult = 'mismatched';
-                    this.state.verificationMessage = `未找到匹配的产品或批次号: ${barcode}`;
-                    this.notification.add(`未找到匹配的产品或批次号: ${barcode}`, { type: 'warning', sticky: true });
-                }
+                // 未找到产品或批次号
+                console.log('[组件扫码确认] 未找到产品或批次号:', barcode);
+                this.state.scannedProduct = null;
+                this.state.scannedProductName = '';
+                this.state.scannedProductCode = '';
+                this.state.scannedLotId = null;
+                this.state.verificationResult = 'mismatched';
+                this.state.verificationMessage = `未找到匹配的产品或批次号: ${barcode}`;
+                this.notification.add(`未找到匹配的产品或批次号: ${barcode}`, { type: 'warning', sticky: true });
             }
         } catch (error) {
             console.error('扫码验证失败:', error);
@@ -485,7 +490,7 @@ export class ComponentScanWizard extends Component {
         }
     }
 
-    async verifyComponent(productId) {
+    async verifyComponent(productId, lotId = null) {
         const recordData = this.props.record.data;
         
         // 检查是否已选择待登记组件
@@ -495,19 +500,24 @@ export class ComponentScanWizard extends Component {
         }
         
         try {
-            // 先保存扫码的组件到质检记录
-            await this.orm.write('quality.check', [recordData.id], {
+            // 先保存扫码的组件和批次号到质检记录
+            const writeData = {
                 scanned_component_id: productId,
                 scanned_component_code: this.state.scannedProductCode,
-            });
+            };
+            if (lotId) {
+                writeData.scanned_lot_id = lotId;
+            }
+            await this.orm.write('quality.check', [recordData.id], writeData);
             
-            // 调用后端验证方法
+            // 调用后端验证方法（传递批次号ID）
             const result = await this.orm.call(
                 'quality.check',
                 'verify_component',
                 [recordData.id],
                 {
                     scanned_component_id: productId,
+                    scanned_lot_id: lotId,
                 }
             );
             
@@ -556,11 +566,55 @@ export class ComponentScanWizard extends Component {
             autoPassed: this.state.autoPassed,
             verificationResult: this.state.verificationResult,
             inputBarcode: this.state.inputBarcode,
+            selectedComponentId: this.state.selectedComponentId,
+            scannedProduct: this.state.scannedProduct,
         });
         
-        // 如果已自动通过，直接返回 true，让父组件继续
+        // **关键修复**：检查是否已选择待登记组件
+        if (!this.state.selectedComponentId) {
+            console.log('[组件扫码确认] 未选择待登记组件，返回 false');
+            this.notification.add('请先选择待登记的组件！', { type: 'warning' });
+            return false;
+        }
+        
+        // 如果已自动通过，还需要再次验证确保数据一致性
         if (this.state.autoPassed) {
-            console.log('[组件扫码确认] 已自动通过，返回 true');
+            // 重新从后端读取验证结果，确保数据一致性
+            const recordData = this.props.record.data;
+            try {
+                const check = await this.orm.read(
+                    'quality.check',
+                    [recordData.id],
+                    ['component_verification_result', 'scanned_component_id', 'selected_component_id']
+                );
+                
+                if (check && check.length > 0) {
+                    const verificationResult = check[0].component_verification_result || 'pending';
+                    const scannedComponentId = check[0].scanned_component_id && check[0].scanned_component_id[0];
+                    const selectedComponentId = check[0].selected_component_id && check[0].selected_component_id[0];
+                    
+                    // 如果验证结果不是 matched，或者扫码的组件与选择的组件不匹配，阻止通过
+                    if (verificationResult !== 'matched') {
+                        console.log('[组件扫码确认] 后端验证结果不是 matched，返回 false');
+                        this.notification.add('组件验证失败，无法通过验证', { type: 'danger' });
+                        return false;
+                    }
+                    
+                    // 双重验证：确保扫码的组件ID与选择的组件ID匹配
+                    if (scannedComponentId && selectedComponentId && scannedComponentId !== selectedComponentId) {
+                        console.log('[组件扫码确认] 扫码的组件与选择的组件不匹配，返回 false');
+                        this.notification.add('组件不匹配，无法通过验证', { type: 'danger' });
+                        return false;
+                    }
+                }
+            } catch (error) {
+                console.error('[组件扫码确认] 读取验证结果失败:', error);
+                // 如果读取失败，为了安全起见，阻止通过
+                this.notification.add('无法验证组件，请重新扫码', { type: 'warning' });
+                return false;
+            }
+            
+            console.log('[组件扫码确认] 已自动通过且验证通过，返回 true');
             return true;
         }
         
@@ -628,14 +682,59 @@ export class ComponentScanWizard extends Component {
             }
         }
         
-        // 如果验证成功，返回 true，让父组件继续
+        // **关键修复**：如果验证成功，还需要再次验证确保数据一致性
         if (this.state.verificationResult === 'matched') {
+            // 重新从后端读取验证结果，确保数据一致性
+            const recordData = this.props.record.data;
+            try {
+                const check = await this.orm.read(
+                    'quality.check',
+                    [recordData.id],
+                    ['component_verification_result', 'scanned_component_id', 'selected_component_id']
+                );
+                
+                if (check && check.length > 0) {
+                    const verificationResult = check[0].component_verification_result || 'pending';
+                    const scannedComponentId = check[0].scanned_component_id && check[0].scanned_component_id[0];
+                    const selectedComponentId = check[0].selected_component_id && check[0].selected_component_id[0];
+                    
+                    // 如果验证结果不是 matched，阻止通过
+                    if (verificationResult !== 'matched') {
+                        console.log('[组件扫码确认] 后端验证结果不是 matched，返回 false');
+                        this.notification.add('组件验证失败，无法通过验证', { type: 'danger' });
+                        return false;
+                    }
+                    
+                    // 双重验证：确保扫码的组件ID与选择的组件ID匹配
+                    if (scannedComponentId && selectedComponentId && scannedComponentId !== selectedComponentId) {
+                        console.log('[组件扫码确认] 扫码的组件与选择的组件不匹配，返回 false');
+                        this.notification.add('组件不匹配，无法通过验证', { type: 'danger' });
+                        return false;
+                    }
+                    
+                    // 如果前端状态中的扫码产品与选择的组件不匹配，也阻止通过
+                    if (this.state.scannedProduct && this.state.selectedComponentId && 
+                        this.state.scannedProduct !== this.state.selectedComponentId) {
+                        console.log('[组件扫码确认] 前端状态中组件不匹配，返回 false');
+                        this.notification.add('组件不匹配，无法通过验证', { type: 'danger' });
+                        return false;
+                    }
+                }
+            } catch (error) {
+                console.error('[组件扫码确认] 读取验证结果失败:', error);
+                // 如果读取失败，为了安全起见，阻止通过
+                this.notification.add('无法验证组件，请重新扫码', { type: 'warning' });
+                return false;
+            }
+            
             console.log('[组件扫码确认] 验证已成功，返回 true');
             return true;
         } else if (this.state.verificationResult === 'mismatched') {
+            console.log('[组件扫码确认] 验证失败，返回 false');
             this.notification.add('组件不匹配，无法通过验证', { type: 'danger' });
             return false; // 阻止继续
         } else {
+            console.log('[组件扫码确认] 未验证，返回 false');
             this.notification.add('请先扫码确认组件', { type: 'warning' });
             return false; // 阻止继续
         }

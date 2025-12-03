@@ -40,6 +40,22 @@ class QualityCheck(models.Model):
         help='扫码获取的组件编码（条码/批次号）'
     )
     
+    # 扫码的批次号
+    scanned_lot_id = fields.Many2one(
+        'stock.lot',
+        string='扫码的批次号',
+        help='通过扫码获取的批次号'
+    )
+    
+    # 待登记组件对应的批次号（从生产订单移动行获取）
+    selected_lot_id = fields.Many2one(
+        'stock.lot',
+        string='待登记组件批次号',
+        compute='_compute_selected_lot_id',
+        store=False,
+        help='待登记组件对应的批次号，从生产订单移动行中获取'
+    )
+    
     component_verification_result = fields.Selection([
         ('pending', '待验证'),
         ('matched', '匹配'),
@@ -184,9 +200,56 @@ class QualityCheck(models.Model):
             if not self.scanned_component_id:
                 raise UserError(_('请先扫码确认组件！'))
             
-            # 检查验证结果
+            # **关键修复**：重新验证扫码的组件是否匹配选中的待登记组件
+            # 防止用户扫描错误组件后，通过其他方式绕过验证
+            # 必须同时满足两个条件：1. 组件ID匹配 2. 验证结果必须是 matched
+            if self.scanned_component_id.id != self.selected_component_id.id:
+                # 组件不匹配，强制设置验证结果为失败
+                self.component_verification_result = 'mismatched'
+                self.component_verification_message = _(
+                    '组件不匹配！\n'
+                    '选择的待登记组件：%s (%s)\n'
+                    '扫码的组件：%s (%s)\n'
+                    '无法通过质检！'
+                ) % (
+                    self.selected_component_id.name,
+                    self.selected_component_id.default_code or '',
+                    self.scanned_component_id.name,
+                    self.scanned_component_id.default_code or ''
+                )
+                _logger.warning(
+                    _("[组件扫码确认] do_pass 验证失败: 质检ID=%s, 选择的组件=%s(ID:%s), 扫码的组件=%s(ID:%s)"),
+                    self.id,
+                    self.selected_component_id.name, self.selected_component_id.id,
+                    self.scanned_component_id.name, self.scanned_component_id.id
+                )
+                raise UserError(_('组件验证失败，无法通过质检！\n%s') % self.component_verification_message)
+            
+            # **关键修复**：如果待登记组件有批次号，还需要验证批次号是否匹配
+            if self.selected_lot_id:
+                if not self.scanned_lot_id:
+                    raise UserError(_('批次号不匹配！\n待登记组件批次号：%s\n扫码的组件没有批次号或批次号不匹配') % self.selected_lot_id.name)
+                
+                if self.scanned_lot_id.id != self.selected_lot_id.id:
+                    raise UserError(_('批次号不匹配！\n待登记组件批次号：%s\n扫码的组件批次号：%s\n请确保扫码的批次号与待登记组件的批次号一致') % (
+                        self.selected_lot_id.name,
+                        self.scanned_lot_id.name
+                    ))
+            
+            # **关键修复**：必须通过 verify_component 方法验证，不能直接通过 do_pass 绕过
+            # 如果验证结果不是 matched，即使组件ID匹配，也不允许通过
+            # 这防止了用户扫描错误组件后，通过修改 scanned_component_id 来绕过验证
             if self.component_verification_result != 'matched':
-                raise UserError(_('组件验证失败，无法通过质检！\n%s') % (
+                # 如果验证结果不是 matched，说明没有通过 verify_component 验证
+                # 即使组件ID匹配，也不允许通过（防止绕过验证）
+                _logger.warning(
+                    _("[组件扫码确认] do_pass 验证失败: 质检ID=%s, 验证结果=%s, 选择的组件=%s(ID:%s), 扫码的组件=%s(ID:%s)"),
+                    self.id,
+                    self.component_verification_result,
+                    self.selected_component_id.name, self.selected_component_id.id,
+                    self.scanned_component_id.name, self.scanned_component_id.id
+                )
+                raise UserError(_('组件验证失败，无法通过质检！\n%s\n\n请先通过扫码验证组件！') % (
                     self.component_verification_message or _('请确保扫码的组件匹配选中的待登记组件')
                 ))
             
@@ -268,6 +331,45 @@ class QualityCheck(models.Model):
         
         return super(QualityCheck, self)._create_extra_move_lines()
     
+    @api.depends('selected_component_id', 'production_id', 'move_line_id')
+    def _compute_selected_lot_id(self):
+        """计算待登记组件对应的批次号
+        
+        从生产订单的移动行中获取待登记组件对应的批次号
+        """
+        for record in self:
+            if not record.selected_component_id or not record.production_id:
+                record.selected_lot_id = False
+                continue
+            
+            # 优先从 move_line_id 获取批次号（如果已分配）
+            if record.move_line_id and record.move_line_id.lot_id:
+                record.selected_lot_id = record.move_line_id.lot_id
+                continue
+            
+            # 从生产订单的移动行中查找待登记组件对应的批次号
+            # 查找该组件的移动行，优先查找已分配且有批次号的移动行
+            component_moves = record.production_id.move_raw_ids.filtered(
+                lambda m: m.product_id.id == record.selected_component_id.id
+            )
+            
+            if component_moves:
+                # 查找有批次号的移动行
+                for move in component_moves:
+                    move_lines = move.move_line_ids.filtered(lambda ml: ml.lot_id)
+                    if move_lines:
+                        # 如果有多个移动行，优先选择与当前质检记录关联的移动行
+                        if record.move_line_id and record.move_line_id in move_lines:
+                            record.selected_lot_id = record.move_line_id.lot_id
+                        else:
+                            # 选择第一个有批次号的移动行
+                            record.selected_lot_id = move_lines[0].lot_id
+                        break
+                else:
+                    record.selected_lot_id = False
+            else:
+                record.selected_lot_id = False
+    
     def get_configured_component(self):
         """
         获取质检点配置的待登记组件
@@ -290,17 +392,18 @@ class QualityCheck(models.Model):
         
         return False
     
-    def verify_component(self, scanned_component_id=None):
+    def verify_component(self, scanned_component_id=None, scanned_lot_id=None):
         """
         验证扫码的组件是否匹配选中的待登记组件
         
         此方法由前端调用，用于实时验证
         验证逻辑：
         1. 检查是否已选择待登记组件
-        2. 验证扫码的组件是否匹配选中的待登记组件
+        2. 验证扫码的组件是否匹配选中的待登记组件（产品ID和批次号）
         3. 记录验证结果
         
         :param scanned_component_id: 扫码的组件ID（前端传递）
+        :param scanned_lot_id: 扫码的批次号ID（前端传递）
         """
         if not self.production_id:
             raise UserError(_('无法获取生产订单信息，请确保质检点关联了生产订单！'))
@@ -312,6 +415,10 @@ class QualityCheck(models.Model):
         if scanned_component_id:
             self.scanned_component_id = scanned_component_id
         
+        # 如果前端传递了扫码的批次号ID，先设置到记录中
+        if scanned_lot_id:
+            self.scanned_lot_id = scanned_lot_id
+        
         if not self.scanned_component_id:
             raise UserError(_('请先扫码确认组件！'))
         
@@ -319,7 +426,7 @@ class QualityCheck(models.Model):
         selected_product = self.selected_component_id
         scanned_product = self.scanned_component_id
         
-        # 验证扫码的组件是否匹配选中的待登记组件
+        # **关键修复**：验证产品ID是否匹配
         if scanned_product.id != selected_product.id:
             # 组件不匹配
             self.component_verification_result = 'mismatched'
@@ -362,7 +469,45 @@ class QualityCheck(models.Model):
             
             return {'success': False, 'message': self.component_verification_message}
         
-        # 组件匹配
+        # **关键修复**：如果待登记组件有批次号，还需要验证批次号是否匹配
+        # 防止同一生产订单内不同批次的组件互相验证通过
+        if self.selected_lot_id:
+            # 如果待登记组件有批次号，扫码的批次号必须匹配
+            if not self.scanned_lot_id:
+                # 扫码时没有获取到批次号，验证失败
+                self.component_verification_result = 'mismatched'
+                self.component_verification_message = _(
+                    '批次号不匹配！\n'
+                    '待登记组件批次号：%s\n'
+                    '扫码的组件没有批次号或批次号不匹配'
+                ) % self.selected_lot_id.name
+                _logger.warning(
+                    _("[组件扫码确认] 批次号验证失败: 质检ID=%s, 待登记批次号=%s, 扫码批次号=无"),
+                    self.id, self.selected_lot_id.name
+                )
+                return {'success': False, 'message': self.component_verification_message}
+            
+            if self.scanned_lot_id.id != self.selected_lot_id.id:
+                # 批次号不匹配
+                self.component_verification_result = 'mismatched'
+                self.component_verification_message = _(
+                    '批次号不匹配！\n'
+                    '待登记组件批次号：%s\n'
+                    '扫码的组件批次号：%s\n'
+                    '请确保扫码的批次号与待登记组件的批次号一致'
+                ) % (
+                    self.selected_lot_id.name,
+                    self.scanned_lot_id.name
+                )
+                _logger.warning(
+                    _("[组件扫码确认] 批次号验证失败: 质检ID=%s, 待登记批次号=%s(ID:%s), 扫码批次号=%s(ID:%s)"),
+                    self.id,
+                    self.selected_lot_id.name, self.selected_lot_id.id,
+                    self.scanned_lot_id.name, self.scanned_lot_id.id
+                )
+                return {'success': False, 'message': self.component_verification_message}
+        
+        # 组件匹配（产品ID匹配，如果有批次号要求，批次号也匹配）
         self.component_verification_result = 'matched'
         self.component_verification_message = _(
             '组件验证成功！\n'
