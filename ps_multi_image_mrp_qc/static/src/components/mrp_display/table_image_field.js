@@ -21,7 +21,7 @@ export class TabletImageFieldMulti extends ConfirmationDialog {
         height: { type: Number, optional: true },
         record: Object,
         close: { type: Function, optional: true },
-        }
+    }
 
     setup() {
         super.setup();
@@ -39,8 +39,8 @@ export class TabletImageFieldMulti extends ConfirmationDialog {
         this.resModel = this.props.resModel || this.props.record.model;  // Assuming record.model contains the resModel
 
 
-    onWillStart(async () => {
-        this.fetchExistingAttachments();
+        onWillStart(async () => {
+            this.fetchExistingAttachments();
         })
     }
 
@@ -67,110 +67,110 @@ export class TabletImageFieldMulti extends ConfirmationDialog {
     }
 
     async onFileInputChange(event) {
-    const files = event.target.files;
-    const newAttachments = [];
+        const files = event.target.files;
+        const newAttachments = [];
 
-    for (const file of files) {
+        for (const file of files) {
 
-        // Create a temporary attachment object
-        const temporaryAttachment = {
-            id: new Date().getTime() + file.lastModified, // Unique ID for temporary attachments
-            name: file.name,
-            file: file,
-            state: 'temporary',
-        };
-        newAttachments.push(temporaryAttachment);
-    }
-    console.log('New attachments:', newAttachments);
-    console.log('Current attachments:', this.state.attachments);
+            // Create a temporary attachment object
+            const temporaryAttachment = {
+                id: new Date().getTime() + file.lastModified, // Unique ID for temporary attachments
+                name: file.name,
+                file: file,
+                state: 'temporary',
+            };
+            newAttachments.push(temporaryAttachment);
+        }
+        console.log('New attachments:', newAttachments);
+        console.log('Current attachments:', this.state.attachments);
 
-    this.state.attachments.push(...newAttachments);
+        this.state.attachments.push(...newAttachments);
 
-    if (this.state.attachments.length > 0) {
-        this.state.isButtonClicked = false; // Hide the button
+        if (this.state.attachments.length > 0) {
+            this.state.isButtonClicked = false; // Hide the button
         }
 
-    event.target.value = null;
-}
+        event.target.value = null;
+    }
 
     async onFileInputChange1(event) {
-    const files = event.target.files;
-    const csrf_token = odoo.csrf_token || document.querySelector('input[name="csrf_token"]').value; // Ensure CSRF token is fetched correctly
-    const newAttachments = [];
+        const files = event.target.files;
+        const csrf_token = odoo.csrf_token || document.querySelector('input[name="csrf_token"]').value; // Ensure CSRF token is fetched correctly
+        const newAttachments = [];
 
-    for (const file of files) {
-        try {
-            const data = new FormData();
-            data.append('name', file.name);
-            data.append('file', file);
-            data.append('res_id', this.resId);
-            data.append('res_model', 'quality.check');
-            data.append('csrf_token', csrf_token);  // Ensure CSRF token is included
+        for (const file of files) {
+            try {
+                const data = new FormData();
+                data.append('name', file.name);
+                data.append('file', file);
+                data.append('res_id', this.resId);
+                data.append('res_model', 'quality.check');
+                data.append('csrf_token', csrf_token);  // Ensure CSRF token is included
 
-            const response = await fetch('/portal/attachment/add', {
-                method: 'POST',
-                body: data,
-            });
+                const response = await fetch('/portal/attachment/add', {
+                    method: 'POST',
+                    body: data,
+                });
 
-            if (!response.ok) {
-                throw new Error(`Error: ${response.statusText}`);
+                if (!response.ok) {
+                    throw new Error(`Error: ${response.statusText}`);
+                }
+
+                const attachment = await response.json();
+                newAttachments.push({
+                    ...attachment,
+                    state: 'pending',
+                });
+            } catch (error) {
+                this.notification.add(
+                    _t("Could not save file <strong>%s</strong>", escape(file.name)),
+                    { type: 'warning', sticky: true }
+                );
             }
-
-            const attachment = await response.json();
-            newAttachments.push({
-                ...attachment,
-                state: 'pending',
-            });
-        } catch (error) {
-            this.notification.add(
-                _t("Could not save file <strong>%s</strong>", escape(file.name)),
-                { type: 'warning', sticky: true }
-            );
         }
-    }
 
-    this.state.attachments.push(...newAttachments);
-    event.target.value = null;
-}
+        this.state.attachments.push(...newAttachments);
+        event.target.value = null;
+    }
 
     async deleteAttachment(event) {
-    const attachmentId = parseInt(event.currentTarget.closest('.o_portal_chatter_attachment').dataset.id);
-    const attachment = this.state.attachments.find(att => att.id === attachmentId);
+        const attachmentId = parseInt(event.currentTarget.closest('.o_portal_chatter_attachment').dataset.id);
+        const attachment = this.state.attachments.find(att => att.id === attachmentId);
 
-    if (!attachment) {
-        return;
-    }
-
-    // Remove the attachment from the state immediately
-    this.state.attachments = this.state.attachments.filter(att => att.id !== attachmentId);
-
-    if (attachment.state === 'temporary') {
-        // No server-side action needed for temporary attachments
-        console.log('Temporary attachment deleted:', attachment.name);
-        return;
-    }
-
-    // Handle server-side deletion for permanent attachments
-    try {
-        const response = await rpc('/custom/attachment/remove', {
-            attachment_id: attachmentId,
-            res_id: this.resId,
-        });
-
-        if (!response.success) {
-            throw new Error('Deletion failed');
+        if (!attachment) {
+            return;
         }
 
-        console.log('Attachment Permanently successfully deleted:', attachment.name);
-    } catch (error) {
-        this.notification.add(
-            _t("Could not delete attachment <strong>%s</strong>", escape(attachment.name)),
-            { type: 'warning', sticky: true }
-        );
-        // Re-add the attachment back to the state if deletion fails
-        this.state.attachments.push(attachment);
+        // Remove the attachment from the state immediately
+        this.state.attachments = this.state.attachments.filter(att => att.id !== attachmentId);
+
+        if (attachment.state === 'temporary') {
+            // No server-side action needed for temporary attachments
+            console.log('Temporary attachment deleted:', attachment.name);
+            return;
+        }
+
+        // Handle server-side deletion for permanent attachments
+        try {
+            const response = await rpc('/custom/attachment/remove', {
+                attachment_id: attachmentId,
+                res_id: this.resId,
+            });
+
+            if (!response.success) {
+                throw new Error('Deletion failed');
+            }
+
+            console.log('Attachment Permanently successfully deleted:', attachment.name);
+        } catch (error) {
+            this.notification.add(
+                _t("Could not delete attachment <strong>%s</strong>", escape(attachment.name)),
+                { type: 'warning', sticky: true }
+            );
+            // Re-add the attachment back to the state if deletion fails
+            this.state.attachments.push(attachment);
+        }
     }
-}
 
     triggerFileInput() {
         document.querySelector('.o_portal_chatter_file_input').click();
@@ -185,70 +185,104 @@ export class TabletImageFieldMulti extends ConfirmationDialog {
     }
 
     async onSubmitButtonClick(event) {
-    this.state.isButtonClicked = true;
+        this.state.isButtonClicked = true;
 
-    event.preventDefault();
-    const error = this.checkContent();
-    if (error) {
-        document.querySelector(".o_portal_chatter_composer_error").textContent = error;
-        document.querySelector(".o_portal_chatter_composer_error").classList.remove('d-none');
-        return;
-    }
-
-    try {
-        const csrf_token = odoo.csrf_token || document.querySelector('input[name="csrf_token"]').value;
-        const attachments = [];
-
-        for (const attachment of this.state.attachments) {
-            if (attachment.state === 'temporary') {
-                const data = new FormData();
-                data.append('name', attachment.name);
-                data.append('file', attachment.file);
-                data.append('res_id', this.resId);
-                data.append('res_model', 'quality.check');
-                data.append('csrf_token', csrf_token);
-
-                const response = await fetch('/portal/attachment/add', {
-                    method: 'POST',
-                    body: data,
-                });
-
-                if (!response.ok) {
-                    throw new Error(`Error: ${response.statusText}`);
-                }
-
-                const savedAttachment = await response.json();
-                attachments.push(savedAttachment);
-            } else {
-                attachments.push(attachment);
-            }
+        event.preventDefault();
+        const error = this.checkContent();
+        if (error) {
+            document.querySelector(".o_portal_chatter_composer_error").textContent = error;
+            document.querySelector(".o_portal_chatter_composer_error").classList.remove('d-none');
+            return;
         }
 
-        const result = await rpc('/custom/attachment/add', {
-            res_id: this.resId,
-            attachments: attachments,
-            message: this.state.message
-        });
+        try {
+            const csrf_token = odoo.csrf_token || document.querySelector('input[name="csrf_token"]').value;
+            const attachments = [];
 
-        if (result.success) {
-            console.log('Attachment successfully saved:', result);
-            this.env.bus.trigger('reload_chatter_content', result);
-            window.location.reload();
-        } else {
+            for (const attachment of this.state.attachments) {
+                if (attachment.state === 'temporary') {
+                    const data = new FormData();
+                    data.append('name', attachment.name);
+                    data.append('file', attachment.file);
+                    data.append('res_id', this.resId);
+                    data.append('res_model', 'quality.check');
+                    data.append('csrf_token', csrf_token);
+
+                    const response = await fetch('/portal/attachment/add', {
+                        method: 'POST',
+                        body: data,
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Error: ${response.statusText}`);
+                    }
+
+                    const savedAttachment = await response.json();
+                    attachments.push(savedAttachment);
+                } else {
+                    attachments.push(attachment);
+                }
+            }
+
+            const result = await rpc('/custom/attachment/add', {
+                res_id: this.resId,
+                attachments: attachments,
+                message: this.state.message
+            });
+
+            if (result.success) {
+                console.log('Attachment successfully saved:', result);
+
+                // 检查是否在质检对话框中
+                // 尝试多种方式判断：通过 props.record.model 或通过查找父组件
+                const recordModel = this.props.record?.model ||
+                    this.props.record?.resModel ||
+                    this.props.record?.data?.model;
+                const isInQualityDialog = recordModel === 'quality.check' ||
+                    this.resModel === 'quality.check' ||
+                    (this.props.record && this.props.record.data && this.props.record.data.id);
+
+                console.log('判断是否在质检对话框:', {
+                    recordModel,
+                    resModel: this.resModel,
+                    hasRecord: !!this.props.record,
+                    isInQualityDialog
+                });
+
+                // 如果是在质检对话框中，只保存图片，不自动验证
+                // 用户需要手动点击对话框的"验证"按钮来完成质检
+                if (isInQualityDialog) {
+                    console.log('在质检对话框中，图片已保存，等待用户手动验证');
+
+                    // 通知成功，提示用户点击验证按钮
+                    this.notification.add(
+                        _t("图片已保存，请点击验证按钮完成质检"),
+                        { type: 'success' }
+                    );
+
+                    // 不自动触发验证，让用户手动点击对话框的验证按钮
+                    // 这样可以确保用户有足够时间检查图片
+                } else {
+                    // 如果不是在质检对话框中，保持原有行为
+                    console.log('不在质检对话框中，刷新页面');
+                    this.env.bus.trigger('reload_chatter_content', result);
+                    window.location.reload();
+                }
+            } else {
+                this.notification.add(
+                    _t(result.message || "Error while sending the message."),
+                    { type: 'danger', sticky: true }
+                );
+            }
+
+        } catch (error) {
             this.notification.add(
-                _t(result.message || "Error while sending the message."),
+                _t("Error while sending the message."),
                 { type: 'danger', sticky: true }
             );
         }
 
-    } catch (error) {
-        this.notification.add(
-            _t("Error while sending the message."),
-            { type: 'danger', sticky: true }
-        );
     }
-
-}
 
 
     checkContent() {

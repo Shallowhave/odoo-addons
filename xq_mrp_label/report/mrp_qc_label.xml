@@ -102,8 +102,8 @@
                         <t t-set="spec_vals" t-value="[str(v) for v in spec_list if v]"/>
                         <t t-set="spec_text" t-value="spec_vals and '*'.join(spec_vals) or ''"/>
                         <div>规格：<span t-esc="spec_text or (o.product_id.default_code or '')"/>m</div>
-                        <!-- <div>批号：<span t-esc="(lot and lot.name) or '-'"/></div>
-                        <t t-if="lot">
+                        <div>批号：<span t-esc="(lot and lot.name) or '-'"/></div>
+                        <!-- <t t-if="lot">
                           <div style="margin-top:3px; text-align: center; width: 100%; overflow: hidden; box-sizing: border-box;">
                             <span t-field="lot.name" t-options-widget="'barcode'" t-options-width="330" t-options-height="72" t-options-type="'Code128'" t-options-display_value="True" style="display: block; margin: 0 auto; max-width: 97%; image-rendering: crisp-edges; -webkit-print-color-adjust: exact; print-color-adjust: exact;"/>
                           </div>
