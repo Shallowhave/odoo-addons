@@ -1,28 +1,50 @@
 from odoo import models, fields, api, _
+from odoo.tools import html2plaintext
 
 
 class StockPicking(models.Model):
     _inherit = 'stock.picking'
 
+    def _get_quality_alert_note(self, move, line):
+        """Get the latest quality alert description for this picking/lot/product."""
+        self.ensure_one()
+
+        alert_model = self.env['quality.alert']
+        search_domains = [
+            [
+                ('picking_id', '=', self.id),
+                ('lot_id', '=', line.lot_id.id),
+                ('product_id', '=', move.product_id.id),
+                ('description', '!=', False),
+            ],
+            [
+                ('picking_id', '=', self.id),
+                ('lot_id', '=', line.lot_id.id),
+                ('description', '!=', False),
+            ],
+            [
+                ('lot_id', '=', line.lot_id.id),
+                ('description', '!=', False),
+            ],
+        ]
+
+        for domain in search_domains:
+            alert = alert_model.search(domain, order='id desc', limit=1)
+            if alert and alert.description:
+                note = html2plaintext(alert.description).strip()
+                if note:
+                    return note
+        return '-'
+
     def _get_quality_info(self):
-        """获取品质信息"""
+        """Get quality note content from quality alerts for report printing."""
         quality_info = []
         for move in self.move_ids_without_package:
             if move.move_line_ids:
                 for line in move.move_line_ids:
                     if line.lot_id:
-                        # 获取品质备注（从产品制造中的质量描述）
-                        quality_note = '-'
-                        try:
-                            # 尝试从产品模板获取质量描述
-                            if hasattr(move.product_id.product_tmpl_id, 'description') and move.product_id.product_tmpl_id.description:
-                                quality_note = move.product_id.product_tmpl_id.description
-                            # 如果产品模板没有描述，尝试从产品本身获取
-                            elif hasattr(move.product_id, 'description') and move.product_id.description:
-                                quality_note = move.product_id.description
-                        except AttributeError:
-                            pass  # 字段不存在
-                        
+                        quality_note = self._get_quality_alert_note(move, line)
+
                         quality_info.append({
                             'product': move.product_id.name,
                             'product_code': move.product_id.default_code or '',
