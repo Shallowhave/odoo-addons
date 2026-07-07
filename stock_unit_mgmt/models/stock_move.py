@@ -120,11 +120,14 @@ class StockMove(models.Model):
             }
             lot_text_parts = lot_text.replace(';', separation_char).split(separation_char)
             options = options or self._get_formating_options(lot_text_parts[1:] if len(lot_text_parts) > 1 else [])
-            for extra_string in (lot_text_parts[1] if len(lot_text_parts) > 1 else []):
+            for extra_string in (lot_text_parts[1:] if len(lot_text_parts) > 1 else []):
                 field_data = self._convert_string_into_field_data(extra_string, options)
                 if field_data:
                     lot_text = lot_text_parts[0]
-                    lot_quantity = int(lot_text_parts[-1]) if lot_text_parts[-1].isdigit() else 1
+                    try:
+                        lot_quantity = float(lot_text_parts[-1])
+                    except (TypeError, ValueError):
+                        lot_quantity = 1.0
                     if field_data == "ignore":
                         move_line_vals.update(lot_name=lot_text, lot_quantity=lot_quantity)
                     else:

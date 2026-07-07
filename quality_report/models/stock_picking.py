@@ -10,23 +10,21 @@ class StockPicking(models.Model):
         self.ensure_one()
 
         alert_model = self.env['quality.alert']
-        search_domains = [
-            [
-                ('picking_id', '=', self.id),
-                ('lot_id', '=', line.lot_id.id),
-                ('product_id', '=', move.product_id.id),
-                ('description', '!=', False),
-            ],
-            [
-                ('picking_id', '=', self.id),
-                ('lot_id', '=', line.lot_id.id),
-                ('description', '!=', False),
-            ],
-            [
-                ('lot_id', '=', line.lot_id.id),
-                ('description', '!=', False),
-            ],
+        product_domain = [
+            ('picking_id', '=', self.id),
+            ('product_id', '=', move.product_id.id),
+            ('description', '!=', False),
         ]
+        search_domains = []
+        if line.lot_id:
+            search_domains.append(product_domain + [('lot_id', '=', line.lot_id.id)])
+        search_domains.append(product_domain + [('lot_id', '=', False)])
+        if line.lot_id:
+            search_domains.append([
+                ('picking_id', '=', self.id),
+                ('lot_id', '=', line.lot_id.id),
+                ('description', '!=', False),
+            ])
 
         for domain in search_domains:
             alert = alert_model.search(domain, order='id desc', limit=1)
@@ -42,17 +40,15 @@ class StockPicking(models.Model):
         for move in self.move_ids_without_package:
             if move.move_line_ids:
                 for line in move.move_line_ids:
-                    if line.lot_id:
-                        quality_note = self._get_quality_alert_note(move, line)
-
-                        quality_info.append({
-                            'product': move.product_id.name,
-                            'product_code': move.product_id.default_code or '',
-                            'lot_name': line.lot_id.name,
-                            'quality_note': quality_note,
-                            'quantity': line.quantity,
-                            'uom': move.product_id.uom_id.name,
-                        })
+                    quality_note = self._get_quality_alert_note(move, line)
+                    quality_info.append({
+                        'product': move.product_id.name,
+                        'product_code': move.product_id.default_code or '',
+                        'lot_name': line.lot_id.name if line.lot_id else '-',
+                        'quality_note': quality_note,
+                        'quantity': line.quantity,
+                        'uom': line.product_uom_id.name or move.product_id.uom_id.name,
+                    })
         return quality_info
 
     can_print_quality_report = fields.Boolean(

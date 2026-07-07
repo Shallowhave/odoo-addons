@@ -3,7 +3,6 @@ from odoo import models, fields, api
 from odoo.exceptions import UserError, ValidationError
 from odoo.tools.float_utils import float_compare, float_is_zero
 import logging
-from datetime import datetime
 
 _logger = logging.getLogger(__name__)
 
@@ -17,6 +16,17 @@ class MrpProductionReturnWizard(models.TransientModel):
         string='制造订单',
         required=True,
         readonly=True
+    )
+    company_id = fields.Many2one(
+        'res.company',
+        string='公司',
+        related='production_id.company_id',
+        readonly=True,
+        store=False,
+    )
+    complete_production_after_return = fields.Boolean(
+        string='处理后完成制造订单',
+        help='从不分卷/无欠单流程打开时，剩余组件处理完成后继续执行制造订单完成流程。'
     )
     component_line_ids = fields.One2many(
         'mrp.production.return.wizard.line',
@@ -35,13 +45,13 @@ class MrpProductionReturnWizard(models.TransientModel):
     defective_location_id = fields.Many2one(
         'stock.location',
         string='不良品仓',
-        domain="[('usage', '=', 'internal'), ('scrap_location', '=', False)]",
+        domain="[('usage', '=', 'internal'), ('scrap_location', '=', False), '|', ('company_id', '=', company_id), ('company_id', '=', False)]",
         help='选择不良品仓位置（用于存放不合格但仍存在的产品）'
     )
     scrap_location_id = fields.Many2one(
         'stock.location',
         string='报废仓库',
-        domain="[('scrap_location', '=', True)]",
+        domain="[('scrap_location', '=', True), '|', ('company_id', '=', company_id), ('company_id', '=', False)]",
         help='选择报废仓库位置（用于存放报废物料）'
     )
     
@@ -144,21 +154,7 @@ class MrpProductionReturnWizard(models.TransientModel):
         if not production:
             return self.env['stock.move']
 
-        remaining_moves = production.move_raw_ids.filtered(
-            lambda m: m.state in ('done', 'assigned', 'partially_available') and m.product_uom_qty > m.quantity
-        )
-        if not remaining_moves:
-            return remaining_moves
-
-        processed_history = self.env['mrp.production.return.history'].search([
-            ('production_id', '=', production.id),
-            ('source_move_id', '!=', False),
-            ('state', '=', 'done'),
-        ])
-        processed_source_moves = processed_history.mapped('source_move_id').exists()
-        if processed_source_moves:
-            remaining_moves = remaining_moves.filtered(lambda m: m not in processed_source_moves)
-        return remaining_moves
+        return production._get_unprocessed_remaining_components()
 
     def _get_existing_component_move_ids(self):
         """Return source move IDs already present in this wizard."""
@@ -174,6 +170,11 @@ class MrpProductionReturnWizard(models.TransientModel):
             production = self.env['mrp.production'].browse(self.env.context['default_production_id'])
             res['production_id'] = production.id
             
+            if 'default_complete_production_after_return' in self.env.context:
+                res['complete_production_after_return'] = bool(
+                    self.env.context.get('default_complete_production_after_return')
+                )
+
             # 获取按源移动过滤后的剩余组件，避免同一产品的多批次/多移动互相隐藏。
             remaining_moves = self._get_unprocessed_remaining_moves(production)
             
@@ -209,11 +210,10 @@ class MrpProductionReturnWizard(models.TransientModel):
             # 这会在创建向导对象时自动触发，因为 @api.depends 会监听 wizard_id 的变化
             
             # 智能推荐位置
-            # 获取公司的默认仓库
-            warehouse = self.env['stock.warehouse'].search([
+            warehouse = production.picking_type_id.warehouse_id or self.env['stock.warehouse'].search([
                 ('company_id', '=', production.company_id.id)
             ], limit=1)
-            
+
             if warehouse:
                 # 使用提取的方法推荐位置
                 defective_loc = self._recommend_defective_location(warehouse)
@@ -234,16 +234,16 @@ class MrpProductionReturnWizard(models.TransientModel):
 
     def _validate_data(self):
         """验证数据"""
-        # 验证是否有组件行
+        self.ensure_one()
+        if not self.production_id:
+            raise ValidationError('请选择制造订单')
         if not self.component_line_ids:
             raise ValidationError('没有需要处理的剩余组件')
-        
-        # 验证组件行的返回数量
-        has_valid_qty = any(line.return_qty > 0 for line in self.component_line_ids)
-        if not has_valid_qty:
+
+        valid_lines = self.component_line_ids.filtered(lambda line: line.return_qty > 0)
+        if not valid_lines:
             raise ValidationError('至少需要一个组件的返回数量大于0')
-        
-        # 所有策略都需要验证目标位置
+
         if not self.target_location_id:
             strategy_names = {
                 'before': '生产前',
@@ -253,12 +253,40 @@ class MrpProductionReturnWizard(models.TransientModel):
             }
             if self.return_strategy in ('before', 'after'):
                 raise ValidationError(f'无法找到{strategy_names.get(self.return_strategy, "目标")}位置，请检查制造订单的位置设置')
-            else:
-                raise ValidationError(f'请选择{strategy_names.get(self.return_strategy, "目标")}位置')
-        
-        # 报废处理必须选择原因
+            raise ValidationError(f'请选择{strategy_names.get(self.return_strategy, "目标")}位置')
+
+        if self.target_location_id.company_id and self.target_location_id.company_id != self.production_id.company_id:
+            raise ValidationError('目标位置必须属于制造订单公司或共享位置')
+
         if self.return_strategy == 'scrap' and not self.return_reason_id:
             raise ValidationError('报废处理必须选择返回原因')
+        if self.return_reason_id and self.return_reason_id.company_id and self.return_reason_id.company_id != self.production_id.company_id:
+            raise ValidationError('返回原因必须属于制造订单公司或共享原因')
+
+        available_moves = self._get_unprocessed_remaining_moves(self.production_id)
+        seen_move_ids = set()
+        for line in valid_lines:
+            if not line.move_id:
+                raise ValidationError('组件行缺少源库存移动，无法安全处理')
+            if line.move_id.id in seen_move_ids:
+                raise ValidationError(f'组件 {line.product_id.display_name} 的源库存移动重复，请删除重复行')
+            seen_move_ids.add(line.move_id.id)
+            if line.move_id not in self.production_id.move_raw_ids:
+                raise ValidationError(f'组件 {line.product_id.display_name} 的库存移动不属于当前制造订单')
+            if line.move_id not in available_moves:
+                raise ValidationError(f'组件 {line.product_id.display_name} 已处理或不再有剩余数量')
+            if line.product_id != line.move_id.product_id:
+                raise ValidationError('组件行产品必须与源库存移动产品一致')
+            if line.move_id.company_id and line.move_id.company_id != self.production_id.company_id:
+                raise ValidationError(f'组件 {line.product_id.display_name} 的库存移动公司与制造订单公司不一致')
+            precision = self._get_quantity_precision(line)
+            current_remaining = line.move_id.product_uom_qty - line.move_id.quantity
+            if float_compare(line.return_qty, current_remaining, precision_rounding=precision) > 0:
+                raise ValidationError(
+                    f'组件 {line.product_id.display_name} 的返回数量不能超过实时剩余数量！\n'
+                    f'实时剩余数量：{current_remaining} {line.product_uom_id.name}\n'
+                    f'您输入的返回数量：{line.return_qty} {line.product_uom_id.name}'
+                )
 
     def _get_quantity_field_name(self):
         """Return the done quantity field for the installed Odoo version."""
@@ -361,6 +389,7 @@ class MrpProductionReturnWizard(models.TransientModel):
         self._validate_data()
         
         try:
+            processed_histories = self.env['mrp.production.return.history']
             # 处理每个组件行
             for line in self.component_line_ids:
                 if line.return_qty > 0:
@@ -378,14 +407,21 @@ class MrpProductionReturnWizard(models.TransientModel):
                         'processed_by': self.env.user.id,
                         'processed_date': fields.Datetime.now(),
                     }
-                    history = self.env['mrp.production.return.history'].create(history_vals)
-                    
-                    # 根据策略处理
+                    history = self.env['mrp.production.return.history'].sudo().with_context(
+                        from_return_wizard=True
+                    ).create(history_vals)
+                    processed_histories |= history
+
+                    # 根据策略处理。只有实际调拨完成后才标记历史为 done。
+                    wizard = self.with_company(self.production_id.company_id)
                     if self.return_strategy == 'scrap':
-                        self._process_scrap_return(history, line)
+                        validation_action = wizard._process_scrap_return(history, line)
                     else:
-                        self._process_location_return(history, line)
-                    history.action_done()
+                        validation_action = wizard._process_location_return(history, line)
+                    if validation_action:
+                        return validation_action
+                    if history.picking_id and history.picking_id.state == 'done':
+                        history.sudo().with_context(from_return_wizard=True).action_done()
             
             # 发送通知
             if self.send_notification:
@@ -393,21 +429,28 @@ class MrpProductionReturnWizard(models.TransientModel):
             
             # 记录日志
             _logger.info(f"[剩余组件返回] 制造订单 {self.production_id.name} 的剩余组件已处理完成")
-            
-            # 注意：不自动完成制造订单
-            # 用户可能已经生产了部分产品，只是想处理剩余组件
-            # 由用户自己决定是否要完成制造订单
-            
-            # 返回成功并关闭向导
+
+            if self.complete_production_after_return:
+                return self.production_id.with_context(
+                    processing_return=True,
+                    skip_backorder=True,
+                ).button_mark_done()
+
+            title = '处理完成' if self.auto_confirm_picking else '已创建待确认调拨单'
+            message = (
+                '剩余组件已成功处理。您可以继续生产或手动完成制造订单。'
+                if self.auto_confirm_picking else
+                '剩余组件调拨单已创建，请确认并完成调拨后再继续。'
+            )
             return {
                 'type': 'ir.actions.client',
                 'tag': 'display_notification',
                 'params': {
-                    'title': '处理完成',
-                    'message': f'剩余组件已成功处理。您可以继续生产或手动完成制造订单。',
+                    'title': title,
+                    'message': message,
                     'type': 'success',
-                    'sticky': False,  # 通知不粘滞，会自动消失
-                    'next': {'type': 'ir.actions.act_window_close'},  # 通知后关闭向导
+                    'sticky': False,
+                    'next': {'type': 'ir.actions.act_window_close'},
                 }
             }
             
@@ -415,149 +458,98 @@ class MrpProductionReturnWizard(models.TransientModel):
             _logger.error(f"[剩余组件返回] 处理失败: {str(e)}")
             raise UserError(f'处理失败: {str(e)}')
 
+    def _get_return_warehouse(self):
+        """Return the warehouse that owns the production flow."""
+        self.ensure_one()
+        warehouse = self.production_id.picking_type_id.warehouse_id
+        if not warehouse:
+            warehouse = self.env['stock.warehouse'].search([
+                ('company_id', '=', self.production_id.company_id.id)
+            ], limit=1)
+        if not warehouse:
+            raise UserError('无法找到制造订单所属公司的仓库')
+        return warehouse
+
+    def _get_return_picking_type(self):
+        """Return the internal picking type for the production warehouse."""
+        warehouse = self._get_return_warehouse()
+        picking_type = self.env['stock.picking.type'].search([
+            ('code', '=', 'internal'),
+            ('warehouse_id', '=', warehouse.id),
+        ], limit=1)
+        if not picking_type:
+            raise UserError('无法找到制造订单仓库的内部调拨单类型')
+        return picking_type
+
+    def _create_return_transfer(self, history, line, dest_location, origin_prefix):
+        """Create and optionally validate the return transfer for one component line."""
+        self.ensure_one()
+        production = self.production_id
+        source_location = production.location_src_id
+        if not source_location:
+            raise UserError('无法找到制造订单的源位置')
+        if dest_location.company_id and dest_location.company_id != production.company_id:
+            raise UserError('目标位置必须属于制造订单公司或共享位置')
+
+        picking_type = self._get_return_picking_type()
+        company = production.company_id
+        picking_vals = {
+            'picking_type_id': picking_type.id,
+            'location_id': source_location.id,
+            'location_dest_id': dest_location.id,
+            'origin': f'{origin_prefix} - {production.name}',
+            'note': f'{origin_prefix}\n策略: {dict(self._fields["return_strategy"].selection)[self.return_strategy]}\n原因: {self.return_reason_id.name if self.return_reason_id else self.custom_reason or "无"}',
+            'user_id': self.env.user.id,
+            'company_id': company.id,
+        }
+        picking = self.env['stock.picking'].with_company(company).create(picking_vals)
+
+        move_vals = {
+            'name': f'{origin_prefix} - {line.product_id.name}',
+            'product_id': line.product_id.id,
+            'product_uom_qty': line.return_qty,
+            'product_uom': line.move_id.product_uom.id,
+            'location_id': source_location.id,
+            'location_dest_id': dest_location.id,
+            'picking_id': picking.id,
+            'origin': f'{origin_prefix} - {production.name}',
+            'company_id': company.id,
+        }
+        move = self.env['stock.move'].with_company(company).create(move_vals)
+
+        history.sudo().write({
+            'picking_id': picking.id,
+            'move_id': move.id,
+        })
+
+        if self.auto_confirm_picking:
+            picking.action_confirm()
+            self._create_return_move_lines_from_source(move, line, source_location, dest_location)
+            if picking.state in ('assigned', 'confirmed'):
+                result = picking.button_validate()
+                if isinstance(result, dict):
+                    return result
+        return False
+
     def _process_location_return(self, history, line):
         """处理位置返回"""
-        # 获取源位置
-        source_location = self.production_id.location_src_id
-        if not source_location:
-            raise UserError('无法找到制造订单的源位置')
-        
-        # 获取公司的默认仓库
-        warehouse = self.env['stock.warehouse'].search([
-            ('company_id', '=', self.production_id.company_id.id)
-        ], limit=1)
-        
-        if not warehouse:
-            raise UserError('无法找到公司的仓库')
-        
-        # 创建调拨单类型
-        picking_type = self.env['stock.picking.type'].search([
-            ('code', '=', 'internal'),
-            ('warehouse_id', '=', warehouse.id)
-        ], limit=1)
-        
-        if not picking_type:
-            raise UserError('无法找到内部调拨单类型')
-        
-        # 创建库存调拨单
-        picking_vals = {
-            'picking_type_id': picking_type.id,
-            'location_id': source_location.id,
-            'location_dest_id': self.target_location_id.id,
-            'origin': f'制造订单剩余组件返回 - {self.production_id.name}',
-            'note': f'剩余组件返回处理\n策略: {dict(self._fields["return_strategy"].selection)[self.return_strategy]}\n原因: {self.return_reason_id.name if self.return_reason_id else self.custom_reason or "无"}',
-            'user_id': self.env.user.id,
-        }
-        
-        picking = self.env['stock.picking'].create(picking_vals)
-        
-        # 创建调拨明细
-        move_vals = {
-            'name': f'剩余组件返回 - {line.product_id.name}',
-            'product_id': line.product_id.id,
-            'product_uom_qty': line.return_qty,
-            'product_uom': line.product_id.uom_id.id,
-            'location_id': source_location.id,
-            'location_dest_id': self.target_location_id.id,
-            'picking_id': picking.id,
-            'origin': f'制造订单剩余组件返回 - {self.production_id.name}',
-        }
-        
-        move = self.env['stock.move'].create(move_vals)
-        
-        # 更新历史记录
-        history.write({
-            'picking_id': picking.id,
-            'move_id': move.id,
-        })
-        
-        # 自动确认调拨单
-        if self.auto_confirm_picking:
-            picking.action_confirm()
-            
-            # 创建移动行并设置完成数量
-            self._create_return_move_lines_from_source(
-                move, line, source_location, self.target_location_id
-            )
-            
-            # 完成调拨单
-            if picking.state in ('assigned', 'confirmed'):
-                # 验证并完成调拨单
-                picking.button_validate()
+        return self._create_return_transfer(
+            history,
+            line,
+            self.target_location_id,
+            '制造订单剩余组件返回',
+        )
 
     def _process_scrap_return(self, history, line):
-        """处理报废返回 - 转移到报废仓库"""
-        # 获取源位置
-        source_location = self.production_id.location_src_id
-        if not source_location:
-            raise UserError('无法找到制造订单的源位置')
-        
-        # 确保有报废仓库位置
+        """处理报废返回 - 转移到报废库位。"""
         if not self.scrap_location_id:
             raise UserError('请选择报废仓库位置')
-        
-        # 获取公司的默认仓库
-        warehouse = self.env['stock.warehouse'].search([
-            ('company_id', '=', self.production_id.company_id.id)
-        ], limit=1)
-        
-        if not warehouse:
-            raise UserError('无法找到公司的仓库')
-        
-        # 创建调拨单类型
-        picking_type = self.env['stock.picking.type'].search([
-            ('code', '=', 'internal'),
-            ('warehouse_id', '=', warehouse.id)
-        ], limit=1)
-        
-        if not picking_type:
-            raise UserError('无法找到内部调拨单类型')
-        
-        # 创建库存调拨单
-        picking_vals = {
-            'picking_type_id': picking_type.id,
-            'location_id': source_location.id,
-            'location_dest_id': self.scrap_location_id.id,
-            'origin': f'制造订单剩余组件报废 - {self.production_id.name}',
-            'note': f'剩余组件报废处理（转移到报废仓库）\n原因: {self.return_reason_id.name if self.return_reason_id else self.custom_reason or "无"}',
-            'user_id': self.env.user.id,
-        }
-        
-        picking = self.env['stock.picking'].create(picking_vals)
-        
-        # 创建调拨明细
-        move_vals = {
-            'name': f'剩余组件报废 - {line.product_id.name}',
-            'product_id': line.product_id.id,
-            'product_uom_qty': line.return_qty,
-            'product_uom': line.product_id.uom_id.id,
-            'location_id': source_location.id,
-            'location_dest_id': self.scrap_location_id.id,
-            'picking_id': picking.id,
-            'origin': f'制造订单剩余组件报废 - {self.production_id.name}',
-        }
-        
-        move = self.env['stock.move'].create(move_vals)
-        
-        # 更新历史记录
-        history.write({
-            'picking_id': picking.id,
-            'move_id': move.id,
-        })
-        
-        # 自动确认调拨单
-        if self.auto_confirm_picking:
-            picking.action_confirm()
-            
-            # 创建移动行并设置完成数量
-            self._create_return_move_lines_from_source(
-                move, line, source_location, self.scrap_location_id
-            )
-            
-            # 完成调拨单
-            if picking.state in ('assigned', 'confirmed'):
-                # 验证并完成调拨单
-                picking.button_validate()
+        return self._create_return_transfer(
+            history,
+            line,
+            self.scrap_location_id,
+            '制造订单剩余组件转移至报废库位',
+        )
 
     def _send_notification(self):
         """发送通知"""

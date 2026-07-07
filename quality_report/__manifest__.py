@@ -1,6 +1,6 @@
 {
     'name': '品质报告打印',
-    'version': '1.0',
+    'version': '18.0.1.1.0',
     'category': 'Inventory/Quality',
     'summary': '为交货单添加品质报告打印功能',
     'description': """

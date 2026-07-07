@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': '组件扫码确认',
-    'version': '1.0.0',
+    'version': '18.0.1.1.0',
     'summary': '生产过程中扫码确认组件是否匹配',
     'description': """
         组件扫码确认模块
@@ -20,7 +20,9 @@
         'base',
         'mrp',
         'quality_control',
+        'quality_mrp',
         'mrp_workorder',
+        'quality_mrp_workorder',
         'stock_barcode',  # 支持条码扫描功能
     ],
     'data': [

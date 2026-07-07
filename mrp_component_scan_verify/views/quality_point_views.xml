@@ -9,7 +9,10 @@
             <field name="arch" type="xml">
                 <xpath expr="//field[@name='test_type_id']" position="after">
                     <!-- 待登记组件选择字段（参考 register_consumed_materials 的实现，使用 component_ids） -->
-                    <field name="component_id" 
+                    <field name="component_ids" invisible="1"/>
+                    <field name="is_workorder_step" invisible="1"/>
+                    <field name="operation_id" invisible="1"/>
+                    <field name="component_id"
                            invisible="not is_workorder_step or not operation_id or test_type != 'component_scan_verify'"
                            string="待登记组件"
                            placeholder="选择要验证的待登记组件（可选）"

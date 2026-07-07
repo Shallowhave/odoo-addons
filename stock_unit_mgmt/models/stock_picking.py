@@ -48,22 +48,21 @@ class StockPicking(models.Model):
                 ('lot_name', '!=', ''),
             ])
 
-            # 保存每个移动行的 lot_quantity 和 lot_unit_name（以批次号为键）
+            # 保存每个移动行的 lot_quantity 和 lot_unit_name，避免同批号多行互相覆盖
             lot_info_map = {}
             for move_line in move_lines_before:
-                if move_line.lot_name:
-                    lot_name = move_line.lot_name.strip()
-                    if lot_name:
-                        lot_info_map[lot_name] = {
-                            'lot_quantity': move_line.lot_quantity,
-                            'lot_unit_name': move_line.lot_unit_name,
-                            'lot_unit_name_custom': move_line.lot_unit_name_custom,
-                        }
-                        _logger.info(
-                            f"[入库验证前] 保存单位信息: 记录ID={move_line.id}, "
-                            f"批次号={lot_name}, lot_quantity={move_line.lot_quantity}, "
-                            f"lot_unit_name={move_line.lot_unit_name}"
-                        )
+                key = move_line.id
+                lot_info_map[key] = {
+                    'lot_name': move_line.lot_name.strip(),
+                    'lot_quantity': move_line.lot_quantity,
+                    'lot_unit_name': move_line.lot_unit_name,
+                    'lot_unit_name_custom': move_line.lot_unit_name_custom,
+                }
+                _logger.info(
+                    f"[入库验证前] 保存单位信息: 记录ID={move_line.id}, "
+                    f"批次号={move_line.lot_name}, lot_quantity={move_line.lot_quantity}, "
+                    f"lot_unit_name={move_line.lot_unit_name}"
+                )
             lot_info_by_picking[picking.id] = lot_info_map
         
         # 调用父类方法进行正常验证
@@ -85,42 +84,44 @@ class StockPicking(models.Model):
                 if move_lines_after and lot_info_map:
                     # 为每个移动行恢复 lot_quantity 和 lot_unit_name
                     for move_line in move_lines_after:
-                        if move_line.lot_name:
-                            lot_name = move_line.lot_name.strip()
-                            if lot_name and lot_name in lot_info_map:
-                                saved_info = lot_info_map[lot_name]
-                                update_vals = {}
-                                
-                                # **关键修复**：恢复 lot_quantity（如果验证后丢失）
-                                if saved_info.get('lot_quantity') and saved_info.get('lot_quantity') > 0:
-                                    if not move_line.lot_quantity or move_line.lot_quantity == 0:
-                                        update_vals['lot_quantity'] = saved_info['lot_quantity']
-                                        _logger.info(
-                                            f"[入库验证后] 恢复 lot_quantity: 记录ID={move_line.id}, "
-                                            f"批次号={lot_name}, lot_quantity={saved_info['lot_quantity']}"
-                                        )
-                                
-                                # 恢复 lot_unit_name（如果验证后丢失）
-                                if saved_info.get('lot_unit_name'):
-                                    if not move_line.lot_unit_name:
-                                        update_vals['lot_unit_name'] = saved_info['lot_unit_name']
-                                        _logger.info(
-                                            f"[入库验证后] 恢复 lot_unit_name: 记录ID={move_line.id}, "
-                                            f"批次号={lot_name}, lot_unit_name={saved_info['lot_unit_name']}"
-                                        )
-                                
-                                # 恢复 lot_unit_name_custom（如果验证后丢失）
-                                if saved_info.get('lot_unit_name_custom'):
-                                    if not move_line.lot_unit_name_custom:
-                                        update_vals['lot_unit_name_custom'] = saved_info['lot_unit_name_custom']
-                                
-                                # 如果有需要更新的字段，执行更新
-                                if update_vals:
-                                    move_line.with_context(skip_quantity_fix=True).write(update_vals)
-                                    _logger.info(
-                                        f"[入库验证后] 已恢复单位信息: 记录ID={move_line.id}, "
-                                        f"批次号={lot_name}, update_vals={update_vals}"
-                                    )
+                        saved_info = lot_info_map.get(move_line.id)
+                        if not saved_info:
+                            continue
+                        lot_name = move_line.lot_name.strip() if move_line.lot_name else ''
+                        if lot_name != saved_info.get('lot_name'):
+                            continue
+                        update_vals = {}
+
+                        # **关键修复**：恢复 lot_quantity（如果验证后丢失）
+                        if saved_info.get('lot_quantity') and saved_info.get('lot_quantity') > 0:
+                            if not move_line.lot_quantity or move_line.lot_quantity == 0:
+                                update_vals['lot_quantity'] = saved_info['lot_quantity']
+                                _logger.info(
+                                    f"[入库验证后] 恢复 lot_quantity: 记录ID={move_line.id}, "
+                                    f"批次号={lot_name}, lot_quantity={saved_info['lot_quantity']}"
+                                )
+
+                        # 恢复 lot_unit_name（如果验证后丢失）
+                        if saved_info.get('lot_unit_name'):
+                            if not move_line.lot_unit_name:
+                                update_vals['lot_unit_name'] = saved_info['lot_unit_name']
+                                _logger.info(
+                                    f"[入库验证后] 恢复 lot_unit_name: 记录ID={move_line.id}, "
+                                    f"批次号={lot_name}, lot_unit_name={saved_info['lot_unit_name']}"
+                                )
+
+                        # 恢复 lot_unit_name_custom（如果验证后丢失）
+                        if saved_info.get('lot_unit_name_custom'):
+                            if not move_line.lot_unit_name_custom:
+                                update_vals['lot_unit_name_custom'] = saved_info['lot_unit_name_custom']
+
+                        # 如果有需要更新的字段，执行更新
+                        if update_vals:
+                            move_line.with_context(skip_quantity_fix=True).write(update_vals)
+                            _logger.info(
+                                f"[入库验证后] 已恢复单位信息: 记录ID={move_line.id}, "
+                                f"批次号={lot_name}, update_vals={update_vals}"
+                            )
             except Exception as e:
                 _logger.warning(
                     f"[入库验证后] 恢复单位信息时出错: picking_id={picking.id}, 错误={str(e)}",

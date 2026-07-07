@@ -34,8 +34,9 @@
                                     </tr>
                                 </thead>
                                 <tbody>
+                                    <t t-set="quality_lines" t-value="o._get_quality_info()"/>
                                     <t t-set="line_number" t-value="1"/>
-                                    <t t-foreach="o._get_quality_info()" t-as="quality">
+                                    <t t-if="quality_lines" t-foreach="quality_lines" t-as="quality">
                                         <tr>
                                             <td style="border: 1px solid #000; padding: 8px; text-align: center;">
                                                 <span t-out="line_number"/>
@@ -52,6 +53,11 @@
                                         </tr>
                                         <t t-set="line_number" t-value="line_number + 1"/>
                                     </t>
+                                    <tr t-if="not quality_lines">
+                                        <td colspan="4" style="border: 1px solid #000; padding: 8px; text-align: center;">
+                                            无品质明细
+                                        </td>
+                                    </tr>
                                 </tbody>
                             </table>
 

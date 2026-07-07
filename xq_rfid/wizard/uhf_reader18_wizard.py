@@ -21,10 +21,15 @@ class UHFReader18ConfigWizard(models.TransientModel):
     inventory_result = fields.Text('询查结果', readonly=True)
     reader_info = fields.Text('读写器信息', readonly=True)
 
+    def _ensure_rfid_manager(self):
+        if not self.env.user.has_group('xq_rfid.group_rfid_manager'):
+            raise UserError(_('只有 RFID 管理员可以执行设备配置和硬件操作。'))
+
     def test_connection(self):
         """测试设备连接"""
         self.ensure_one()
-        
+        self._ensure_rfid_manager()
+
         try:
             service = self.env['uhf.reader18.service']
             result = service.get_device_status(self.ip_address, self.port)
@@ -64,7 +69,8 @@ class UHFReader18ConfigWizard(models.TransientModel):
     def test_inventory(self):
         """测试询查标签"""
         self.ensure_one()
-        
+        self._ensure_rfid_manager()
+
         try:
             service = self.env['uhf.reader18.service']
             result = service.inventory_tags(self.ip_address, self.port, self.device_address)
@@ -94,7 +100,8 @@ class UHFReader18ConfigWizard(models.TransientModel):
     def save_config(self):
         """保存配置"""
         self.ensure_one()
-        
+        self._ensure_rfid_manager()
+
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
@@ -158,7 +165,8 @@ class UHFReader18DemoWizard(models.TransientModel):
     def run_demo(self):
         """运行演示"""
         self.ensure_one()
-        
+        self.env['uhf.reader18.config.wizard']._ensure_rfid_manager()
+
         try:
             service = self.env['uhf.reader18.service']
             

@@ -118,7 +118,7 @@ class StockQuant(models.Model):
             return 1.0
         return self._get_move_line_base_quantity_for_lot_unit(move_line)
 
-    @api.depends('lot_id', 'product_id', 'quantity', 'location_id')
+    @api.depends('lot_id', 'product_id', 'quantity', 'location_id', 'package_id', 'owner_id', 'company_id')
     def _compute_lot_unit_info(self):
         """从批次记录中获取单位信息，累加所有入库，减去所有出库
         
@@ -142,11 +142,15 @@ class StockQuant(models.Model):
             return
         
         # 一次性查询所有相关的移动行
-        all_move_lines = self.env['stock.move.line'].search([
+        domain = [
             ('lot_id', 'in', lot_ids),
             ('product_id', 'in', product_ids),
-            ('state', '=', 'done')
-        ])
+            ('state', '=', 'done'),
+        ]
+        company_ids = self.filtered('company_id').mapped('company_id').ids
+        if company_ids:
+            domain.append(('company_id', 'in', company_ids))
+        all_move_lines = self.env['stock.move.line'].search(domain)
         
         # 建立索引：按 (lot_id, product_id) 索引
         # 用于快速查找相关的移动行
@@ -195,12 +199,21 @@ class StockQuant(models.Model):
                 # 从批量加载的移动行中获取当前记录相关的移动行
                 key = (quant.lot_id.id, quant.product_id.id)
                 relevant_move_lines = move_lines_by_key.get(key, self.env['stock.move.line'])
-                
+                if quant.company_id:
+                    relevant_move_lines = relevant_move_lines.filtered(
+                        lambda ml: not ml.company_id or ml.company_id == quant.company_id
+                    )
+                if quant.owner_id:
+                    relevant_move_lines = relevant_move_lines.filtered(lambda ml: ml.owner_id == quant.owner_id)
+                else:
+                    relevant_move_lines = relevant_move_lines.filtered(lambda ml: not ml.owner_id)
+
                 # 筛选入库和出库移动行
                 # 注意：入库是指 destination 是当前 quant 的位置，出库是指 source 是当前 quant 的位置
                 # 直接使用位置ID匹配（因为 stock.quant 的位置应该是精确的）
                 incoming_move_lines = relevant_move_lines.filtered(
                     lambda ml: ml.location_dest_id.id == quant.location_id.id
+                    and ml.result_package_id == quant.package_id
                 )
                 incoming_with_lot_qty = incoming_move_lines.filtered(
                     lambda ml: ml.lot_quantity and ml.lot_quantity > 0
@@ -208,6 +221,7 @@ class StockQuant(models.Model):
                 
                 outgoing_move_lines = relevant_move_lines.filtered(
                     lambda ml: ml.location_id.id == quant.location_id.id
+                    and ml.package_id == quant.package_id
                 )
                 
                 # 累加入库的单位数量。卷/箱/袋等计数单位可默认 1；

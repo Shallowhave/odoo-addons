@@ -14,7 +14,7 @@
                 <field name="target_location_id" string="目标位置"/>
                 <field name="processed_by" string="处理人"/>
                 <field name="picking_id" string="调拨单" optional="hide"/>
-                <field name="scrap_id" string="报废单" optional="hide"/>
+                <field name="scrap_id" string="报废单" optional="hide" column_invisible="1"/>
             </list>
         </field>
     </record>
@@ -50,7 +50,7 @@
                     <group string="关联记录">
                         <field name="picking_id" string="调拨单"/>
                         <field name="move_id" string="库存移动"/>
-                        <field name="scrap_id" string="报废单"/>
+                        <field name="scrap_id" string="报废单" invisible="1"/>
                     </group>
                 </sheet>
             </form>

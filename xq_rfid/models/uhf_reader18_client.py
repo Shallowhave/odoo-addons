@@ -77,9 +77,10 @@ class UHFReader18Service(models.AbstractModel):
                         if data:
                             full_response += data
                             _logger.info("收到数据: %s", data.hex().upper())
-                            # 如果已经收到足够的数据，停止接收
-                            if len(full_response) >= 5:  # 至少要有 Len + Adr + reCmd + Status + CRC
-                                break
+                            if full_response:
+                                expected_total_len = full_response[0] + 1
+                                if len(full_response) >= expected_total_len:
+                                    break
                         else:
                             _logger.info("第%d次尝试: 连接关闭", attempts + 1)
                             break
@@ -109,7 +110,10 @@ class UHFReader18Service(models.AbstractModel):
                 expected_total_len = response_len + 1  # +1 for Len byte itself
                 
                 if len(full_response) != expected_total_len:
-                    _logger.warning("响应长度不匹配。预期: %d, 实际: %d", expected_total_len, len(full_response))
+                    raise UserError(_("响应长度不匹配。预期: %(expected)d, 实际: %(actual)d") % {
+                        'expected': expected_total_len,
+                        'actual': len(full_response),
+                    })
                 
                 # CRC校验
                 if len(full_response) >= 3:
@@ -117,7 +121,10 @@ class UHFReader18Service(models.AbstractModel):
                     calculated_crc = self._crc16(full_response[:-2])
                     
                     if received_crc != calculated_crc:
-                        _logger.warning("CRC校验失败！接收: %04X, 计算: %04X", received_crc, calculated_crc)
+                        raise UserError(_("CRC校验失败！接收: %(received)04X, 计算: %(calculated)04X") % {
+                            'received': received_crc,
+                            'calculated': calculated_crc,
+                        })
                 
                 return full_response
                 
@@ -496,7 +503,30 @@ class UHFReader18Service(models.AbstractModel):
         }
 
     # ==================== 设备连接和状态 ====================
-    
+
+    @api.model
+    def test_connection(self, ip, port):
+        status = self.get_device_status(ip, port)
+        return {
+            'success': bool(status.get('connected')),
+            'error': status.get('error'),
+            'message': status.get('message'),
+        }
+
+    @api.model
+    def get_work_mode(self, ip, port):
+        status = self.get_device_status(ip, port)
+        return {
+            'success': bool(status.get('connected')),
+            'mode': status.get('mode'),
+            'is_active_mode': False,
+            'error': status.get('error'),
+        }
+
+    @api.model
+    def set_work_mode(self, ip, port):
+        return {'success': True, 'message': _('设备已处于应答模式')}
+
     @api.model
     def connect_device(self, ip, port):
         """连接设备"""

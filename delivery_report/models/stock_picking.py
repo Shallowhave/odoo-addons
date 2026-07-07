@@ -30,55 +30,25 @@ class StockPicking(models.Model):
                         except:
                             width = '-'
                             
-                        # **关键修改**：从 stock.quant 获取计算长度(m)，而不是从产品模板获取
-                        # 优先从目标位置的库存数量记录获取计算长度
+                        # 按本次交付移动行计算长度，避免使用整批库存 quant 长度。
                         length = '-'
-                        length_value = 0.0  # 用于汇总的数值
+                        length_value = 0.0
                         try:
-                            # 查找对应的 stock.quant 记录
-                            # 使用目标位置（location_dest_id）查找，因为这是交货单，货物会移动到目标位置
-                            quant = self.env['stock.quant'].search([
-                                ('lot_id', '=', line.lot_id.id),
-                                ('product_id', '=', move.product_id.id),
-                                ('location_id', '=', line.location_dest_id.id)
-                            ], limit=1, order='id desc')
-                            
-                            # 如果目标位置找不到，尝试从源位置查找
-                            if not quant:
-                                quant = self.env['stock.quant'].search([
-                                    ('lot_id', '=', line.lot_id.id),
-                                    ('product_id', '=', move.product_id.id),
-                                    ('location_id', '=', line.location_id.id)
-                                ], limit=1, order='id desc')
-                            
-                            # 如果还是找不到，尝试不指定位置查找（可能位置已经变化）
-                            if not quant:
-                                quant = self.env['stock.quant'].search([
-                                    ('lot_id', '=', line.lot_id.id),
-                                    ('product_id', '=', move.product_id.id)
-                                ], limit=1, order='id desc')
-                            
-                            # 如果找到了库存数量记录，获取计算长度
-                            if quant and hasattr(quant, 'calculated_length_m') and quant.calculated_length_m:
-                                length = quant.calculated_length_m
-                                length_value = float(quant.calculated_length_m)
-                            else:
-                                # 如果找不到或没有计算长度，回退到产品模板的长度
-                                length = getattr(product_tmpl, 'product_length', None)
-                                if length:
-                                    length_value = float(length)
-                                else:
-                                    length = '-'
-                        except Exception as e:
-                            # 如果出错，回退到产品模板的长度
-                            try:
-                                length = getattr(product_tmpl, 'product_length', None)
-                                if length:
-                                    length_value = float(length)
-                                else:
-                                    length = '-'
-                            except:
-                                length = '-'
+                            delivered_qty = float(line.quantity or 0.0)
+                            width_value = getattr(product_tmpl, 'product_width', 0.0) or 0.0
+                            uom_name = (line.product_uom_id.name or move.product_id.uom_id.name or '').lower()
+                            is_area_uom = any(token in uom_name for token in ('平米', '平方米', 'sqm', 'm²'))
+                            is_length_uom = ('米' in uom_name or uom_name in ('m', 'meter', 'meters')) and not is_area_uom
+                            if is_length_uom:
+                                length_value = delivered_qty
+                            elif is_area_uom and width_value:
+                                length_value = delivered_qty / (width_value / 1000.0)
+                            elif getattr(product_tmpl, 'product_length', False):
+                                length_value = float(product_tmpl.product_length) * delivered_qty
+                            if length_value:
+                                length = length_value
+                        except Exception:
+                            length = '-'
                         
                         # 获取包裹信息
                         package_name = '-'

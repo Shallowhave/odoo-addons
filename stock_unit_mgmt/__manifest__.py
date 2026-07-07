@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': '库存单位管理器',
-    'version': '1.0.0',
+    'version': '18.0.1.1.0',
     'summary': '统一的产品多单位管理和库存单位扩展',
     'description': """
         库存单位管理器

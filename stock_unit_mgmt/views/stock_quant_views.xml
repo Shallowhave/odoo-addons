@@ -15,7 +15,8 @@
                     <field name="calculated_length_m" string="计算长度 (m)" sum="计算长度 (m)"/>
                     <field name="lot_quantity" string="附加单位数量" sum="附加单位总数"/>
                     <field name="lot_unit_name" string="附加单位类型" optional="show"/>
-                    <field name="actual_length_m" string="实际米数 (m)" 
+                    <field name="is_roll_product" invisible="1" column_invisible="1"/>
+                    <field name="actual_length_m" string="实际米数 (m)"
                            invisible="not is_roll_product"
                            optional="hide"/>
                     <field name="actual_area_sqm" string="实际平方 (㎡)" 
@@ -41,7 +42,8 @@
                     <field name="calculated_length_m" string="计算长度 (m)" sum="计算长度 (m)"/>
                     <field name="lot_quantity" string="附加单位数量" sum="附加单位总数"/>
                     <field name="lot_unit_name" string="附加单位类型" optional="show"/>
-                    <field name="actual_length_m" string="实际米数 (m)" 
+                    <field name="is_roll_product" invisible="1" column_invisible="1"/>
+                    <field name="actual_length_m" string="实际米数 (m)"
                            invisible="not is_roll_product"
                            optional="hide"/>
                     <field name="actual_area_sqm" string="实际平方 (㎡)" 

@@ -1,7 +1,10 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
-rfid.tag.access,rfid.tag.access,model_rfid_tag,base.group_user,1,1,1,1
-rfid.device.config.access,rfid.device.config.access,model_rfid_device_config,base.group_user,1,1,1,1
-rfid.device.service.access,rfid.device.service.access,model_rfid_device_service,base.group_user,1,1,1,0
-uhf.reader18.service.access,uhf.reader18.service.access,model_uhf_reader18_service,base.group_user,1,1,1,0
-uhf.reader18.config.wizard.access,uhf.reader18.config.wizard.access,model_uhf_reader18_config_wizard,base.group_user,1,1,1,1
-uhf.reader18.demo.wizard.access,uhf.reader18.demo.wizard.access,model_uhf_reader18_demo_wizard,base.group_user,1,1,1,1
+rfid_tag_user_access,rfid.tag.user,model_rfid_tag,xq_rfid.group_rfid_user,1,0,0,0
+rfid_tag_manager_access,rfid.tag.manager,model_rfid_tag,xq_rfid.group_rfid_manager,1,1,1,0
+rfid_device_config_user_access,rfid.device.config.user,model_rfid_device_config,xq_rfid.group_rfid_user,1,0,0,0
+rfid_device_config_manager_access,rfid.device.config.manager,model_rfid_device_config,xq_rfid.group_rfid_manager,1,1,1,0
+rfid_device_service_manager_access,rfid.device.service.manager,model_rfid_device_service,xq_rfid.group_rfid_manager,1,1,1,0
+uhf_reader18_service_manager_access,uhf.reader18.service.manager,model_uhf_reader18_service,xq_rfid.group_rfid_manager,1,1,1,0
+rfid_read_wizard_manager_access,rfid.read.wizard.manager,model_rfid_read_wizard,xq_rfid.group_rfid_manager,1,1,1,1
+uhf_reader18_config_wizard_manager_access,uhf.reader18.config.wizard.manager,model_uhf_reader18_config_wizard,xq_rfid.group_rfid_manager,1,1,1,1
+uhf_reader18_demo_wizard_manager_access,uhf.reader18.demo.wizard.manager,model_uhf_reader18_demo_wizard,xq_rfid.group_rfid_manager,1,1,1,1

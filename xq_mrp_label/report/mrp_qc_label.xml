@@ -74,7 +74,7 @@
                   <t t-set="move_lines" t-value="o.move_finished_ids and o.move_finished_ids.move_line_ids or []"/>
                   <t t-set="lot_from_moves" t-value="(move_lines and move_lines[0].lot_id) or False"/>
                   <t t-set="lot" t-value="lot_from_mo or lot_from_moves"/>
-                  <t t-set="alerts" t-value="lot and o.env['quality.alert'].sudo().search([('lot_id','=',lot.id)], order='id asc') or o.env['quality.alert'].browse([])"/>
+                  <t t-set="alerts" t-value="lot and o.env['quality.alert'].search([('lot_id','=',lot.id)], order='id asc') or o.env['quality.alert'].browse([])"/>
                   <t t-set="descs" t-value="[a.description for a in alerts if a.description]"/>
                   <t t-set="testers_list" t-value="[a.user_id.name for a in alerts if a.user_id]"/>
                   <t t-set="testers_dedup" t-value="list(dict.fromkeys(testers_list))"/>

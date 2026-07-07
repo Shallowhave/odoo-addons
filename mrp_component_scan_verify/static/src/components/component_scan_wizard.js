@@ -21,6 +21,10 @@ export class ComponentScanWizard extends Component {
             selectedComponentId: null, // 用户选择的待登记组件ID
             selectedComponentName: '', // 用户选择的待登记组件名称
             selectedComponentCode: '', // 用户选择的待登记组件编码
+            selectedMoveLineId: null, // 用户选择的待登记组件移动行ID
+            selectedLotId: null, // 用户选择的待登记组件批次ID
+            selectedLotName: '', // 用户选择的待登记组件批次名称
+            selectedCandidateKey: null, // 用户选择的组件/批次候选项
             inputBarcode: '', // 输入框的值（支持手动输入）
             scannedBarcode: '',
             scannedProduct: null,
@@ -196,67 +200,13 @@ export class ComponentScanWizard extends Component {
         const recordData = this.props.record.data;
         
         try {
-            // 如果已经选择了组件，仍然加载组件列表（以便用户可以切换组件），
-            // 但组件选择列表的显示由模板条件控制（只在没有选择组件时显示）
-            // 获取生产订单的待登记组件列表（只获取未完全消耗的组件）
-            if (recordData.production_id && recordData.production_id[0]) {
-                const production = await this.orm.read(
-                    'mrp.production',
-                    [recordData.production_id[0]],
-                    ['name', 'move_raw_ids']
+            if (recordData.id) {
+                this.state.requiredComponents = await this.orm.call(
+                    'quality.check',
+                    'get_component_scan_candidates',
+                    [recordData.id],
+                    {}
                 );
-                
-                if (production && production.length > 0) {
-                    const moveIds = production[0].move_raw_ids || [];
-                    
-                    if (moveIds.length > 0) {
-                        // 读取移动记录，包括计划数量和已消耗数量
-                        const moves = await this.orm.read(
-                            'stock.move',
-                            moveIds,
-                            ['product_id', 'product_uom_qty', 'quantity', 'state']
-                        );
-                        
-                        // 只获取待登记的组件（未完全消耗的组件）
-                        // 条件：product_uom_qty > quantity（计划数量 > 已消耗数量）
-                        const pendingMoves = moves.filter(move => {
-                            const plannedQty = move.product_uom_qty || 0;
-                            const consumedQty = move.quantity || 0;
-                            // 只包含未完全消耗的组件，且状态为已分配或部分可用
-                            return plannedQty > consumedQty && 
-                                   move.state && 
-                                   ['assigned', 'partially_available', 'done'].includes(move.state);
-                        });
-                        
-                        const components = [];
-                        for (const move of pendingMoves) {
-                            if (move.product_id && move.product_id[0]) {
-                                const product = await this.orm.read(
-                                    'product.product',
-                                    [move.product_id[0]],
-                                    ['name', 'default_code']
-                                );
-                                
-                                if (product && product.length > 0) {
-                                    const plannedQty = move.product_uom_qty || 0;
-                                    const consumedQty = move.quantity || 0;
-                                    const remainingQty = plannedQty - consumedQty;
-                                    
-                                    components.push({
-                                        id: product[0].id,
-                                        name: product[0].name,
-                                        code: product[0].default_code || '',
-                                        quantity: remainingQty, // 显示剩余待登记数量
-                                        plannedQty: plannedQty, // 计划数量
-                                        consumedQty: consumedQty, // 已消耗数量
-                                    });
-                                }
-                            }
-                        }
-                        
-                        this.state.requiredComponents = components;
-                    }
-                }
             }
         } catch (error) {
             console.error('获取待登记组件列表失败:', error);
@@ -264,29 +214,37 @@ export class ComponentScanWizard extends Component {
         }
     }
     
-    async onSelectComponent(componentId) {
-        // 用户选择待登记组件
-        const component = this.state.requiredComponents.find(c => c.id === componentId);
-        
+    async onSelectComponent(componentKey) {
+        // 用户选择待登记组件/批次候选项
+        const component = this.state.requiredComponents.find(c => c.key === componentKey);
+
         if (!component) {
             this.notification.add('选择的组件不存在', { type: 'danger' });
             return;
         }
-        
-        this.state.selectedComponentId = componentId;
+
+        this.state.selectedComponentId = component.id;
         this.state.selectedComponentName = component.name;
         this.state.selectedComponentCode = component.code;
-        
+        this.state.selectedMoveLineId = component.move_line_id || null;
+        this.state.selectedLotId = component.lot_id || null;
+        this.state.selectedLotName = component.lot_name || '';
+        this.state.selectedCandidateKey = component.key;
+
         // 保存到质检记录
         const recordData = this.props.record.data;
         try {
             await this.orm.write('quality.check', [recordData.id], {
-                selected_component_id: componentId,
+                selected_component_id: component.id,
+                selected_move_line_id: component.move_line_id || false,
+                move_line_id: component.move_line_id || false,
+                move_id: component.move_id || false,
+                component_id: component.id,
             });
-            
+
             // 如果已经扫码过，重新验证
             if (this.state.scannedProduct) {
-                await this.verifyComponent(this.state.scannedProduct);
+                await this.verifyComponent(this.state.scannedProduct, this.state.scannedLotId || null);
             }
         } catch (error) {
             console.error('保存选择的组件失败:', error);
@@ -504,10 +462,8 @@ export class ComponentScanWizard extends Component {
             const writeData = {
                 scanned_component_id: productId,
                 scanned_component_code: this.state.scannedProductCode,
+                scanned_lot_id: lotId || false,
             };
-            if (lotId) {
-                writeData.scanned_lot_id = lotId;
-            }
             await this.orm.write('quality.check', [recordData.id], writeData);
             
             // 调用后端验证方法（传递批次号ID）

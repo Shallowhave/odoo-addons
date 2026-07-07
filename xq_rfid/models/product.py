@@ -49,26 +49,33 @@ class Product(models.Model):
 class ProductTemplate(models.Model):
     _inherit = 'product.template'
 
-    rfid_tag = fields.Char(string="RFID 标签", compute='_compute_rfid_tag',
-                           inverse='_set_rfid_tag', search='_search_rfid_tag')
+    rfid_tag = fields.Many2one(
+        'rfid.tag',
+        string="RFID 标签",
+        compute='_compute_rfid_tag',
+        inverse='_set_rfid_tag',
+        search='_search_rfid_tag',
+        domain=[('usage_type', 'in', ('product', 'n_a')), ('product_id', '=', False)],
+    )
 
     @api.depends('product_variant_ids.rfid_tag')
     def _compute_rfid_tag(self):
-        self.rfid_tag = False
         for template in self:
+            template.rfid_tag = False
             # TODO master: update product_variant_count depends and use it instead
             variant_count = len(template.product_variant_ids)
             if variant_count == 1:
-                template.rfid_tag = template.product_variant_ids.rfid_tag.name
+                template.rfid_tag = template.product_variant_ids.rfid_tag
             elif variant_count == 0:
                 archived_variants = template.with_context(active_test=False).product_variant_ids
                 if len(archived_variants) == 1:
-                    template.rfid_tag = archived_variants.rfid_tag.name
+                    template.rfid_tag = archived_variants.rfid_tag
 
     def _search_rfid_tag(self, operator, value):
         templates = self.with_context(active_test=False).search([('product_variant_ids.rfid_tag', operator, value)])
         return [('id', 'in', templates.ids)]
 
     def _set_rfid_tag(self):
-        if len(self.product_variant_ids) == 1:
-            self.product_variant_ids.rfid_tag = self.rfid_tag
+        for template in self:
+            if len(template.product_variant_ids) == 1:
+                template.product_variant_ids.rfid_tag = template.rfid_tag

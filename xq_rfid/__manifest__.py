@@ -42,6 +42,7 @@
     # any module necessary for this one to work correctly
     'depends': [
         'base',
+        'mail',
         'product',
         'stock',
         'mrp',  # 生产模块
@@ -60,6 +61,7 @@
 
     # always loaded
     'data': [
+        'security/security.xml',
         'security/ir.model.access.csv',
         'data/rfid_sequence.xml',  # RFID 编号序列
         'data/quality_test_type.xml',      # 质量检查类型
@@ -73,6 +75,7 @@
         'views/quality_point_views.xml',   # 质量控制点视图扩展
         'views/mrp_production_views.xml',  # 生产订单视图
            'views/quality_check_wizard_views.xml',  # 质检向导视图
+           'wizard/rfid_read_wizard_views.xml',  # RFID 读取向导视图
            'wizard/uhf_reader18_wizard_views.xml',  # UHFReader18 向导视图
     ],
     'application': True,

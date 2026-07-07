@@ -1,6 +1,6 @@
 {
     'name': '生产自动批次生成器',
-    'version': '2.1',
+    'version': '18.0.2.1.0',
     'summary': '当组件就绪时自动生成完成品批次号（监听移动行）',
     'description': '''
         增强版生产自动批次生成器，具有以下特性：
@@ -12,7 +12,7 @@
         - 配置界面
     ''',
     'author': 'memory',
-    'depends': ['mrp', 'stock', 'product'],
+    'depends': ['base_setup', 'mrp', 'stock', 'product'],
     'data': [
         'views/res_config_settings_views.xml',
         'views/mrp_production_views.xml',

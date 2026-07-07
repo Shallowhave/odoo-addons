@@ -11,8 +11,9 @@
                 <!-- 将打印品质报告按钮放在打印交货单按钮之后 -->
                 <!-- 直接放在 delivery_report 按钮之后，确保顺序正确 -->
                 <xpath expr="//button[@name='action_print_delivery_report']" position="after">
-                    <button name="action_print_quality_report" 
-                            string="打印品质报告" 
+                    <field name="can_print_quality_report" invisible="1"/>
+                    <button name="action_print_quality_report"
+                            string="打印品质报告"
                             type="object" 
                             class="btn-primary"
                             icon="fa-print"

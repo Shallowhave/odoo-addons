@@ -19,9 +19,8 @@ class MrpProductionReturnWizardLine(models.TransientModel):
     move_id = fields.Many2one(
         'stock.move',
         string='库存移动',
-        required=False  # 改为非必需，因为选择产品后才设置
-        # 注意：不在模型中设置 readonly，只在视图中设置
-        # 这样 default_get 创建记录时才能正常传递 move_id
+        required=True,
+        help='制造订单中实际被处理的源组件移动'
     )
     
     # 可用产品列表（用于 domain 过滤）
@@ -233,26 +232,11 @@ class MrpProductionReturnWizardLine(models.TransientModel):
                 
                 _logger.info(f"[向导行] 制造订单: {production.name}(ID:{production.id})")
                 
-                # 获取剩余组件移动记录
-                remaining_moves = production.move_raw_ids.filtered(
-                    lambda m: m.state in ('done', 'assigned', 'partially_available') and m.product_uom_qty > m.quantity
-                )
+                # 获取剩余组件移动记录；复用 wizard/production 的统一判定，
+                # 把已创建但未取消的历史也视为处理中，避免重复创建待处理调拨。
+                remaining_moves = record.wizard_id._get_unprocessed_remaining_moves(production)
                 _logger.info(f"[向导行] 剩余组件移动记录数: {len(remaining_moves)}")
-                
-                # 排除已处理过的源组件移动，避免同一产品不同移动被误隐藏。
-                processed_history = record.env['mrp.production.return.history'].search([
-                    ('production_id', '=', production.id),
-                    ('source_move_id', '!=', False),
-                ])
-                processed_source_moves = processed_history.mapped('source_move_id').exists()
-                _logger.info(f"[向导行] 已处理过的源移动数: {len(processed_source_moves)}")
-                
-                if processed_source_moves:
-                    remaining_moves = remaining_moves.filtered(
-                        lambda m: m not in processed_source_moves
-                    )
-                    _logger.info(f"[向导行] 过滤已处理源移动后，剩余移动记录数: {len(remaining_moves)}")
-                
+
                 # 获取当前已添加的组件（排除当前记录自己）
                 # 关键：使用 exists() 确保只获取真实存在的记录，排除已删除的记录
                 all_lines = record.wizard_id.component_line_ids.exists()
@@ -432,18 +416,9 @@ class MrpProductionReturnWizardLine(models.TransientModel):
         # 查找对应的移动记录。已有 move_id 时优先保留，避免同一产品多移动时选到第一条。
         move = self.move_id if self.move_id and self.move_id.product_id == self.product_id else self.env['stock.move']
         if not move:
-            remaining_moves = production.move_raw_ids.filtered(
+            remaining_moves = self.wizard_id._get_unprocessed_remaining_moves(production).filtered(
                 lambda m: m.product_id == self.product_id
-                and m.state in ('done', 'assigned', 'partially_available')
-                and m.product_uom_qty > m.quantity
             )
-            processed_history = self.env['mrp.production.return.history'].search([
-                ('production_id', '=', production.id),
-                ('source_move_id', '!=', False),
-            ])
-            processed_source_moves = processed_history.mapped('source_move_id').exists()
-            if processed_source_moves:
-                remaining_moves = remaining_moves.filtered(lambda m: m not in processed_source_moves)
             existing_move_ids = self.wizard_id.component_line_ids.filtered(
                 lambda l: l.id != self.id and l.move_id
             ).mapped('move_id').ids

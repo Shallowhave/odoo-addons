@@ -601,23 +601,27 @@ class MrpProduction(models.Model):
         
         for byproduct_move in byproduct_moves:
             try:
-                # 检查副产品移动是否已有批次号
-                has_byproduct_lot = False
-                if byproduct_move.move_line_ids:
-                    # 检查移动行是否已有批次号
-                    has_byproduct_lot = any(
-                        line.lot_id for line in byproduct_move.move_line_ids
-                    )
-                
-                if not has_byproduct_lot:
+                existing_lot = byproduct_move.mrp_auto_byproduct_lot_id
+                if existing_lot:
+                    for move_line in byproduct_move.move_line_ids.filtered(lambda line: not line.lot_id):
+                        move_line.lot_id = existing_lot.id
                     if self._is_logging_enabled():
-                        _logger.info("[自动批次] 为副产品 %s 生成批次号（制造单：%s）",
-                                     byproduct_move.product_id.display_name, production.name)
-                    self._create_lot_for_byproduct(production, byproduct_move)
-                else:
+                        _logger.debug("[自动批次] 副产品 %s 已有关联批次号 %s，跳过生成",
+                                      byproduct_move.product_id.display_name, existing_lot.name)
+                    continue
+
+                move_line_lot = byproduct_move.move_line_ids.filtered('lot_id')[:1].lot_id
+                if move_line_lot:
+                    byproduct_move.mrp_auto_byproduct_lot_id = move_line_lot.id
                     if self._is_logging_enabled():
-                        _logger.debug("[自动批次] 副产品 %s 已有批次号，跳过生成",
-                                     byproduct_move.product_id.display_name)
+                        _logger.debug("[自动批次] 副产品 %s 已有移动行批次号 %s，写回移动记录",
+                                      byproduct_move.product_id.display_name, move_line_lot.name)
+                    continue
+
+                if self._is_logging_enabled():
+                    _logger.info("[自动批次] 为副产品 %s 生成批次号（制造单：%s）",
+                                 byproduct_move.product_id.display_name, production.name)
+                self._create_lot_for_byproduct(production, byproduct_move)
             except Exception as e:
                 _logger.error("[自动批次] 为副产品 %s 生成批次号失败: %s",
                              byproduct_move.product_id.display_name, str(e))
@@ -709,18 +713,16 @@ class MrpProduction(models.Model):
                 'name': lot_name,
                 'product_id': byproduct_move.product_id.id,
                 'company_id': production.company_id.id,
-                'ref': f"{production.origin or production.name} - 副产品",
+                'ref': f"{production.name} - {production.origin or ''} - 副产品".strip(' -'),
+                'mrp_auto_lot_production_id': production.id,
             })
-        
-        # 将批次号关联到副产品的移动行
-        # 如果移动行已存在，直接更新批次号
-        if byproduct_move.move_line_ids:
-            for move_line in byproduct_move.move_line_ids:
-                if not move_line.lot_id:
-                    move_line.lot_id = lot.id
-        # 如果移动行不存在，批次号会在移动行创建时通过上下文或其他机制关联
-        # 这里我们先将批次号存储在移动的上下文中，以便后续使用
-        # 注意：Odoo标准流程会在适当时机创建移动行
+
+        byproduct_move.mrp_auto_byproduct_lot_id = lot.id
+
+        # 将批次号关联到副产品的移动行。如果移动行尚未创建，
+        # StockMoveLine.create 会通过 move.mrp_auto_byproduct_lot_id 预填 lot_id。
+        for move_line in byproduct_move.move_line_ids.filtered(lambda line: not line.lot_id):
+            move_line.lot_id = lot.id
         
         if self._is_logging_enabled():
             _logger.info("[自动批次] 副产品批次号 %s 已绑定到副产品 %s（制造单：%s）",
@@ -799,6 +801,14 @@ class MrpProduction(models.Model):
 class StockMove(models.Model):
     _inherit = 'stock.move'
 
+    mrp_auto_byproduct_lot_id = fields.Many2one(
+        'stock.lot',
+        string='自动生成副产品批次',
+        copy=False,
+        index=True,
+        help='自动批次模块为该副产品移动预生成的批次，用于后续移动行稳定回填。',
+    )
+
     def write(self, vals):
         """优化后的组件状态变化监听"""
         res = super().write(vals)
@@ -868,44 +878,28 @@ class StockMoveLine(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         """扩展创建方法，自动为副产品移动行关联预生成的批次号"""
-        # 先调用父类方法创建记录
-        move_lines = super().create(vals_list)
-        
-        # 为每个新创建的移动行检查是否需要关联副产品批次号
-        for move_line in move_lines:
-            if move_line.lot_id:
-                # 如果已有批次号，跳过
+        for vals in vals_list:
+            if vals.get('lot_id') or not vals.get('move_id'):
                 continue
-            
-            move = move_line.move_id
-            if not move or not hasattr(move, 'production_id'):
+            move = self.env['stock.move'].browse(vals['move_id']).exists()
+            if not move or move.product_id.tracking not in ['lot', 'serial']:
                 continue
-            
             production = move.production_id
-            if not production:
+            if not production or not hasattr(production, 'move_byproduct_ids') or move not in production.move_byproduct_ids:
                 continue
-            
-            # 检查是否是副产品移动
-            if hasattr(production, 'move_byproduct_ids') and move in production.move_byproduct_ids:
-                # 查找该副产品移动对应的批次号
-                if move.product_id.tracking in ['lot', 'serial']:
-                    # 查找该副产品产品的批次号（基于主产品批次号）
-                    if production.lot_producing_id:
-                        base_lot_name = production.lot_producing_id.name
-                        # 查找匹配的副产品批次号
-                        byproduct_lot = self.env['stock.lot'].search([
-                            ('name', 'like', f'{base_lot_name.split("-")[0]}-%'),
-                            ('product_id', '=', move.product_id.id),
-                            ('company_id', '=', production.company_id.id),
-                            ('ref', 'like', f'%{production.name}%'),
-                        ], limit=1)
-                        
-                        if byproduct_lot and not move_line.lot_id:
-                            move_line.lot_id = byproduct_lot.id
-                            if production._is_logging_enabled():
-                                _logger.info("[自动批次] 自动关联副产品批次号 %s 到移动行（制造单：%s）",
-                                             byproduct_lot.name, production.name)
+            byproduct_lot = move.mrp_auto_byproduct_lot_id
+            if not byproduct_lot:
+                continue
+            if byproduct_lot.product_id != move.product_id:
+                continue
+            if byproduct_lot.company_id and byproduct_lot.company_id != production.company_id:
+                continue
+            vals['lot_id'] = byproduct_lot.id
+            if production._is_logging_enabled():
+                _logger.info("[自动批次] 创建副产品移动行前预填批次号 %s（制造单：%s）",
+                             byproduct_lot.name, production.name)
 
+        move_lines = super().create(vals_list)
         move_lines._check_finished_lot_not_reused()
         return move_lines
 

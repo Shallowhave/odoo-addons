@@ -7,13 +7,15 @@
 ##############################################################################
 
 from odoo import fields, models, api, _
-from odoo.exceptions import UserError
+from odoo.exceptions import ValidationError
 
 
 class RFIDTag(models.Model):
     _name = 'rfid.tag'
     _description = 'RFID Tags'
+    _inherit = ['mail.thread']
     _order = 'create_date desc'
+    _check_company_auto = True
 
     @api.onchange('usage_type')
     def _picking_domain(self):
@@ -33,21 +35,44 @@ class RFIDTag(models.Model):
                                         ('product.product', '产品'), ('stock.lot', '批次/序列号')],
                              string="关联对象", compute='_get_usage', readonly=True)
 
-    picking_id = fields.Many2one('stock.picking', string="调拨单", domain=_picking_domain)
-    product_id = fields.Many2one('product.product', string="产品变体")
-    stock_prod_lot_id = fields.Many2one('stock.lot', string="批次/序列号")
+    picking_id = fields.Many2one('stock.picking', string="调拨单", domain=_picking_domain, check_company=True)
+    product_id = fields.Many2one('product.product', string="产品变体", check_company=True)
+    stock_prod_lot_id = fields.Many2one('stock.lot', string="批次/序列号", check_company=True)
     assigned = fields.Boolean(string="已分配", compute="_compute_assigned")
+    company_id = fields.Many2one(
+        'res.company',
+        string='公司',
+        compute='_compute_company_id',
+        store=True,
+        readonly=False,
+        index=True,
+        default=lambda self: self.env.company,
+    )
     
     # ========== 生产关联字段 ==========
-    production_id = fields.Many2one('mrp.production', string="生产订单", readonly=True)
+    production_id = fields.Many2one('mrp.production', string="生产订单", readonly=True, check_company=True)
     production_date = fields.Datetime(string="生产日期", readonly=True)
-    quality_check_id = fields.Many2one('quality.check', string="质量检查", readonly=True)
+    quality_check_id = fields.Many2one('quality.check', string="质量检查", readonly=True, check_company=True)
 
     _sql_constraints = [
         ('rfid_tag_uniq_name', 'unique (name)', "RFID 编号必须唯一！"),
+        ('rfid_tag_uniq_product', 'unique (product_id)', "一个产品只能关联一个 RFID 标签！"),
+        ('rfid_tag_uniq_picking', 'unique (picking_id)', "一个调拨单只能关联一个 RFID 标签！"),
         ('rfid_tag_uniq_stock_prod_lot', 'unique (stock_prod_lot_id)',
          "一个批次/序列号只能关联一个 RFID 标签！")
     ]
+
+    @api.depends('picking_id.company_id', 'product_id.company_id', 'stock_prod_lot_id.company_id', 'production_id.company_id')
+    def _compute_company_id(self):
+        for rec in self:
+            rec.company_id = (
+                rec.picking_id.company_id
+                or rec.product_id.company_id
+                or rec.stock_prod_lot_id.company_id
+                or rec.production_id.company_id
+                or rec.company_id
+                or rec.env.company
+            )
 
     def _get_usage(self):
         for rec in self:
@@ -139,30 +164,78 @@ class RFIDTag(models.Model):
         """获取下一个RFID标签名称"""
         return self.env['ir.sequence'].next_by_code('rfid.tag') or 'RFID000001'
     
-    @api.model
-    def create(self, vals):
-        # 如果没有提供name，自动生成
-        if not vals.get('name'):
-            vals['name'] = self._get_next_rfid_name()
-        res = super(RFIDTag, self).create(vals)
-        res.set_rfid_tag()
-        return res
+    def _validate_usage_links(self):
+        for tag in self:
+            linked_fields = [
+                bool(tag.picking_id),
+                bool(tag.product_id),
+                bool(tag.stock_prod_lot_id),
+            ]
+            if sum(linked_fields) > 1:
+                raise ValidationError(_('一个 RFID 标签只能关联一种业务对象。'))
+            if tag.usage_type in ('receipt', 'delivery') and (tag.product_id or tag.stock_prod_lot_id):
+                raise ValidationError(_('收货/发货标签只能关联调拨单。'))
+            if tag.usage_type == 'product' and (tag.picking_id or tag.stock_prod_lot_id):
+                raise ValidationError(_('产品标签只能关联产品。'))
+            if tag.usage_type == 'stock_prod_lot' and (tag.picking_id or tag.product_id):
+                raise ValidationError(_('批次/序列号标签只能关联批次/序列号。'))
+            if tag.usage_type == 'n_a' and any(linked_fields):
+                raise ValidationError(_('未分配标签不能关联业务对象。'))
+
+    @api.constrains('usage_type', 'picking_id', 'product_id', 'stock_prod_lot_id')
+    def _check_usage_links(self):
+        self._validate_usage_links()
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        for vals in vals_list:
+            if not vals.get('name'):
+                vals['name'] = self._get_next_rfid_name()
+        records = super().create(vals_list)
+        records._validate_usage_links()
+        records.set_rfid_tag()
+        return records
 
     def write(self, values):
-        vals_keys = values.keys()
-        # NOTE: Setting the rfid_tag in current product/picking/lot as False
-        #  before assigning the tag to new product/picking/lot
-        # NOTE: values.get(<m2o_field>, False) == False, this check was added to remove the relationship
-        #  on Product/Picking/Lot if we delete from RFID Tag view
+        relation_fields = ('picking_id', 'product_id', 'stock_prod_lot_id')
+        old_relations = {
+            tag.id: {
+                'picking_id': tag.picking_id,
+                'product_id': tag.product_id,
+                'stock_prod_lot_id': tag.stock_prod_lot_id,
+            }
+            for tag in self
+        }
 
-        if 'picking_id' in vals_keys or values.get('picking_id', False) == False:
-            self.picking_id.rfid_tag = False
-        if 'product_id' in vals_keys or values.get('product_id', False) == False:
-            self.product_id.rfid_tag = False
-        if 'stock_prod_lot_id' in vals_keys or values.get('stock_prod_lot_id', False) == False:
-            self.stock_prod_lot_id.rfid_tag = False
+        values = dict(values)
+        if 'usage_type' in values:
+            if values['usage_type'] in ('receipt', 'delivery'):
+                values.setdefault('product_id', False)
+                values.setdefault('stock_prod_lot_id', False)
+            elif values['usage_type'] == 'product':
+                values.setdefault('picking_id', False)
+                values.setdefault('stock_prod_lot_id', False)
+            elif values['usage_type'] == 'stock_prod_lot':
+                values.setdefault('picking_id', False)
+                values.setdefault('product_id', False)
+            elif values['usage_type'] == 'n_a':
+                values.setdefault('picking_id', False)
+                values.setdefault('product_id', False)
+                values.setdefault('stock_prod_lot_id', False)
 
         res = super().write(values)
+
+        ctx = dict(self.env.context or {})
+        ctx.update({'skip_set_rfid_tag_product': True})
+        for tag in self:
+            for field_name in relation_fields:
+                if field_name not in values:
+                    continue
+                old_record = old_relations.get(tag.id, {}).get(field_name)
+                if old_record and old_record != tag[field_name]:
+                    old_record.with_context(ctx).write({'rfid_tag': False})
+
+        self._validate_usage_links()
         self.set_rfid_tag()
         return res
     

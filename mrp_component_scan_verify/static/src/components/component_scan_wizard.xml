@@ -26,15 +26,17 @@
                     <div class="list-group">
                         <button type="button" 
                                 t-foreach="state.requiredComponents" t-as="component" 
-                                t-key="component.id"
-                                t-att-class="state.selectedComponentId === component.id ? 'list-group-item list-group-item-action active' : 'list-group-item list-group-item-action'"
-                                t-on-click="() => this.onSelectComponent(component.id)">
+                                t-key="component.key"
+                                t-att-class="state.selectedCandidateKey === component.key ? 'list-group-item list-group-item-action active' : 'list-group-item list-group-item-action'"
+                                t-on-click="() => this.onSelectComponent(component.key)">
                             <div class="d-flex justify-content-between align-items-center">
                                 <div>
                                     <strong t-esc="component.name"/>
                                     <small class="text-muted ms-2" t-esc="component.code"/>
                                     <br/>
                                     <small class="text-muted">
+                                        批次：<span t-esc="component.lot_name || '-'"/>
+                                        <br/>
                                         已消耗：<span t-esc="component.consumedQty"/> / 计划：<span t-esc="component.plannedQty"/>
                                     </small>
                                 </div>
@@ -53,6 +55,11 @@
                         <strong>待验证组件：</strong>
                         <span t-esc="state.selectedComponentName"/>
                         <small class="text-muted ms-2" t-esc="state.selectedComponentCode"/>
+                        <t t-if="state.selectedLotName">
+                            <br/>
+                            <strong>待验证批次：</strong>
+                            <span t-esc="state.selectedLotName"/>
+                        </t>
                     </div>
                 </div>
             </div>

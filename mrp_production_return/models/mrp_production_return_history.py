@@ -11,6 +11,7 @@ class MrpProductionReturnHistory(models.Model):
     _description = '制造订单剩余产品返回历史'
     _order = 'processed_date desc'
     _rec_name = 'display_name'
+    _check_company_auto = True
 
     # 基本信息
     production_id = fields.Many2one(
@@ -18,18 +19,29 @@ class MrpProductionReturnHistory(models.Model):
         string='制造订单',
         required=True,
         ondelete='cascade',
-        index=True  # 添加索引，常用于查询
+        index=True,
+        check_company=True,
+    )
+    company_id = fields.Many2one(
+        'res.company',
+        string='公司',
+        related='production_id.company_id',
+        store=True,
+        readonly=True,
+        index=True,
     )
     product_id = fields.Many2one(
         'product.product',
         string='产品',
         required=True,
-        index=True  # 添加索引，常用于查询
+        index=True,
+        check_company=True,
     )
     source_move_id = fields.Many2one(
         'stock.move',
         string='源组件移动',
         index=True,
+        check_company=True,
         help='制造订单中被处理的原始组件库存移动，用于区分同一产品的多条组件移动'
     )
     quantity = fields.Float(
@@ -49,6 +61,7 @@ class MrpProductionReturnHistory(models.Model):
     target_location_id = fields.Many2one(
         'stock.location',
         string='目标位置',
+        check_company=True,
         help='产品返回的目标位置'
     )
     
@@ -86,11 +99,13 @@ class MrpProductionReturnHistory(models.Model):
     picking_id = fields.Many2one(
         'stock.picking',
         string='调拨单',
+        check_company=True,
         help='创建的库存调拨单'
     )
     move_id = fields.Many2one(
         'stock.move',
         string='调拨明细',
+        check_company=True,
         help='创建的库存调拨明细'
     )
     scrap_id = fields.Many2one(
@@ -150,19 +165,24 @@ class MrpProductionReturnHistory(models.Model):
         }
 
     def action_view_scrap(self):
-        """查看报废单"""
+        """查看报废相关记录。
+
+        当前报废策略是转移到报废库位，而不是创建 stock.scrap。
+        保留此方法用于兼容旧按钮；没有 scrap 时打开关联调拨单。
+        """
         self.ensure_one()
-        if not self.scrap_id:
-            raise UserError('没有关联的报废单')
-        
-        return {
-            'type': 'ir.actions.act_window',
-            'name': '报废单',
-            'res_model': 'stock.scrap',
-            'res_id': self.scrap_id.id,
-            'view_mode': 'form',
-            'target': 'current',
-        }
+        if self.scrap_id:
+            return {
+                'type': 'ir.actions.act_window',
+                'name': '报废单',
+                'res_model': 'stock.scrap',
+                'res_id': self.scrap_id.id,
+                'view_mode': 'form',
+                'target': 'current',
+            }
+        if self.picking_id:
+            return self.action_view_picking()
+        raise UserError('没有关联的报废记录')
 
     def action_cancel(self):
         """取消处理"""

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    
+
     <!-- RFID 设备配置表单视图 -->
     <record id="rfid_device_config_form_view" model="ir.ui.view">
         <field name="name">rfid.device.config.form</field>
@@ -8,45 +8,45 @@
         <field name="arch" type="xml">
             <form string="RFID 设备配置">
                 <header>
-                    <button name="action_test_connection" 
-                            type="object" 
+                    <button name="action_test_connection"
+                            type="object"
                             string="测试连接"
                             class="oe_highlight"/>
-                    <button name="action_write_test_tag" 
-                            type="object" 
+                    <button name="action_write_test_tag"
+                            type="object"
                             string="测试写入"
                             invisible="connection_status != 'connected'"/>
-                    <button name="action_read_test_tag" 
-                            type="object" 
+                    <button name="action_read_test_tag"
+                            type="object"
                             string="测试读取"
                             invisible="connection_status != 'connected'"/>
                     <field name="connection_status" widget="statusbar"/>
                 </header>
                 <sheet>
                     <div class="oe_button_box" name="button_box">
-                        <button name="action_view_write_logs" 
-                                class="oe_stat_button" 
-                                type="object" 
+                        <button name="action_view_write_logs"
+                                class="oe_stat_button"
+                                type="object"
                                 icon="fa-edit">
                             <field name="write_count" widget="statinfo" string="写入"/>
                         </button>
-                        <button name="action_view_read_logs" 
-                                class="oe_stat_button" 
-                                type="object" 
+                        <button name="action_view_read_logs"
+                                class="oe_stat_button"
+                                type="object"
                                 icon="fa-search">
                             <field name="read_count" widget="statinfo" string="读取"/>
                         </button>
                     </div>
-                    
-                    <widget name="web_ribbon" title="已禁用" bg_color="bg-danger" 
+
+                    <widget name="web_ribbon" title="已禁用" bg_color="bg-danger"
                             invisible="active"/>
-                    
+
                     <div class="oe_title">
                         <h1>
                             <field name="name" placeholder="设备名称..." required="1"/>
                         </h1>
                     </div>
-                    
+
                     <group>
                         <group string="基本信息">
                             <field name="active"/>
@@ -54,20 +54,20 @@
                             <field name="device_type"/>
                         </group>
                         <group string="连接参数">
-                            <field name="connection_string" 
+                            <field name="connection_string"
                                    invisible="device_type in ['simulation', 'uhf_reader18']"/>
-                            <field name="ip_address" 
+                            <field name="ip_address"
                                    invisible="device_type != 'uhf_reader18'"/>
-                            <field name="port" 
+                            <field name="port"
                                    invisible="device_type not in ['serial', 'usb', 'uhf_reader18']"/>
-                            <field name="device_address" 
+                            <field name="device_address"
                                    invisible="device_type != 'uhf_reader18'"/>
-                            <field name="baudrate" 
+                            <field name="baudrate"
                                    invisible="device_type != 'serial'"/>
                             <field name="timeout"/>
                         </group>
                     </group>
-                    
+
                     <group>
                         <group string="高级配置">
                             <field name="auto_connect"/>
@@ -75,11 +75,11 @@
                         </group>
                         <group string="状态信息">
                             <field name="last_connected" readonly="1"/>
-                            <field name="error_message" readonly="1" 
+                            <field name="error_message" readonly="1"
                                    invisible="not error_message"/>
                         </group>
                     </group>
-                    
+
                     <notebook>
                         <page string="备注" name="notes">
                             <field name="notes" placeholder="设备备注信息..."/>
@@ -95,7 +95,7 @@
                                     <li><strong>UHFReader18</strong>：UHFReader18 TCP/IP RFID读写器，支持EPC C1G2和18000-6B协议</li>
                                     <li><strong>自定义设备</strong>：其他类型的设备，需要自定义驱动</li>
                                 </ul>
-                                
+
                                 <h4>连接参数示例</h4>
                                 <ul>
                                     <li>串口：<code>COM3</code> 或 <code>/dev/ttyUSB0</code></li>
@@ -103,7 +103,7 @@
                                     <li>USB：<code>USB0</code></li>
                                     <li>UHFReader18：IP地址 <code>192.168.1.100</code>，端口 <code>6000</code>，设备地址 <code>0</code></li>
                                 </ul>
-                                
+
                                 <h4>开发集成</h4>
                                 <p>
                                     要对接实际的 RFID 硬件设备，请继承 <code>rfid.device.service</code> 模型，
@@ -116,7 +116,7 @@
             </form>
         </field>
     </record>
-    
+
     <!-- RFID 设备配置树视图 -->
     <record id="rfid_device_config_tree_view" model="ir.ui.view">
         <field name="name">rfid.device.config.tree</field>
@@ -126,13 +126,13 @@
                 <field name="sequence" widget="handle"/>
                 <field name="name"/>
                 <field name="device_type"/>
-                <field name="connection_string" 
+                <field name="connection_string"
                        invisible="device_type == 'uhf_reader18'"/>
-                <field name="ip_address" 
+                <field name="ip_address"
                        invisible="device_type != 'uhf_reader18'"/>
-                <field name="port" 
+                <field name="port"
                        invisible="device_type not in ['serial', 'usb', 'uhf_reader18']"/>
-                <field name="connection_status" widget="badge" 
+                <field name="connection_status" widget="badge"
                        decoration-success="connection_status == 'connected'"
                        decoration-danger="connection_status == 'error'"
                        decoration-muted="connection_status == 'disconnected'"/>
@@ -143,7 +143,7 @@
             </list>
         </field>
     </record>
-    
+
     <!-- RFID 设备配置搜索视图 -->
     <record id="rfid_device_config_search_view" model="ir.ui.view">
         <field name="name">rfid.device.config.search</field>
@@ -164,7 +164,7 @@
             </search>
         </field>
     </record>
-    
+
     <!-- RFID 设备配置操作 -->
     <record id="rfid_device_config_action" model="ir.actions.act_window">
         <field name="name">RFID 设备配置</field>
@@ -180,13 +180,14 @@
             </p>
         </field>
     </record>
-    
+
     <!-- 添加到 RFID 菜单 -->
     <menuitem id="menu_rfid_device_config"
               name="设备配置"
               parent="xq_rfid.menu_rfid_config"
               action="rfid_device_config_action"
-              sequence="30"/>
+              sequence="30"
+              groups="xq_rfid.group_rfid_manager"/>
 
 </odoo>
 

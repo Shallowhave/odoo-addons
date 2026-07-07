@@ -1426,9 +1426,71 @@ class StockMoveLine(models.Model):
             f"[扫码创建验证] 记录创建完成: 创建的记录数={len(result)}, "
             f"创建的记录ID={[r.id for r in result]}"
         )
-        
+
+        result._recompute_related_quants_for_unit_info()
         return result
     
+    def _get_related_quant_domain_for_unit_info(self, line_values):
+        """Build a precise quant domain from stock move line values."""
+        domain = [('product_id', '=', line_values['product_id'].id)]
+        lot = line_values.get('lot_id')
+        company = line_values.get('company_id')
+        owner = line_values.get('owner_id')
+        package = line_values.get('package_id')
+        locations = line_values.get('locations')
+
+        domain.append(('lot_id', '=', lot.id if lot else False))
+        domain.append(('owner_id', '=', owner.id if owner else False))
+        domain.append(('package_id', '=', package.id if package else False))
+        if company:
+            domain.append(('company_id', '=', company.id))
+        if locations:
+            domain.append(('location_id', 'in', locations.ids))
+        return domain
+
+    def _get_unit_info_quant_values(self):
+        """Return source/destination quant identities touched by these move lines."""
+        values_list = []
+        for line in self:
+            if not line.product_id:
+                continue
+
+            company = line.company_id or line.move_id.company_id
+            base_values = {
+                'product_id': line.product_id,
+                'lot_id': line.lot_id,
+                'owner_id': line.owner_id,
+                'company_id': company,
+            }
+            if line.location_id:
+                values_list.append(dict(
+                    base_values,
+                    package_id=line.package_id,
+                    locations=line.location_id,
+                ))
+            if line.location_dest_id:
+                values_list.append(dict(
+                    base_values,
+                    package_id=line.result_package_id,
+                    locations=line.location_dest_id,
+                ))
+        return values_list
+
+    def _recompute_related_quants_for_unit_info(self, extra_quant_values=None):
+        quants = self.env['stock.quant']
+        quant_values = self.exists()._get_unit_info_quant_values()
+        if extra_quant_values:
+            quant_values += extra_quant_values
+
+        for line_values in quant_values:
+            quants |= self.env['stock.quant'].search(
+                self._get_related_quant_domain_for_unit_info(line_values)
+            )
+        if quants:
+            fields_to_recompute = ['lot_quantity', 'lot_unit_name', 'lot_unit_name_custom', 'contract_no']
+            quants.invalidate_recordset(fields_to_recompute)
+            quants._compute_lot_unit_info()
+
     def write(self, vals):
         """重写 write 方法，在更新记录时验证批次号
         扫码模块可能会先创建空记录，然后通过 write 方法更新批次号
@@ -1440,7 +1502,8 @@ class StockMoveLine(models.Model):
         from odoo.tools import float_compare
         _logger = logging.getLogger(__name__)
         vals = self._normalize_done_quantity_vals(vals)
-        
+        old_quant_values = self._get_unit_info_quant_values()
+
         # 更新前检查是否启用了增强条码验证。批次产品保留实际数量。
         enable_enhanced_validation = False
         
@@ -1858,8 +1921,9 @@ class StockMoveLine(models.Model):
                     exc_info=True
                 )
             
+            self._recompute_related_quants_for_unit_info()
             return result
-        
+
         # 如果更新了批次号，需要验证
         if 'lot_name' in vals and vals.get('lot_name'):
             lot_name = vals.get('lot_name')
@@ -2219,9 +2283,16 @@ class StockMoveLine(models.Model):
                 f"[扫码更新验证] 记录更新完成: 更新的记录数={len(self)}, "
                 f"更新的记录ID={[r.id for r in self]}"
             )
-        
+
+        self._recompute_related_quants_for_unit_info(old_quant_values)
         return result
     
+    def unlink(self):
+        old_quant_values = self._get_unit_info_quant_values()
+        result = super().unlink()
+        self._recompute_related_quants_for_unit_info(old_quant_values)
+        return result
+
     @api.constrains('lot_quantity')
     def _check_lot_quantity(self):
         """验证单位数量不能为负数"""

@@ -7,8 +7,9 @@
         <field name="inherit_id" ref="quality.quality_point_view_form"/>
         <field name="arch" type="xml">
             <xpath expr="//field[@name='team_id']" position="after">
+                <field name="test_type" invisible="1"/>
                 <!-- RFID 设备选择字段 -->
-                <field name="rfid_device_id" 
+                <field name="rfid_device_id"
                        invisible="test_type != 'rfid_write'"
                        string="RFID 设备"
                        placeholder="选择RFID设备"/>

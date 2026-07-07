@@ -43,7 +43,9 @@ class MrpProduction(models.Model):
         
         # 按源组件移动过滤，避免同一产品的其他批次/移动被误判为已处理。
         processed_source_moves = self.return_history_ids.filtered(
-            lambda history: history.state == 'done'
+            lambda history: history.source_move_id
+            and history.state != 'cancelled'
+            and (not history.picking_id or history.picking_id.state != 'cancel')
         ).mapped('source_move_id').exists()
         
         # 过滤掉已处理的组件
@@ -161,6 +163,7 @@ class MrpProduction(models.Model):
                         'target': 'new',
                         'context': {
                             'default_production_id': record.id,
+                            'default_complete_production_after_return': True,
                         }
                     }
             
@@ -219,17 +222,4 @@ class MrpProduction(models.Model):
             'view_mode': 'list,form',
             'domain': [('production_id', '=', self.id)],
             'context': {'default_production_id': self.id},
-        }
-
-    def action_batch_return_products(self):
-        """批量处理剩余产品"""
-        return {
-            'type': 'ir.actions.act_window',
-            'name': '批量处理剩余产品',
-            'res_model': 'mrp.production.batch.return.wizard',
-            'view_mode': 'form',
-            'target': 'new',
-            'context': {
-                'default_production_ids': self.ids,
-            }
         }

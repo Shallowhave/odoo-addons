@@ -21,8 +21,7 @@ class RfidReadWizard(models.TransientModel):
     
     epc_hex = fields.Char(
         string='EPC 标签',
-        help='要读取的RFID标签EPC（十六进制）',
-        default='1100EE00E28068940000502C6FE618BB93DF'
+        help='要读取的RFID标签EPC（十六进制）'
     )
     
     mem_bank = fields.Selection([
@@ -82,10 +81,15 @@ class RfidReadWizard(models.TransientModel):
             
         return res
 
+    def _ensure_rfid_manager(self):
+        if not self.env.user.has_group('xq_rfid.group_rfid_manager'):
+            raise UserError(_('只有 RFID 管理员可以执行设备读取操作。'))
+
     def action_read_rfid(self):
         """执行RFID读取操作"""
         self.ensure_one()
-        
+        self._ensure_rfid_manager()
+
         if not self.device_id:
             raise UserError(_('请选择RFID设备！'))
         
@@ -136,9 +140,10 @@ class RfidReadWizard(models.TransientModel):
             
             if result.get('success'):
                 # 读取成功
-                raw_data = result.get('data', [])
+                raw_data = result.get('words', result.get('data', []))
+                data_hex = result.get('data_hex') or ''
                 self.write({
-                    'read_result': str(raw_data),
+                    'read_result': data_hex or str(raw_data),
                     'read_status': 'success',
                     'parsed_data': self._parse_read_data(raw_data)
                 })
@@ -224,7 +229,8 @@ class RfidReadWizard(models.TransientModel):
     def action_test_connection(self):
         """测试设备连接"""
         self.ensure_one()
-        
+        self._ensure_rfid_manager()
+
         if not self.device_id:
             raise UserError(_('请选择RFID设备！'))
         

@@ -89,6 +89,7 @@
 
 	<!-- RFID 标签菜单项 -->
 	<menuitem id="all_rfid_tag" name="RFID 标签" parent="menu_rfid"
-	          sequence="5" action="rfid_tag_view_act_window" />
+	          sequence="5" action="rfid_tag_view_act_window"
+		          groups="xq_rfid.group_rfid_user" />
 
 </odoo>

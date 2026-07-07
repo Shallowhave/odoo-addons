@@ -19,28 +19,28 @@ _logger = logging.getLogger(__name__)
 class RfidDeviceService(models.AbstractModel):
     """
     RFID 设备服务抽象模型
-    
+
     此模型提供 RFID 硬件设备的统一接口，具体的硬件实现应该
     继承此模型并实现具体的读写方法。
-    
+
     使用示例：
     --------
     # 在其他模块中继承并实现具体设备驱动
     class RfidDeviceServiceImpl(models.Model):
         _inherit = 'rfid.device.service'
-        
+
         def _connect_device(self):
             # 实现具体的设备连接逻辑
             pass
     """
-    
+
     _name = 'rfid.device.service'
     _description = 'RFID 设备服务接口'
-    
+
     def write_rfid_tag(self, data):
         """
         写入 RFID 标签（抽象方法）
-        
+
         :param data: 要写入的数据字典，包含：
             - rfid_number: RFID 编号
             - product_code: 产品编码
@@ -49,7 +49,7 @@ class RfidDeviceService(models.AbstractModel):
             - production_date: 生产日期
             - production_order: 生产订单号
             - 其他自定义数据...
-            
+
         :return: 字典格式的结果
             {
                 'success': True/False,
@@ -60,17 +60,17 @@ class RfidDeviceService(models.AbstractModel):
         """
         # 默认实现：模拟模式（无实际硬件）
         _logger.info('RFID 写入（模拟模式）: %s', data)
-        
+
         return {
             'success': True,
             'message': '模拟写入成功（未连接实际设备）',
             'data': data
         }
-    
+
     def read_rfid_tag(self):
         """
         读取 RFID 标签（抽象方法）
-        
+
         :return: 字典格式的结果
             {
                 'success': True/False,
@@ -80,16 +80,16 @@ class RfidDeviceService(models.AbstractModel):
             }
         """
         _logger.info('RFID 读取（模拟模式）')
-        
+
         return {
             'success': False,
             'error': '模拟模式：未连接实际设备'
         }
-    
+
     def verify_rfid_tag(self, rfid_number):
         """
         验证 RFID 标签（抽象方法）
-        
+
         :param rfid_number: RFID 编号
         :return: 字典格式的结果
             {
@@ -100,12 +100,12 @@ class RfidDeviceService(models.AbstractModel):
             }
         """
         _logger.info('RFID 验证（模拟模式）: %s', rfid_number)
-        
+
         # 在数据库中查找
         rfid_tag = self.env['rfid.tag'].search([
             ('name', '=', rfid_number)
         ], limit=1)
-        
+
         if rfid_tag:
             return {
                 'success': True,
@@ -123,24 +123,24 @@ class RfidDeviceService(models.AbstractModel):
                 'valid': False,
                 'error': 'RFID 标签不存在'
             }
-    
+
     def erase_rfid_tag(self):
         """
         擦除 RFID 标签（抽象方法）
-        
+
         :return: 字典格式的结果
         """
         _logger.info('RFID 擦除（模拟模式）')
-        
+
         return {
             'success': False,
             'error': '模拟模式：未连接实际设备'
         }
-    
+
     def get_device_status(self):
         """
         获取设备状态（抽象方法）
-        
+
         :return: 字典格式的结果
             {
                 'connected': True/False,
@@ -160,18 +160,18 @@ class RfidDeviceService(models.AbstractModel):
 class RfidDeviceConfig(models.Model):
     """
     RFID 设备配置模型
-    
+
     用于存储 RFID 读写器的配置信息
     """
-    
+
     _name = 'rfid.device.config'
     _description = 'RFID 设备配置'
     _order = 'sequence, id'
-    
+
     name = fields.Char(string='设备名称', required=True)
     sequence = fields.Integer(string='序号', default=10)
     active = fields.Boolean(string='启用', default=True)
-    
+
     device_type = fields.Selection([
         ('simulation', '模拟设备'),
         ('usb', 'USB 读写器'),
@@ -180,35 +180,35 @@ class RfidDeviceConfig(models.Model):
         ('uhf_reader18', 'UHFReader18'),
         ('custom', '自定义设备'),
     ], string='设备类型', default='simulation', required=True)
-    
+
     # 连接参数
     connection_string = fields.Char(
         string='连接字符串',
         help='设备连接参数，如：COM3、192.168.1.100:8080 等'
     )
-    
+
     port = fields.Char(string='端口')
     baudrate = fields.Integer(string='波特率', default=9600)
     timeout = fields.Integer(string='超时时间（秒）', default=5)
-    
+
     # UHFReader18 特有字段
     ip_address = fields.Char(string='IP地址', help='UHFReader18设备的IP地址')
     device_address = fields.Integer(string='设备地址', default=0, help='RS485网络地址，0x00~0xFE')
     service_model_name = fields.Char(string='服务模型名称', compute='_compute_service_model_name', store=True)
-    
+
     # 高级配置
     auto_connect = fields.Boolean(
         string='自动连接',
         default=True,
         help='系统启动时自动连接设备'
     )
-    
+
     retry_times = fields.Integer(
         string='重试次数',
         default=3,
         help='操作失败时的重试次数'
     )
-    
+
     # 状态信息
     last_connected = fields.Datetime(string='最后连接时间', readonly=True)
     connection_status = fields.Selection([
@@ -216,15 +216,15 @@ class RfidDeviceConfig(models.Model):
         ('connected', '已连接'),
         ('error', '连接错误'),
     ], string='连接状态', default='disconnected', readonly=True)
-    
+
     error_message = fields.Text(string='错误信息', readonly=True)
-    
+
     # 统计信息
     write_count = fields.Integer(string='写入次数', default=0, readonly=True)
     read_count = fields.Integer(string='读取次数', default=0, readonly=True)
-    
+
     notes = fields.Text(string='备注')
-    
+
     @api.depends('device_type')
     def _compute_service_model_name(self):
         """计算服务模型名称"""
@@ -233,16 +233,21 @@ class RfidDeviceConfig(models.Model):
                 record.service_model_name = 'uhf.reader18.service'
             else:
                 record.service_model_name = 'rfid.device.service'
-    
+
+    def _ensure_rfid_manager(self):
+        if not self.env.user.has_group('xq_rfid.group_rfid_manager'):
+            raise UserError(_('只有 RFID 管理员可以执行设备配置和硬件操作。'))
+
     def action_test_connection(self):
         """测试设备连接"""
         self.ensure_one()
-        
+        self._ensure_rfid_manager()
+
         # 根据设备类型选择相应的服务
         if self.device_type == 'uhf_reader18':
             # 对于UHFReader18设备
             device_service = self.env['uhf.reader18.service']
-            
+
             if not self.ip_address or not self.port:
                 return {
                     'type': 'ir.actions.client',
@@ -254,7 +259,7 @@ class RfidDeviceConfig(models.Model):
                         'sticky': True,
                     }
                 }
-            
+
             try:
                 port = int(self.port)
                 status = device_service.get_device_status(self.ip_address, port)
@@ -272,7 +277,7 @@ class RfidDeviceConfig(models.Model):
         elif self.device_type == 'network':
             # 对于其他网络设备，使用UHFReader18服务
             device_service = self.env['uhf.reader18.service']
-            
+
             # 解析连接字符串获取IP和端口
             if self.connection_string and ':' in self.connection_string:
                 ip, port = self.connection_string.split(':')
@@ -288,18 +293,18 @@ class RfidDeviceConfig(models.Model):
                         'sticky': True,
                     }
                 }
-            
+
             status = device_service.get_device_status(ip, port)
         else:
             # 使用通用服务
             device_service = self.env['rfid.device.service']
             status = device_service.get_device_status()
-        
+
         if status.get('connected'):
             self.connection_status = 'connected'
             self.last_connected = fields.Datetime.now()
             self.error_message = False
-            
+
             return {
                 'type': 'ir.actions.client',
                 'tag': 'display_notification',
@@ -312,7 +317,7 @@ class RfidDeviceConfig(models.Model):
         else:
             self.connection_status = 'error'
             self.error_message = status.get('error', '未知错误')
-            
+
             return {
                 'type': 'ir.actions.client',
                 'tag': 'display_notification',
@@ -323,15 +328,16 @@ class RfidDeviceConfig(models.Model):
                     'sticky': True,
                 }
             }
-    
+
     def action_write_test_tag(self):
         """写入测试标签"""
         self.ensure_one()
-        
+        self._ensure_rfid_manager()
+
         if self.device_type == 'uhf_reader18':
             # 对于UHFReader18设备，使用询查功能作为测试
             device_service = self.env['uhf.reader18.service']
-            
+
             if not self.ip_address or not self.port:
                 return {
                     'type': 'ir.actions.client',
@@ -343,13 +349,23 @@ class RfidDeviceConfig(models.Model):
                         'sticky': True,
                     }
                 }
-            
+
             try:
                 port = int(self.port)
-                # 执行真正的写入测试
-                test_data = ['TEST', 'DATA', 'WRITE']  # 测试数据
-                epc_hex = "1100EE00E28068940000502C6FE618BB93DF"  # 使用实际检测到的EPC
-                
+                # 测试写入使用设备返回的第一个 EPC，避免硬编码生产标签。
+                inventory = device_service.inventory_tags(self.ip_address, port)
+                epc_list = inventory.get('epc_list') or []
+                if not inventory.get('success') or not epc_list:
+                    raise UserError(_('未检测到可用于测试写入的 RFID 标签。'))
+                test_bytes = b'TEST-DATA-WRITE'
+                if len(test_bytes) % 2:
+                    test_bytes += b'\x00'
+                test_data = [
+                    (test_bytes[i] << 8) | test_bytes[i + 1]
+                    for i in range(0, len(test_bytes), 2)
+                ]
+                epc_hex = epc_list[0]['epc']
+
                 result = device_service.write_data(
                     ip=self.ip_address,
                     port=port,
@@ -358,7 +374,7 @@ class RfidDeviceConfig(models.Model):
                     word_ptr=0x00,  # 从开始位置写入
                     write_data=test_data
                 )
-                
+
                 if result.get('success'):
                     message = _('写入测试成功！数据已写入到RFID标签')
                     msg_type = 'success'
@@ -381,7 +397,7 @@ class RfidDeviceConfig(models.Model):
         else:
             # 使用通用服务
             device_service = self.env['rfid.device.service']
-            
+
             test_data = {
                 'rfid_number': 'TEST-001',
                 'product_code': 'TEST',
@@ -389,9 +405,9 @@ class RfidDeviceConfig(models.Model):
                 'lot_number': 'TEST-LOT-001',
                 'production_date': fields.Datetime.now(),
             }
-            
+
             result = device_service.write_rfid_tag(test_data)
-            
+
             if result.get('success'):
                 message = result.get('message', '写入成功')
                 msg_type = 'success'
@@ -399,7 +415,7 @@ class RfidDeviceConfig(models.Model):
             else:
                 message = result.get('error', '写入失败')
                 msg_type = 'warning'
-        
+
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
@@ -409,15 +425,16 @@ class RfidDeviceConfig(models.Model):
                 'type': msg_type,
             }
         }
-    
+
     def action_read_test_tag(self):
         """读取测试标签"""
         self.ensure_one()
-        
+        self._ensure_rfid_manager()
+
         if self.device_type == 'uhf_reader18':
             # 对于UHFReader18设备，使用询查功能作为测试
             device_service = self.env['uhf.reader18.service']
-            
+
             if not self.ip_address or not self.port:
                 return {
                     'type': 'ir.actions.client',
@@ -429,11 +446,11 @@ class RfidDeviceConfig(models.Model):
                         'sticky': True,
                     }
                 }
-            
+
             try:
                 port = int(self.port)
                 result = device_service.inventory_tags(self.ip_address, port, self.device_address)
-                
+
                 if result.get('success'):
                     message = _('询查成功，检测到 %d 个标签') % result.get('num_tags', 0)
                     msg_type = 'success'
@@ -457,7 +474,7 @@ class RfidDeviceConfig(models.Model):
             # 使用通用服务
             device_service = self.env['rfid.device.service']
             result = device_service.read_rfid_tag()
-            
+
             if result.get('success'):
                 message = _('读取成功: %s') % result.get('rfid_number', '')
                 msg_type = 'success'
@@ -465,7 +482,7 @@ class RfidDeviceConfig(models.Model):
             else:
                 message = result.get('error', '读取失败')
                 msg_type = 'warning'
-        
+
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
@@ -475,11 +492,11 @@ class RfidDeviceConfig(models.Model):
                 'type': msg_type,
             }
         }
-    
+
     def action_view_write_logs(self):
         """查看写入日志"""
         self.ensure_one()
-        
+
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
@@ -489,11 +506,11 @@ class RfidDeviceConfig(models.Model):
                 'type': 'info',
             }
         }
-    
+
     def action_view_read_logs(self):
         """查看读取日志"""
         self.ensure_one()
-        
+
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',

@@ -181,8 +181,8 @@ class ProductTemplate(models.Model):
             else:
                 product.o_note = ''
 
-    @api.depends('safty_qty', 'safty_rule', 'product_variant_ids.stock_quant_ids', 
-                 'product_variant_ids.stock_quant_ids.inventory_quantity_auto_apply',
+    @api.depends('safty_qty', 'safty_rule', 'product_variant_ids.stock_quant_ids',
+                 'product_variant_ids.stock_quant_ids.quantity',
                  'product_variant_ids.stock_quant_ids.o_note1', 'product_variant_ids.stock_quant_ids.o_note2')
     def _compute_is_safty(self):
         """计算是否安全库存"""
@@ -197,13 +197,13 @@ class ProductTemplate(models.Model):
             
             qty = 0
             if product.safty_rule == 'all':
-                qty = sum(quants.mapped('inventory_quantity_auto_apply'))
+                qty = sum(quants.mapped('quantity'))
             elif product.safty_rule == 'not_note1':
-                qty = sum(quants.filtered(lambda x: not x.o_note1).mapped('inventory_quantity_auto_apply'))
+                qty = sum(quants.filtered(lambda x: not x.o_note1).mapped('quantity'))
             elif product.safty_rule == 'not_note2':
-                qty = sum(quants.filtered(lambda x: not x.o_note2).mapped('inventory_quantity_auto_apply'))
+                qty = sum(quants.filtered(lambda x: not x.o_note2).mapped('quantity'))
             elif product.safty_rule == 'not_all':
-                qty = sum(quants.filtered(lambda x: not x.o_note1 and not x.o_note2).mapped('inventory_quantity_auto_apply'))
+                qty = sum(quants.filtered(lambda x: not x.o_note1 and not x.o_note2).mapped('quantity'))
 
             product.is_safty = qty >= product.safty_qty
 
@@ -227,7 +227,7 @@ class ProductTemplate(models.Model):
                 product.lot_weight = 0.0
                 product.lot_qty = 0.0
             # 实际卷数：按照批号/序列号计算，每个批号/序列号都算作一卷，但需要判断在手数量大于0
-            product.act_juan = len(quants.filtered(lambda x: x.lot_id and x.inventory_quantity_auto_apply > 0))
+            product.act_juan = len(quants.filtered(lambda x: x.lot_id and x.quantity > 0))
 
     # ==================== 单位配置方法 ====================
     def get_unit_config_for_stock_move(self):

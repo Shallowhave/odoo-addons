@@ -1,24 +1,61 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <!-- 权限规则 -->
-    <record id="mrp_production_return_wizard_rule" model="ir.rule">
-        <field name="name">制造订单返回向导规则</field>
+    <!-- Manufacturing return records are operational manufacturing/stock data.
+         Transient wizards are intentionally unrestricted within the allowed groups,
+         while persistent history/reason records are company-scoped. -->
+    <record id="mrp_production_return_wizard_rule_mrp_user" model="ir.rule">
+        <field name="name">Manufacturing users can use return wizards</field>
         <field name="model_id" ref="model_mrp_production_return_wizard"/>
         <field name="domain_force">[(1, '=', 1)]</field>
-        <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+        <field name="groups" eval="[(4, ref('mrp.group_mrp_user'))]"/>
     </record>
-    
-    <record id="mrp_production_return_history_rule" model="ir.rule">
-        <field name="name">制造订单返回历史规则</field>
+
+    <record id="mrp_production_return_wizard_line_rule_mrp_user" model="ir.rule">
+        <field name="name">Manufacturing users can use return wizard lines</field>
+        <field name="model_id" ref="model_mrp_production_return_wizard_line"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('mrp.group_mrp_user'))]"/>
+    </record>
+
+    <record id="mrp_production_return_wizard_rule_stock_user" model="ir.rule">
+        <field name="name">Stock users can use return wizards</field>
+        <field name="model_id" ref="model_mrp_production_return_wizard"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('stock.group_stock_user'))]"/>
+    </record>
+
+    <record id="mrp_production_return_wizard_line_rule_stock_user" model="ir.rule">
+        <field name="name">Stock users can use return wizard lines</field>
+        <field name="model_id" ref="model_mrp_production_return_wizard_line"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('stock.group_stock_user'))]"/>
+    </record>
+
+    <record id="mrp_production_return_history_rule_mrp_user" model="ir.rule">
+        <field name="name">Manufacturing users see return history for allowed companies</field>
         <field name="model_id" ref="model_mrp_production_return_history"/>
-        <field name="domain_force">[(1, '=', 1)]</field>
-        <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+        <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('mrp.group_mrp_user'))]"/>
     </record>
-    
-    <record id="mrp_return_reason_rule" model="ir.rule">
-        <field name="name">返回原因规则</field>
+
+    <record id="mrp_production_return_history_rule_stock_user" model="ir.rule">
+        <field name="name">Stock users see return history for allowed companies</field>
+        <field name="model_id" ref="model_mrp_production_return_history"/>
+        <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('stock.group_stock_user'))]"/>
+    </record>
+
+    <record id="mrp_return_reason_rule_mrp_user" model="ir.rule">
+        <field name="name">Manufacturing users see return reasons for allowed companies</field>
         <field name="model_id" ref="model_mrp_return_reason"/>
-        <field name="domain_force">[(1, '=', 1)]</field>
-        <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+        <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('mrp.group_mrp_user'))]"/>
+    </record>
+
+    <record id="mrp_return_reason_rule_stock_user" model="ir.rule">
+        <field name="name">Stock users see return reasons for allowed companies</field>
+        <field name="model_id" ref="model_mrp_return_reason"/>
+        <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('stock.group_stock_user'))]"/>
     </record>
 </odoo>

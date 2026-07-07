@@ -35,6 +35,12 @@ class MrpReturnReason(models.Model):
         default=True,
         help='是否启用此原因'
     )
+    company_id = fields.Many2one(
+        'res.company',
+        string='公司',
+        index=True,
+        help='留空表示所有公司共享。'
+    )
     return_strategy = fields.Selection([
         ('before', '返回至生产前'),
         ('after', '返回至生产后'),

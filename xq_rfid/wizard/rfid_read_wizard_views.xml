@@ -24,7 +24,7 @@
                             <field name="read_time" readonly="1"/>
                         </group>
                         <group string="读取参数">
-                            <field name="epc_hex" placeholder="例如: 1100EE00E28068940000502C6FE618BB93DF"/>
+                            <field name="epc_hex" placeholder="请输入当前扫描到的 EPC 十六进制字符串"/>
                             <field name="mem_bank"/>
                             <field name="word_ptr"/>
                             <field name="word_count"/>
@@ -65,6 +65,7 @@
               name="RFID 读取"
               parent="menu_rfid"
               action="action_rfid_read_wizard"
-              sequence="20"/>
+              sequence="20"
+              groups="xq_rfid.group_rfid_manager"/>
 
 </odoo>

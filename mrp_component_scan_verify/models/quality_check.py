@@ -47,13 +47,19 @@ class QualityCheck(models.Model):
         help='通过扫码获取的批次号'
     )
     
+    selected_move_line_id = fields.Many2one(
+        'stock.move.line',
+        string='待登记组件移动行',
+        help='用户选择的具体待登记组件移动行，用于按批次/移动行粒度验证。'
+    )
+
     # 待登记组件对应的批次号（从生产订单移动行获取）
     selected_lot_id = fields.Many2one(
         'stock.lot',
         string='待登记组件批次号',
         compute='_compute_selected_lot_id',
         store=False,
-        help='待登记组件对应的批次号，从生产订单移动行中获取'
+        help='待登记组件对应的批次号，从选择的移动行中获取'
     )
     
     component_verification_result = fields.Selection([
@@ -206,7 +212,19 @@ class QualityCheck(models.Model):
             # 检查是否已选择待登记组件
             if not self.selected_component_id:
                 raise UserError(_('请先选择待登记的组件！'))
-            
+
+            if self.selected_move_line_id:
+                if self.selected_move_line_id.move_id not in self.production_id.move_raw_ids:
+                    raise UserError(_('选择的待登记组件移动行不属于当前生产订单！'))
+                if self.selected_move_line_id.product_id != self.selected_component_id:
+                    raise UserError(_('选择的待登记组件移动行与待登记组件不一致！'))
+                if not self.move_line_id:
+                    self.move_line_id = self.selected_move_line_id
+                if not self.move_id:
+                    self.move_id = self.selected_move_line_id.move_id
+                if not self.component_id:
+                    self.component_id = self.selected_component_id
+
             # 检查是否已经验证过
             if not self.scanned_component_id:
                 raise UserError(_('请先扫码确认组件！'))
@@ -333,7 +351,7 @@ class QualityCheck(models.Model):
         
         return super(QualityCheck, self)._create_extra_move_lines()
     
-    @api.depends('selected_component_id', 'production_id', 'move_line_id')
+    @api.depends('selected_component_id', 'production_id', 'move_line_id', 'selected_move_line_id', 'selected_move_line_id.lot_id')
     def _compute_selected_lot_id(self):
         """计算待登记组件对应的批次号
         
@@ -344,7 +362,12 @@ class QualityCheck(models.Model):
                 record.selected_lot_id = False
                 continue
             
-            # 优先从 move_line_id 获取批次号（如果已分配）
+            # 优先从用户明确选择的待登记移动行获取批次号
+            if record.selected_move_line_id:
+                record.selected_lot_id = record.selected_move_line_id.lot_id
+                continue
+
+            # 再从原生 move_line_id 获取批次号（如果已分配）
             if record.move_line_id and record.move_line_id.lot_id:
                 record.selected_lot_id = record.move_line_id.lot_id
                 continue
@@ -393,7 +416,51 @@ class QualityCheck(models.Model):
             }
         
         return False
-    
+
+    def get_component_scan_candidates(self):
+        """Return selectable component candidates at move-line/lot granularity."""
+        self.ensure_one()
+        if not self.production_id:
+            return []
+
+        candidates = []
+        for move in self.production_id.move_raw_ids.filtered(
+            lambda m: m.state in ('assigned', 'partially_available', 'done')
+            and m.product_uom_qty > m.quantity
+        ):
+            move_lines = move.move_line_ids
+            if move_lines:
+                for move_line in move_lines:
+                    qty = move_line.quantity or 0.0
+                    candidates.append({
+                        'key': f'ml-{move_line.id}',
+                        'move_id': move.id,
+                        'move_line_id': move_line.id,
+                        'id': move.product_id.id,
+                        'name': move.product_id.name,
+                        'code': move.product_id.default_code or '',
+                        'lot_id': move_line.lot_id.id or False,
+                        'lot_name': move_line.lot_id.name or move_line.lot_name or '',
+                        'quantity': qty or (move.product_uom_qty - move.quantity),
+                        'plannedQty': move.product_uom_qty,
+                        'consumedQty': move.quantity,
+                    })
+            else:
+                candidates.append({
+                    'key': f'move-{move.id}',
+                    'move_id': move.id,
+                    'move_line_id': False,
+                    'id': move.product_id.id,
+                    'name': move.product_id.name,
+                    'code': move.product_id.default_code or '',
+                    'lot_id': False,
+                    'lot_name': '',
+                    'quantity': move.product_uom_qty - move.quantity,
+                    'plannedQty': move.product_uom_qty,
+                    'consumedQty': move.quantity,
+                })
+        return candidates
+
     def verify_component(self, scanned_component_id=None, scanned_lot_id=None):
         """
         验证扫码的组件是否匹配选中的待登记组件
@@ -417,9 +484,9 @@ class QualityCheck(models.Model):
         if scanned_component_id:
             self.scanned_component_id = scanned_component_id
         
-        # 如果前端传递了扫码的批次号ID，先设置到记录中
-        if scanned_lot_id:
-            self.scanned_lot_id = scanned_lot_id
+        # 前端每次验证都传递本次扫码批次；无批次时必须清空旧值，避免复用上次扫码批次。
+        if scanned_lot_id is not None:
+            self.scanned_lot_id = scanned_lot_id or False
         
         if not self.scanned_component_id:
             raise UserError(_('请先扫码确认组件！'))
@@ -657,8 +724,11 @@ class QualityCheck(models.Model):
         if self.move_line_id and self.move_line_id.lot_id:
             qty_todo = min(self.move_line_id.quantity, qty_todo)
         
-        # 设置 qty_done
-        self.qty_done = qty_todo
+        # 设置已完成数量（Odoo 18 使用 quantity，旧版本使用 qty_done）
+        if 'quantity' in self._fields:
+            self.quantity = qty_todo
+        elif 'qty_done' in self._fields:
+            self.qty_done = qty_todo
         
         return True
 
@@ -690,5 +760,4 @@ class MrpProductionWorkcenterLine(models.Model):
         return super().pre_record_production()
 
     def get_summary_data(self):
-        self._sync_matched_component_scan_checks()
         return super().get_summary_data()

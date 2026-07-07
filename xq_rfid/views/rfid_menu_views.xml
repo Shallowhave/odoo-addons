@@ -2,12 +2,14 @@
 <odoo>
     <!-- RFID 主菜单 -->
     <menuitem name="RFID" id="menu_rfid_root" sequence="150"
+        groups="xq_rfid.group_rfid_user"
         web_icon="xq_rfid,static/description/rfid_menu_bista.png"/>
 
     <!-- RFID 子菜单 -->
     <menuitem id="menu_rfid" name="RFID" parent="menu_rfid_root" sequence="2"/>
 
     <!-- 配置菜单 -->
-    <menuitem id="menu_rfid_config" name="配置" parent="menu_rfid_root" sequence="100"/>
+    <menuitem id="menu_rfid_config" name="配置" parent="menu_rfid_root" sequence="100"
+        groups="xq_rfid.group_rfid_manager"/>
 
 </odoo>

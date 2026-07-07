@@ -218,6 +218,32 @@ class ProductUnitSetupWizard(models.TransientModel):
                 else:
                     wizard.ton_per_roll = 0.0
 
+    def _ensure_can_setup_units(self):
+        """Only stock managers can change product units after stock activity exists."""
+        self.ensure_one()
+        if self.env.user.has_group('stock.group_stock_manager'):
+            return
+        raise UserError(_('只有库存管理员可以执行快速单位设置'))
+
+    def _check_product_unit_change_allowed(self):
+        """Prevent changing UoM categories once the product has stock history."""
+        self.ensure_one()
+        product = self.product_tmpl_id
+        if not product:
+            return
+        variants = product.product_variant_ids
+        has_stock_history = bool(self.env['stock.move.line'].search_count([
+            ('product_id', 'in', variants.ids),
+        ])) or bool(self.env['stock.quant'].search_count([
+            ('product_id', 'in', variants.ids),
+            ('quantity', '!=', 0),
+        ]))
+        if has_stock_history:
+            raise UserError(_(
+                '产品已有库存移动或在手库存，不能通过快速单位设置修改计量单位。'
+                '请先清空库存并确保没有历史移动，或创建新产品。'
+            ))
+
     def _create_or_update_uom(self, category, name, factor, uom_type, rounding):
         """创建或更新计量单位"""
         existing_uom = self.env['uom.uom'].search([
@@ -242,7 +268,9 @@ class ProductUnitSetupWizard(models.TransientModel):
     def action_setup_units(self):
         """执行单位设置"""
         self.ensure_one()
-        
+        self._ensure_can_setup_units()
+        self._check_product_unit_change_allowed()
+
         try:
             # 为产品创建专用的计量单位类别
             product_name = self.product_tmpl_id.name or f"产品{self.product_tmpl_id.id}"

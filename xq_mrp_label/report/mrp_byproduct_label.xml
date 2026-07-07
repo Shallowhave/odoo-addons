@@ -120,8 +120,8 @@
                       <t t-if="move_lines">
                         <t t-set="total_qty" t-value="0.0"/>
                         <t t-foreach="move_lines" t-as="line">
-                          <!-- 优先使用 qty_done（已完成数量），如果没有则使用 quantity（计划数量） -->
-                          <t t-set="line_qty" t-value="line.qty_done if line.qty_done and line.qty_done > 0 else (line.quantity if line.quantity and line.quantity > 0 else 0.0)"/>
+                          <!-- 优先使用 quantity（已完成数量），如果没有则使用 quantity（计划数量） -->
+                          <t t-set="line_qty" t-value="line.quantity if ('quantity' in line._fields and line.quantity and line.quantity > 0) else (line.quantity if ('quantity' in line._fields and line.quantity and line.quantity > 0) else 0.0)"/>
                           <t t-if="line_qty and line_qty > 0">
                             <t t-set="total_qty" t-value="total_qty + line_qty"/>
                           </t>
@@ -130,7 +130,7 @@
                       </t>
                       <t t-if="not actual_length or actual_length == 0.0">
                         <!-- 如果没有移动行或移动行数量为0，使用 move 的 quantity（实际处理数量）或 product_uom_qty（计划数量） -->
-                        <t t-set="actual_length" t-value="byproduct_move.quantity_done if (byproduct_move and byproduct_move.quantity_done and byproduct_move.quantity_done > 0) else (byproduct_move.quantity if (byproduct_move and byproduct_move.quantity) else (byproduct_move.product_uom_qty if byproduct_move else 0.0))"/>
+                        <t t-set="actual_length" t-value="byproduct_move.quantity if (byproduct_move and 'quantity' in byproduct_move._fields and byproduct_move.quantity and byproduct_move.quantity > 0) else (byproduct_move.quantity_done if (byproduct_move and 'quantity_done' in byproduct_move._fields and byproduct_move.quantity_done and byproduct_move.quantity_done > 0) else (byproduct_move.product_uom_qty if byproduct_move else 0.0))"/>
                       </t>
                       <!-- 检查单位是否为长度单位（米） -->
                       <t t-set="uom_name" t-value="(move_lines and move_lines[0].product_uom_id.name) or (byproduct_move.product_uom.name if byproduct_move else '') or (byproduct_product.uom_id.name if byproduct_product else '') or ''"/>
@@ -177,8 +177,8 @@
                         <!-- 从移动行获取实际数量（已完成的数量） -->
                         <t t-set="total_qty" t-value="0.0"/>
                         <t t-foreach="move_lines" t-as="line">
-                          <!-- 优先使用 qty_done（已完成数量），如果没有则使用 quantity（计划数量） -->
-                          <t t-set="line_qty" t-value="line.qty_done if line.qty_done and line.qty_done > 0 else (line.quantity if line.quantity and line.quantity > 0 else 0.0)"/>
+                          <!-- 优先使用 quantity（已完成数量），如果没有则使用 quantity（计划数量） -->
+                          <t t-set="line_qty" t-value="line.quantity if ('quantity' in line._fields and line.quantity and line.quantity > 0) else (line.quantity if ('quantity' in line._fields and line.quantity and line.quantity > 0) else 0.0)"/>
                           <t t-if="line_qty and line_qty > 0">
                             <t t-set="total_qty" t-value="total_qty + line_qty"/>
                           </t>
@@ -187,7 +187,7 @@
                       </t>
                       <t t-if="not byproduct_qty or byproduct_qty == 0.0">
                         <!-- 如果没有移动行或移动行数量为0，使用 move 的 quantity_done（实际处理数量）或 quantity（计划数量）或 product_uom_qty（计划数量） -->
-                        <t t-set="byproduct_qty" t-value="byproduct_move.quantity_done if (byproduct_move.quantity_done and byproduct_move.quantity_done > 0) else (byproduct_move.quantity if byproduct_move.quantity else (byproduct_move.product_uom_qty if byproduct_move.product_uom_qty else 0.0))"/>
+                        <t t-set="byproduct_qty" t-value="byproduct_move.quantity if ('quantity' in byproduct_move._fields and byproduct_move.quantity and byproduct_move.quantity > 0) else (byproduct_move.quantity_done if ('quantity_done' in byproduct_move._fields and byproduct_move.quantity_done and byproduct_move.quantity_done > 0) else (byproduct_move.product_uom_qty if byproduct_move.product_uom_qty else 0.0))"/>
                       </t>
                       <!-- 计算面积（如果产品单位是平米或平方米，且数量大于0） -->
                       <t t-set="uom_name" t-value="(move_lines and move_lines[0].product_uom_id.name) or (byproduct_move.product_uom.name if byproduct_move else '') or (byproduct_product.uom_id.name if byproduct_product else '') or ''"/>
