@@ -26,6 +26,12 @@ class MrpProductionReturnHistory(models.Model):
         required=True,
         index=True  # 添加索引，常用于查询
     )
+    source_move_id = fields.Many2one(
+        'stock.move',
+        string='源组件移动',
+        index=True,
+        help='制造订单中被处理的原始组件库存移动，用于区分同一产品的多条组件移动'
+    )
     quantity = fields.Float(
         string='数量',
         required=True,

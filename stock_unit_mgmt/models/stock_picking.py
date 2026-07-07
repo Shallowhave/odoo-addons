@@ -10,50 +10,74 @@ _logger = logging.getLogger(__name__)
 class StockPicking(models.Model):
     _inherit = 'stock.picking'
 
+    def _line_is_scanned_for_validation(self, line):
+        """Return whether a move line counts as scanned during validation."""
+        field_name = (
+            'quantity' if 'quantity' in line._fields
+            else 'qty_done' if 'qty_done' in line._fields
+            else False
+        )
+        if not field_name:
+            return False
+        try:
+            value = line[field_name] or 0.0
+        except Exception:
+            try:
+                value = getattr(line, field_name, 0.0) or 0.0
+            except Exception:
+                value = 0.0
+        if value > 0:
+            return True
+        return False
+
     def button_validate(self):
         """重写验证方法，在验证前比对扫码数据和预填数据"""
         # **关键修复**：检查作业类型是否启用了增强条码验证
         # 只有当作业类型启用了增强条码验证时，才执行增强验证
-        if (self.picking_type_id.code == 'incoming' and 
-            self.picking_type_id.enable_enhanced_barcode_validation):
-            self._validate_scanned_data()
+        for picking in self:
+            if (picking.picking_type_id.code == 'incoming' and
+                picking.picking_type_id.enable_enhanced_barcode_validation):
+                picking._validate_scanned_data()
+
+        lot_info_by_picking = {}
+        incoming_pickings = self.filtered(lambda p: p.picking_type_id.code == 'incoming')
+        for picking in incoming_pickings:
+            move_lines_before = self.env['stock.move.line'].search([
+                ('picking_id', '=', picking.id),
+                ('lot_name', '!=', False),
+                ('lot_name', '!=', ''),
+            ])
+
+            # 保存每个移动行的 lot_quantity 和 lot_unit_name（以批次号为键）
+            lot_info_map = {}
+            for move_line in move_lines_before:
+                if move_line.lot_name:
+                    lot_name = move_line.lot_name.strip()
+                    if lot_name:
+                        lot_info_map[lot_name] = {
+                            'lot_quantity': move_line.lot_quantity,
+                            'lot_unit_name': move_line.lot_unit_name,
+                            'lot_unit_name_custom': move_line.lot_unit_name_custom,
+                        }
+                        _logger.info(
+                            f"[入库验证前] 保存单位信息: 记录ID={move_line.id}, "
+                            f"批次号={lot_name}, lot_quantity={move_line.lot_quantity}, "
+                            f"lot_unit_name={move_line.lot_unit_name}"
+                        )
+            lot_info_by_picking[picking.id] = lot_info_map
         
         # 调用父类方法进行正常验证
         result = super(StockPicking, self).button_validate()
         
         # **关键修复**：在入库验证完成后，确保 lot_quantity 和 lot_unit_name 正确保存
         # 入库过程中可能会清空这些字段，需要在验证完成后恢复
-        if (self.picking_type_id.code == 'incoming' and 
-            self.state == 'done'):
+        for picking in incoming_pickings.filtered(lambda p: p.state == 'done'):
             try:
-                # **关键修复**：在验证前保存所有移动行的 lot_quantity 和 lot_unit_name
-                # 因为 Odoo 标准流程可能会重新创建移动行，导致自定义字段丢失
-                move_lines_before = self.env['stock.move.line'].search([
-                    ('picking_id', '=', self.id),
-                    ('lot_name', '!=', False),
-                    ('lot_name', '!=', ''),
-                ])
-                
-                # 保存每个移动行的 lot_quantity 和 lot_unit_name（以批次号为键）
-                lot_info_map = {}
-                for move_line in move_lines_before:
-                    if move_line.lot_name:
-                        lot_name = move_line.lot_name.strip()
-                        if lot_name:
-                            lot_info_map[lot_name] = {
-                                'lot_quantity': move_line.lot_quantity,
-                                'lot_unit_name': move_line.lot_unit_name,
-                                'lot_unit_name_custom': move_line.lot_unit_name_custom,
-                            }
-                            _logger.info(
-                                f"[入库验证前] 保存单位信息: 记录ID={move_line.id}, "
-                                f"批次号={lot_name}, lot_quantity={move_line.lot_quantity}, "
-                                f"lot_unit_name={move_line.lot_unit_name}"
-                            )
+                lot_info_map = lot_info_by_picking.get(picking.id, {})
                 
                 # 查询验证后的所有有批次号的移动行
                 move_lines_after = self.env['stock.move.line'].search([
-                    ('picking_id', '=', self.id),
+                    ('picking_id', '=', picking.id),
                     ('lot_name', '!=', False),
                     ('lot_name', '!=', ''),
                 ])
@@ -99,7 +123,7 @@ class StockPicking(models.Model):
                                     )
             except Exception as e:
                 _logger.warning(
-                    f"[入库验证后] 恢复单位信息时出错: picking_id={self.id}, 错误={str(e)}",
+                    f"[入库验证后] 恢复单位信息时出错: picking_id={picking.id}, 错误={str(e)}",
                     exc_info=True
                 )
         
@@ -108,19 +132,18 @@ class StockPicking(models.Model):
     def _validate_scanned_data(self):
         """比对扫码数据和预填数据
         
-        比对逻辑（按照序列号的方式）：
+        比对逻辑：
         1. 预填数据：所有有批次号且已保存的记录（lot_name 不为空）
         2. 扫码数据：所有有批次号且 qty_done > 0 的记录（表示已扫码验证）
         3. 比对批次号列表是否一致：
            - 预填的批次号必须都被扫码（qty_done > 0）
            - 扫码的批次号必须在预填列表中
-        4. **关键修改**：按照序列号逻辑，每个批次号对应 quantity = 1.0
-           - 不需要比对数量，因为每个批次号就是 1.0
+        4. 扫码只验证批次号是否一致
+           - 不覆盖或重算批次产品数量
            - 只比对批次号列表是否一致
            - 批次号必须唯一，不能重复
         
         注意：
-        - 批次号按照序列号的方式处理：每个批次号对应 1.0 单位
         - 扫码只是验证批次号是否存在，不验证数量
         - 批次号必须唯一，不能重复使用
         - stock.move.line 没有 product_uom_qty 字段，需要从 move_id.product_uom_qty 获取
@@ -172,23 +195,12 @@ class StockPicking(models.Model):
                     for line in all_lines_with_lot:
                         if line.lot_name:
                             try:
-                                # 清除缓存，读取最新的 qty_done
-                                line.invalidate_recordset(['qty_done'])
-                                read_result = line.read(['qty_done'])
-                                qty_done = read_result[0].get('qty_done', 0.0) or 0.0 if read_result else 0.0
-                                
                                 # 只有 qty_done > 0 的批次号才应该保留在会话变量中
-                                if qty_done > 0:
+                                if self._line_is_scanned_for_validation(line):
                                     db_lot_names_with_qty_done.add(line.lot_name.strip().lower())
                             except Exception as e:
-                                # 如果读取失败，使用属性访问
-                                try:
-                                    qty_done = line.qty_done or 0.0
-                                    if qty_done > 0:
-                                        db_lot_names_with_qty_done.add(line.lot_name.strip().lower())
-                                except:
-                                    # 如果还是失败，保守处理：不添加到集合中
-                                    pass
+                                # 如果读取失败，保守处理：不添加到集合中
+                                pass
                     
                     # 从会话变量中移除数据库中不存在的批次号，或 qty_done = 0 的批次号
                     original_scanned_lots = scanned_lots.copy()
@@ -207,8 +219,7 @@ class StockPicking(models.Model):
         except Exception as e:
             _logger.warning(f"[验证比对] 同步会话变量时出错: {str(e)}")
         
-        # **关键修改**：按照序列号的方式收集数据
-        # 每个批次号对应 1.0 单位，不需要累计数量
+        # 收集批次号列表；扫码只验证批次号是否存在，不累计或覆盖数量。
         # 预填数据：所有有批次号的记录（lot_name 不为空）
         prefilled_lot_names = set()  # 预填的批次号集合
         prefilled_lot_info = {}  # {批次号: {'product_id': 产品ID, 'product_name': 产品名称, 'move_line_ids': [记录ID列表]}}
@@ -229,7 +240,6 @@ class StockPicking(models.Model):
                 product_id = line.product_id.id
                 product_name = line.product_id.name
                 
-                # **关键修改**：按照序列号的方式，每个批次号对应 1.0 单位
                 # 预填数据：所有有批次号的记录
                 if lot_name not in prefilled_lot_info:
                     prefilled_lot_info[lot_name] = {
@@ -241,8 +251,8 @@ class StockPicking(models.Model):
                 prefilled_lot_names.add(lot_name)
                 
                 # 扫码数据：所有有批次号且 qty_done > 0 的记录（表示已扫码验证）
-                # **关键修改**：按照序列号的方式，只需要检查批次号是否存在，不需要检查数量
-                if line.qty_done > 0:
+                # 只需要检查批次号是否存在，不需要检查数量
+                if self._line_is_scanned_for_validation(line):
                     if lot_name not in scanned_lot_info:
                         scanned_lot_info[lot_name] = {
                             'product_id': product_id,
@@ -265,8 +275,7 @@ class StockPicking(models.Model):
             )
             return
         
-        # **关键修改**：按照序列号的方式，只比对批次号列表，不比对数量
-        # 每个批次号对应 1.0 单位，批次号必须唯一
+        # 只比对批次号列表，不比对数量；批次号必须唯一。
         
         # 检查是否有未扫码的批次号（预填了但没有 qty_done > 0）
         missing_scanned = prefilled_lot_names - scanned_lot_names
@@ -278,8 +287,7 @@ class StockPicking(models.Model):
             error_msg = _(
                 '验证失败：以下批次号未扫码！\n\n'
                 '未扫码的批次号：\n%s\n\n'
-                '请先扫描所有预填的批次号，然后再进行验证。\n\n'
-                '批次号按照序列号的方式处理，每个批次号对应 1.0 单位。'
+                '请先扫描所有预填的批次号，然后再进行验证。'
             ) % missing_list
             _logger.error(
                 f"[验证比对] 验证失败: 未扫码的批次号={list(missing_scanned)}, "
@@ -298,7 +306,6 @@ class StockPicking(models.Model):
                 '验证失败：以下批次号不在预填列表中！\n\n'
                 '不在预填列表中的批次号：\n%s\n\n'
                 '扫码只是验证，批次号必须在预填列表中。\n'
-                '批次号按照序列号的方式处理，每个批次号对应 1.0 单位。\n'
                 '如需添加新批次号，请手动填写，不要使用扫码。'
             ) % extra_list
             _logger.error(
@@ -307,13 +314,11 @@ class StockPicking(models.Model):
             )
             raise UserError(error_msg)
         
-        # **关键修改**：按照序列号的方式，不需要比对数量
-        # 每个批次号对应 1.0 单位，批次号列表一致即可
+        # 扫码验证不比对数量，批次号列表一致即可。
         # 比对通过
         _logger.info(
             f"[验证比对] 验证通过: 调拨单={self.name}, "
             f"预填批次号列表={sorted(prefilled_lot_names)}, "
             f"扫码批次号列表={sorted(scanned_lot_names)}, "
-            f"批次号列表一致（按照序列号方式，每个批次号对应 1.0 单位）"
+            f"批次号列表一致"
         )
-

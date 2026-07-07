@@ -6,14 +6,19 @@
         <field name="model">mrp.production</field>
         <field name="inherit_id" ref="mrp.mrp_production_form_view"/>
         <field name="arch" type="xml">
-            <!-- Ensure lot_producing_id field can be manually edited even after auto-generation -->
-            <xpath expr="//field[@name='lot_producing_id']" position="attributes">
-                <attribute name="readonly">0</attribute>
-                <attribute name="required">0</attribute>
-                <!-- 不禁用原生创建按钮，通过上下文传递制造订单ID，让 create 方法自动生成批次号 -->
-                <attribute name="context">{'default_production_id': id, 'production_id': id}</attribute>
+            <xpath expr="//label[@for='lot_producing_id']" position="replace">
+                <label for="mrp_auto_lot_name" invisible="state == 'draft' or product_tracking in ('none', False)"/>
+            </xpath>
+            <xpath expr="//field[@name='lot_producing_id']" position="replace">
+                <field name="lot_producing_id"
+                       invisible="1"
+                       required="0"
+                       options="{'no_create': True, 'no_create_edit': True, 'no_open': True}"
+                       context="{'default_product_id': product_id, 'default_company_id': company_id, 'default_production_id': id, 'production_id': id}"/>
+                <field name="mrp_auto_lot_name"
+                       readonly="not lot_producing_id"
+                       placeholder="点击右侧按钮生成"/>
             </xpath>
         </field>
     </record>
 </odoo>
-

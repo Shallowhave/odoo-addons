@@ -89,13 +89,35 @@ class QualityCheck(models.Model):
         
         return records
     
+    def _raise_uom_configuration_error(self, title, details):
+        raise UserError(_(
+            '%(title)s\n\n'
+            '%(details)s\n\n'
+            '请由库存/产品管理员修正计量单位配置后再继续质检。'
+        ) % {
+            'title': title,
+            'details': details,
+        })
+
+    def _ensure_positive_uom_rounding(self, uom, source):
+        """Validate UOM precision without changing shared master data."""
+        if uom and (not uom.rounding or uom.rounding <= 0):
+            self._raise_uom_configuration_error(
+                _('计量单位舍入精度无效，无法通过质检。'),
+                _('位置：%(source)s\n计量单位：%(uom)s\n当前舍入精度：%(rounding)s') % {
+                    'source': source,
+                    'uom': uom.display_name,
+                    'rounding': uom.rounding,
+                }
+            )
+
     def _ensure_product_uom_consistency(self, product, move_uom):
         """
-        确保产品的 UOM 与移动行的 UOM 一致（辅助方法）
+        校验产品的 UOM 与移动行的 UOM 一致，不在质检流程中自动修改主数据。
         
         :param product: product.product 记录
         :param move_uom: uom.uom 记录（来自移动行）
-        :return: 是否进行了修复
+        :return: False（保持兼容调用方的布尔判断）
         """
         if not product or not move_uom:
             return False
@@ -122,26 +144,17 @@ class QualityCheck(models.Model):
                 needs_fix = True
                 fix_reason = fix_reason or '产品模板 UOM 类别不匹配'
         
+        self._ensure_positive_uom_rounding(move_uom, _('生产订单组件移动'))
+
         if needs_fix:
-            # 修复产品变体的 UOM
-            if not product.uom_id or product.uom_id.category_id != move_uom.category_id:
-                product.sudo().write({'uom_id': move_uom.id})
-                product.invalidate_recordset(['uom_id'])
-            
-            # 修复产品模板的 UOM
-            if tmpl and (not tmpl.uom_id or tmpl.uom_id.category_id != move_uom.category_id):
-                tmpl.sudo().write({'uom_id': move_uom.id})
-                tmpl.invalidate_recordset(['uom_id'])
-            
-            # 刷新数据库
-            self.env['product.product'].flush_model(['uom_id'])
-            self.env['product.template'].flush_model(['uom_id'])
-            
-            _logger.warning(
-                _("[质检通过] 修复产品 UOM: 产品=%s, 原因=%s, 新UOM=%s"),
-                product.name, fix_reason, move_uom.name
+            self._raise_uom_configuration_error(
+                _('产品计量单位配置异常，无法通过质检。'),
+                _('产品：%(product)s\n生产移动单位：%(move_uom)s\n问题：%(reason)s') % {
+                    'product': product.display_name,
+                    'move_uom': move_uom.display_name,
+                    'reason': fix_reason,
+                }
             )
-            return True
         
         return False
     
@@ -151,7 +164,7 @@ class QualityCheck(models.Model):
         """
         # 在调用父类方法之前，确保所有可能被 register_consumed_materials 使用的产品都有正确的 UOM
         if self.production_id:
-            # 修复 point_id.component_id 的 UOM
+            # 校验 point_id.component_id 的 UOM
             if self.point_id and self.point_id.component_id:
                 component_move = self.production_id.move_raw_ids.filtered(
                     lambda m: m.product_id.id == self.point_id.component_id.id
@@ -162,7 +175,7 @@ class QualityCheck(models.Model):
                         component_move[0].product_uom
                     )
             
-            # 修复 self.component_id 的 UOM
+            # 校验 self.component_id 的 UOM
             if self.component_id:
                 component_move = self.production_id.move_raw_ids.filtered(
                     lambda m: m.product_id.id == self.component_id.id
@@ -179,12 +192,10 @@ class QualityCheck(models.Model):
                         self.move_id = move.id
                         self.invalidate_recordset(['move_id'])
                     
-                    # 确保 move.product_uom 有正确的 rounding
-                    move_uom = move.product_uom
-                    if move_uom and (not move_uom.rounding or move_uom.rounding <= 0):
-                        move_uom.sudo().write({'rounding': 0.01})
-                        move_uom.invalidate_recordset(['rounding'])
-                        self.env['uom.uom'].flush_model(['rounding'])
+                    self._ensure_positive_uom_rounding(
+                        move.product_uom,
+                        _('质检组件移动：%s') % move.display_name
+                    )
         
         # 如果是组件扫码确认类型的质检，执行验证
         if self.test_type == 'component_scan_verify':
@@ -268,10 +279,7 @@ class QualityCheck(models.Model):
                     move = component_move[0]
                     component_product = self.selected_component_id
                     
-                    # 检查并修复 UOM
-                    if self._ensure_product_uom_consistency(component_product, move.product_uom):
-                        # 重新加载产品记录
-                        component_product = self.env['product.product'].browse(component_product.id)
+                    self._ensure_product_uom_consistency(component_product, move.product_uom)
                     
                     # 确保 component_id 也使用更新后的产品
                     if self.component_id != component_product.id:
@@ -287,10 +295,14 @@ class QualityCheck(models.Model):
                 fresh_component = self.env['product.product'].browse(self.component_id.id)
                 fresh_template = fresh_component.product_tmpl_id
                 
-                # 如果产品模板没有单位，也设置一下
-                if fresh_template and not fresh_template.uom_id and fresh_component.uom_id:
-                    fresh_template.sudo().write({'uom_id': fresh_component.uom_id.id})
-                    fresh_template.invalidate_recordset(['uom_id'])
+                if fresh_template and not fresh_template.uom_id:
+                    self._raise_uom_configuration_error(
+                        _('产品模板缺少主计量单位，无法通过质检。'),
+                        _('产品：%(product)s\n产品模板：%(template)s') % {
+                            'product': fresh_component.display_name,
+                            'template': fresh_template.display_name,
+                        }
+                    )
                 
                 # 确保 self.component_id 使用最新的记录
                 self.component_id = fresh_component
@@ -305,29 +317,19 @@ class QualityCheck(models.Model):
         覆盖父类方法，确保 move_id.product_uom 正确
         """
         if self.production_id and self.component_id and self.move_id:
-            # 如果 move_id.product_uom 是 False，从生产订单移动行获取
             if not self.move_id.product_uom:
-                component_move = self.production_id.move_raw_ids.filtered(
-                    lambda m: m.product_id.id == self.component_id.id
+                self._raise_uom_configuration_error(
+                    _('库存移动缺少计量单位，无法创建额外移动行。'),
+                    _('库存移动：%(move)s\n组件：%(component)s') % {
+                        'move': self.move_id.display_name,
+                        'component': self.component_id.display_name,
+                    }
                 )
-                if component_move and component_move[0].product_uom:
-                    move = component_move[0]
-                    self.move_id.sudo().write({'product_uom': move.product_uom.id})
-                    self.move_id.invalidate_recordset(['product_uom'])
-                    self.env['stock.move'].flush_model(['product_uom'])
-                    self.move_id = self.env['stock.move'].browse(self.move_id.id)
-                    _logger.warning(
-                        _("[创建额外移动行] 修复 move_id %s 的 product_uom: None -> %s"),
-                        self.move_id.name, move.product_uom.name
-                    )
             
-            # 确保 move.product_uom 的 rounding 有效
-            if self.move_id.product_uom:
-                move_uom = self.move_id.product_uom
-                if not move_uom.rounding or move_uom.rounding <= 0:
-                    move_uom.sudo().write({'rounding': 0.01})
-                    move_uom.invalidate_recordset(['rounding'])
-                    self.env['uom.uom'].flush_model(['rounding'])
+            self._ensure_positive_uom_rounding(
+                self.move_id.product_uom,
+                _('额外移动行：%s') % self.move_id.display_name
+            )
         
         return super(QualityCheck, self)._create_extra_move_lines()
     
@@ -544,34 +546,15 @@ class QualityCheck(models.Model):
             self.id, selected_product.name, scanned_product.name, production.name
         )
         
-        # 验证成功后，自动通过质检并结束作业
         # 确保 component_id 字段被设置（register_consumed_materials 需要）
         if not self.component_id:
             self.component_id = selected_product.id
-        
-        # 自动调用 do_pass() 通过质检
-        try:
-            self.do_pass()
-            _logger.info(
-                _("[组件扫码确认] 自动通过质检: 质检ID=%s, 组件=%s"),
-                self.id, selected_product.name
-            )
-            return {
-                'success': True, 
-                'message': self.component_verification_message,
-                'auto_passed': True  # 标记已自动通过
-            }
-        except Exception as e:
-            _logger.error(
-                _("[组件扫码确认] 自动通过质检失败: 质检ID=%s, 错误=%s"),
-                self.id, str(e)
-            )
-            # 即使自动通过失败，也返回验证成功，让用户可以手动点击验证按钮
-            return {
-                'success': True, 
-                'message': self.component_verification_message + '\n' + _('请手动点击验证按钮完成质检。'),
-                'auto_passed': False
-            }
+
+        return {
+            'success': True,
+            'message': self.component_verification_message,
+            'auto_passed': False,
+        }
     
     def action_scan_component(self):
         """
@@ -590,33 +573,21 @@ class QualityCheck(models.Model):
         """
         更新组件数量
         
-        修复：当产品的 UOM rounding 为 0 时，使用默认精度值 0.01
-        避免 AssertionError: precision_rounding must be positive, got 0.0
+        当产品或移动的计量单位配置异常时阻断，不在质检流程中自动修改主数据。
         """
         self.ensure_one()
         
-        default_rounding = 0.01
-        
-        # 修复 move_id.product_uom 的 rounding（如果存在且为 0）
         if hasattr(self, 'move_id') and self.move_id and self.move_id.product_uom:
-            move_uom = self.move_id.product_uom
-            if not move_uom.rounding or move_uom.rounding <= 0:
-                move_uom.sudo().write({'rounding': default_rounding})
-                move_uom.invalidate_recordset(['rounding'])
-                self.env['uom.uom'].flush_model(['rounding'])
-                self.invalidate_recordset(['move_id'])
-                self.move_id = self.env['stock.move'].browse(self.move_id.id)
-                _logger.warning(
-                    _("[组件数量更新] 修复 move_id.product_uom %s rounding 为 %s"),
-                    move_uom.name, default_rounding
-                )
+            self._ensure_positive_uom_rounding(
+                self.move_id.product_uom,
+                _('质检库存移动：%s') % self.move_id.display_name
+            )
         
-        # 修复组件产品的 UOM rounding（如果存在且为 0）
         if self.component_id and self.component_id.uom_id:
-            if not self.component_id.uom_id.rounding or self.component_id.uom_id.rounding <= 0:
-                self.component_id.uom_id.sudo().write({'rounding': default_rounding})
-                self.component_id.uom_id.invalidate_recordset(['rounding'])
-                self.env['uom.uom'].flush_model(['rounding'])
+            self._ensure_positive_uom_rounding(
+                self.component_id.uom_id,
+                _('组件产品：%s') % self.component_id.display_name
+            )
         
         # 如果 move_id 不存在，尝试从生产订单移动行获取
         if not hasattr(self, 'move_id') or not self.move_id:
@@ -635,44 +606,23 @@ class QualityCheck(models.Model):
         # 重新加载 move，确保获取最新值
         move = self.env['stock.move'].browse(self.move_id.id)
         
-        # 确保 move.product_uom 存在且 rounding 正确
         if not move.product_uom:
-            # 如果 move 没有 product_uom，从生产订单移动行获取
-            if self.production_id and self.component_id:
-                component_move = self.production_id.move_raw_ids.filtered(
-                    lambda m: m.product_id.id == self.component_id.id
-                )
-                if component_move and component_move[0].product_uom:
-                    move.sudo().write({'product_uom': component_move[0].product_uom.id})
-                    move.invalidate_recordset(['product_uom'])
-                    self.env['stock.move'].flush_model(['product_uom'])
-                    move = self.env['stock.move'].browse(move.id)
-                    _logger.warning(
-                        _("[组件数量更新] 为 move %s 设置 product_uom=%s"),
-                        move.name, component_move[0].product_uom.name
-                    )
-        
-        # 如果仍然没有 product_uom，调用父类方法
-        if not move.product_uom:
-            return super(QualityCheck, self)._update_component_quantity()
-        
-        # 确保 product_uom 的 rounding 正确
-        move_uom = move.product_uom
-        if not move_uom.rounding or move_uom.rounding <= 0:
-            move_uom.sudo().write({'rounding': default_rounding})
-            move_uom.invalidate_recordset(['rounding'])
-            self.env['uom.uom'].flush_model(['rounding'])
-            move = self.env['stock.move'].browse(move.id)
-            move_uom = move.product_uom
-            _logger.warning(
-                _("[组件数量更新] 修复 move %s 的 UOM %s rounding 为 %s"),
-                move.name, move_uom.name, default_rounding
+            self._raise_uom_configuration_error(
+                _('库存移动缺少计量单位，无法更新组件数量。'),
+                _('库存移动：%(move)s\n组件：%(component)s') % {
+                    'move': move.display_name,
+                    'component': self.component_id.display_name if self.component_id else '-',
+                }
             )
         
+        move_uom = move.product_uom
+        self._ensure_positive_uom_rounding(
+            move_uom,
+            _('组件数量更新：%s') % move.display_name
+        )
+        
         # 确保 rounding 有效
-        rounding = move_uom.rounding or default_rounding
-        if rounding <= 0:
-            rounding = default_rounding
+        rounding = move_uom.rounding
         
         # 在调用父类方法之前，确保 self.move_id 使用最新的 move
         self.move_id = move
@@ -680,7 +630,7 @@ class QualityCheck(models.Model):
         self.env['stock.move'].flush_model(['product_uom'])
         self.env['uom.uom'].flush_model(['rounding'])
         
-        # 如果是序列号组件，使用父类方法（但已经修复了 rounding）
+        # 如果是序列号组件，使用父类方法
         if self.component_tracking == 'serial':
             return super(QualityCheck, self)._update_component_quantity()
         
@@ -711,3 +661,34 @@ class QualityCheck(models.Model):
         self.qty_done = qty_todo
         
         return True
+
+
+class MrpProductionWorkcenterLine(models.Model):
+    _inherit = 'mrp.workorder'
+
+    def _sync_matched_component_scan_checks(self):
+        """Pass component scan checks that were verified but not persisted as done."""
+        matched_checks = self.mapped('check_ids').filtered(
+            lambda check: check.quality_state == 'none'
+            and check.test_type_id.technical_name == 'component_scan_verify'
+            and check.component_verification_result == 'matched'
+        )
+        for check in matched_checks:
+            _logger.info(
+                _("[组件扫码确认] 同步已匹配质检为通过: 质检ID=%s, 工单=%s"),
+                check.id,
+                check.workorder_id.name,
+            )
+            check.do_pass()
+
+    def verify_quality_checks(self):
+        self._sync_matched_component_scan_checks()
+        return super().verify_quality_checks()
+
+    def pre_record_production(self):
+        self._sync_matched_component_scan_checks()
+        return super().pre_record_production()
+
+    def get_summary_data(self):
+        self._sync_matched_component_scan_checks()
+        return super().get_summary_data()

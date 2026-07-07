@@ -135,7 +135,199 @@ class StockMoveLine(models.Model):
             else:
                 record.lot_weight_label = 'kg'
 
-    @api.depends('product_id', 'qty_done', 'quantity', 'product_id.product_tmpl_id.weight_per_sqm',
+    @api.model
+    def _get_product_for_lot_unit_defaults(self, vals):
+        """从库存移动行 vals 中获取产品，用于服务端默认附加单位。"""
+        product_id = vals.get('product_id')
+        if product_id:
+            product = self.env['product.product'].browse(product_id).exists()
+            if product:
+                return product
+
+        move_id = vals.get('move_id')
+        if move_id:
+            move = self.env['stock.move'].browse(move_id).exists()
+            if move and move.product_id:
+                return move.product_id
+
+        return self.env['product.product']
+
+    @api.model
+    def _get_default_lot_unit_values(self, product):
+        """获取产品默认附加单位值，只用于填充空的库存移动行字段。"""
+        if not product or not product.exists():
+            return {}
+
+        product_tmpl = product.product_tmpl_id
+        if not getattr(product_tmpl, 'enable_custom_units', False):
+            return {}
+
+        unit_name = False
+        custom_unit_name = False
+
+        if getattr(product_tmpl, 'default_unit_config', False):
+            unit_name = product_tmpl.default_unit_config
+            if unit_name == 'custom':
+                custom_unit_name = getattr(product_tmpl, 'quick_unit_name', False)
+        elif getattr(product_tmpl, 'custom_unit_name', False):
+            unit_name = product_tmpl.custom_unit_name
+            if unit_name == 'custom':
+                custom_unit_name = getattr(product_tmpl, 'custom_unit_name_text', False)
+
+        defaults = {}
+        if unit_name:
+            defaults['lot_unit_name'] = unit_name
+            if unit_name == 'custom' and custom_unit_name:
+                defaults['lot_unit_name_custom'] = custom_unit_name
+
+        configured_quantity = False
+        for field_name in ('quick_unit_value', 'custom_unit_value'):
+            if getattr(product_tmpl, field_name, False):
+                try:
+                    configured_quantity = float(getattr(product_tmpl, field_name))
+                    break
+                except (TypeError, ValueError):
+                    continue
+
+        if configured_quantity:
+            defaults['lot_quantity'] = configured_quantity
+        elif self._should_default_lot_quantity_to_one(unit_name, custom_unit_name):
+            defaults['lot_quantity'] = 1.0
+
+        return defaults
+
+    @api.model
+    def _should_default_lot_quantity_to_one(self, unit_name, custom_unit_name=False):
+        """Only package-like extra units should default to one."""
+        return utils.should_default_quantity_to_one(unit_name, custom_unit_name)
+
+    def _is_barcode_scan_context(self):
+        context_text = str(self.env.context).lower()
+        return (
+            self.env.context.get('barcode_view')
+            or self.env.context.get('from_barcode')
+            or 'barcode' in context_text
+            or self.env.context.get('list_view_ref') == 'stock.view_stock_move_line_operation_tree'
+            or self.env.context.get('form_view_ref') == 'stock.view_move_line_mobile_form'
+        )
+
+    def _should_preserve_barcode_quantity(self, record, incoming_quantity):
+        """Keep real lot quantities when barcode sends a scan marker of 1."""
+        from odoo.tools import float_compare
+
+        if not self._is_barcode_scan_context():
+            return False
+        if not record.product_id or record.product_id.tracking == 'serial':
+            return False
+        if incoming_quantity in (False, None):
+            return False
+
+        current_quantity = record.quantity or 0.0
+        precision = (
+            (record.product_uom_id and record.product_uom_id.rounding)
+            or (record.product_id.uom_id and record.product_id.uom_id.rounding)
+            or 0.01
+        )
+        return (
+            current_quantity > 0
+            and float_compare(float(incoming_quantity), 1.0, precision_rounding=precision) == 0
+            and float_compare(current_quantity, float(incoming_quantity), precision_rounding=precision) > 0
+        )
+
+    @api.model
+    def _done_quantity_field_name(self):
+        """Return the stock move line done quantity field for the running Odoo version."""
+        if 'quantity' in self._fields:
+            return 'quantity'
+        if 'qty_done' in self._fields:
+            return 'qty_done'
+        return False
+
+    @api.model
+    def _normalize_done_quantity_vals(self, vals):
+        """Translate legacy qty_done payloads before ORM validation on Odoo 18."""
+        if not isinstance(vals, dict) or 'qty_done' not in vals or 'qty_done' in self._fields:
+            return vals
+        vals = dict(vals)
+        qty_done = vals.pop('qty_done')
+        vals.setdefault('quantity', qty_done)
+        return vals
+
+    def _get_done_quantity_value(self):
+        """Return the completed quantity using quantity on Odoo 18, qty_done on older versions."""
+        self.ensure_one()
+        field_name = self._done_quantity_field_name()
+        if not field_name:
+            return 0.0
+        return self[field_name] or 0.0
+
+    @api.model
+    def _get_purchase_line_lot_unit_values(self, vals):
+        """获取采购订单行上的附加单位值，优先级高于产品默认值。"""
+        move_id = vals.get('move_id')
+        if not move_id:
+            return {}
+
+        move = self.env['stock.move'].browse(move_id).exists()
+        if not move or not move.purchase_line_id:
+            return {}
+
+        purchase_line = move.purchase_line_id
+        defaults = {}
+        if getattr(purchase_line, 'lot_unit_name', False):
+            defaults['lot_unit_name'] = purchase_line.lot_unit_name
+            if (
+                purchase_line.lot_unit_name == 'custom'
+                and getattr(purchase_line, 'lot_unit_name_custom', False)
+            ):
+                defaults['lot_unit_name_custom'] = purchase_line.lot_unit_name_custom
+
+        if getattr(purchase_line, 'lot_quantity', False) and purchase_line.lot_quantity > 0:
+            defaults['lot_quantity'] = purchase_line.lot_quantity
+
+        return defaults
+
+    @api.model
+    def _apply_default_lot_unit_values(self, vals_list):
+        """在 create 前补齐附加单位默认值，不覆盖传入的人工值。"""
+        for vals in vals_list:
+            product = self._get_product_for_lot_unit_defaults(vals)
+            purchase_defaults = self._get_purchase_line_lot_unit_values(vals)
+            product_defaults = self._get_default_lot_unit_values(product)
+            if not purchase_defaults and not product_defaults:
+                continue
+
+            if not vals.get('lot_unit_name'):
+                default_unit_name = (
+                    purchase_defaults.get('lot_unit_name')
+                    or product_defaults.get('lot_unit_name')
+                )
+                if default_unit_name:
+                    vals['lot_unit_name'] = default_unit_name
+
+            unit_name = vals.get('lot_unit_name')
+            if (
+                unit_name == 'custom'
+                and not vals.get('lot_unit_name_custom')
+            ):
+                custom_unit_name = (
+                    purchase_defaults.get('lot_unit_name_custom')
+                    or product_defaults.get('lot_unit_name_custom')
+                )
+                if custom_unit_name:
+                    vals['lot_unit_name_custom'] = custom_unit_name
+
+            if not vals.get('lot_quantity'):
+                default_lot_quantity = (
+                    purchase_defaults.get('lot_quantity')
+                    or product_defaults.get('lot_quantity')
+                )
+                if default_lot_quantity:
+                    vals['lot_quantity'] = default_lot_quantity
+
+        return vals_list
+
+    @api.depends('product_id', 'quantity', 'product_id.product_tmpl_id.weight_per_sqm',
                  'product_id.product_tmpl_id.product_width', 'product_uom_id')
     def _compute_delivery_weight(self):
         """计算发货重量：根据产品发货重量系数和面积计算
@@ -162,8 +354,7 @@ class StockMoveLine(models.Model):
             
             weight_per_sqm = product_tmpl.weight_per_sqm
             
-            # 获取数量（优先使用 qty_done，如果没有则使用 quantity）
-            qty = record.qty_done if record.qty_done > 0 else (record.quantity or 0.0)
+            qty = record._get_done_quantity_value()
             if qty <= 0:
                 record.delivery_weight = 0.0
                 continue
@@ -216,35 +407,17 @@ class StockMoveLine(models.Model):
         result = super()._onchange_product_id() if hasattr(super(), '_onchange_product_id') else {}
         
         if self.product_id:
-            product_tmpl = self.product_id.product_tmpl_id
-            # 只在单位信息为空时才自动填充
-            if not self.lot_unit_name:
-                if hasattr(product_tmpl, 'enable_custom_units') and product_tmpl.enable_custom_units:
-                    if hasattr(product_tmpl, 'default_unit_config') and product_tmpl.default_unit_config:
-                        if product_tmpl.default_unit_config == 'custom':
-                            self.lot_unit_name = 'custom'
-                            # 自定义单位名称从产品配置中获取
-                            if hasattr(product_tmpl, 'quick_unit_name') and product_tmpl.quick_unit_name:
-                                self.lot_unit_name_custom = product_tmpl.quick_unit_name
-                        else:
-                            self.lot_unit_name = product_tmpl.default_unit_config
-                    
-                    elif hasattr(product_tmpl, 'custom_unit_name') and product_tmpl.custom_unit_name:
-                        if product_tmpl.custom_unit_name == 'custom':
-                            self.lot_unit_name = 'custom'
-                            self.lot_unit_name_custom = product_tmpl.custom_unit_name_text or ''
-                        else:
-                            self.lot_unit_name = product_tmpl.custom_unit_name
-            
-            # 只在单位数量为空时才自动填充
-            if not self.lot_quantity:
-                if hasattr(product_tmpl, 'enable_custom_units') and product_tmpl.enable_custom_units:
-                    if hasattr(product_tmpl, 'default_unit_config') and product_tmpl.default_unit_config:
-                        self.lot_quantity = 1
-                    elif hasattr(product_tmpl, 'custom_unit_value') and product_tmpl.custom_unit_value:
-                        self.lot_quantity = int(product_tmpl.custom_unit_value)
-                    else:
-                        self.lot_quantity = 1
+            defaults = self._get_default_lot_unit_values(self.product_id)
+            if not self.lot_unit_name and defaults.get('lot_unit_name'):
+                self.lot_unit_name = defaults['lot_unit_name']
+            if (
+                self.lot_unit_name == 'custom'
+                and not self.lot_unit_name_custom
+                and defaults.get('lot_unit_name_custom')
+            ):
+                self.lot_unit_name_custom = defaults['lot_unit_name_custom']
+            if not self.lot_quantity and defaults.get('lot_quantity'):
+                self.lot_quantity = defaults['lot_quantity']
         
         return result
 
@@ -648,20 +821,17 @@ class StockMoveLine(models.Model):
                 }
             # 其他错误不阻止用户操作，只记录日志
         
-        # 只在单位名称为空时才自动填充
-        if not self.lot_unit_name:
-            if hasattr(self.product_id.product_tmpl_id, 'custom_unit_name') and self.product_id.product_tmpl_id.custom_unit_name:
-                if self.product_id.product_tmpl_id.custom_unit_name == 'custom':
-                    self.lot_unit_name = self.product_id.product_tmpl_id.custom_unit_name_text or ''
-                else:
-                    self.lot_unit_name = self.product_id.product_tmpl_id.custom_unit_name
-        
-        # 只在单位数量为空时才自动填充
-        if not self.lot_quantity:
-            if hasattr(self.product_id.product_tmpl_id, 'custom_unit_value') and self.product_id.product_tmpl_id.custom_unit_value:
-                self.lot_quantity = int(self.product_id.product_tmpl_id.custom_unit_value)
-            else:
-                self.lot_quantity = 1
+        defaults = self._get_default_lot_unit_values(self.product_id)
+        if not self.lot_unit_name and defaults.get('lot_unit_name'):
+            self.lot_unit_name = defaults['lot_unit_name']
+        if (
+            self.lot_unit_name == 'custom'
+            and not self.lot_unit_name_custom
+            and defaults.get('lot_unit_name_custom')
+        ):
+            self.lot_unit_name_custom = defaults['lot_unit_name_custom']
+        if not self.lot_quantity and defaults.get('lot_quantity'):
+            self.lot_quantity = defaults['lot_quantity']
         
         return {}
     
@@ -669,19 +839,15 @@ class StockMoveLine(models.Model):
     def _onchange_quantity(self):
         """重写数量变更方法
         
-        **关键修改**：当启用增强条码验证时，按照序列号的方式处理批次号
-        - 如果启用增强条码验证，且有批次号（lot_name），必须 quantity = 1.0（完全按照序列号逻辑）
-        - 如果 quantity 不是 1.0，抛出错误（和序列号一样）
-        - 序列号产品：如果配置了自定义单位，允许部分数量
-        - 批次号产品（启用增强验证）：每个批次号对应 1.0 单位，不允许部分数量，必须抛出错误
+        增强条码验证只验证批次是否被扫过，不覆盖批次产品的实际数量。
+        序列号产品仍沿用 Odoo 标准数量校验；配置了自定义单位的序列号产品允许部分数量。
         """
         import logging
         from odoo.tools.float_utils import float_compare, float_is_zero
         from odoo.exceptions import UserError
         _logger = logging.getLogger(__name__)
         
-        # **关键修改**：检查是否启用了增强条码验证
-        # 只有当启用增强条码验证时，才按照序列号的方式处理批次号
+        # 检查是否启用了增强条码验证。批次产品只记录日志，不再按序列号强制数量。
         enable_enhanced_validation = False
         if self.lot_name and self.lot_name.strip() and self.move_id and self.move_id.picking_id:
             try:
@@ -696,29 +862,13 @@ class StockMoveLine(models.Model):
             except Exception as e:
                 _logger.warning(f"[批次号数量验证] 检查作业类型配置时出错: {str(e)}")
         
-        # **关键修改**：如果启用增强条码验证，且有批次号，按照序列号的方式处理
-        # **重要**：只对非序列号产品应用此逻辑，序列号产品保持原有逻辑
-        # 完全按照 Odoo 标准序列号的逻辑：quantity 必须是 1.0，否则抛出错误
-        if (enable_enhanced_validation and self.lot_name and self.lot_name.strip() and 
-            self.quantity and self.product_uom_id and 
-            self.product_id and self.product_id.tracking != 'serial'):
-            # 批次号按照序列号的方式处理，每个批次号对应 1.0 单位
-            # 但只对非序列号产品应用此逻辑
-            precision = self.product_uom_id.rounding or 0.01
-            quantity_uom = self.quantity_product_uom if hasattr(self, 'quantity_product_uom') else self.quantity
-            
-            # **关键修改**：完全按照序列号的逻辑，检查 quantity 是否为 1.0
-            # 如果 quantity 不是 1.0，抛出错误（而不是自动设置）
-            if float_compare(quantity_uom, 1.0, precision_rounding=precision) != 0 and not float_is_zero(quantity_uom, precision_rounding=precision):
-                # 数量不是 1.0，抛出错误（和序列号一样）
-                product_uom_name = self.product_id.uom_id.name if self.product_id and self.product_id.uom_id else '单位'
-                _logger.warning(
-                    f"[批次号数量验证] 批次号产品数量必须是 1.0: "
-                    f"批次号={self.lot_name}, 当前数量={quantity_uom}, "
-                    f"产品={self.product_id.name if self.product_id else None}, "
-                    f"追踪类型={self.product_id.tracking if self.product_id else 'N/A'}"
-                )
-                raise UserError(_('您只能处理 1.0 %s 具有批次号的产品（启用增强条码验证时，批次号按照序列号方式处理）。') % product_uom_name)
+        if (enable_enhanced_validation and self.lot_name and self.lot_name.strip()
+            and self.quantity and self.product_id
+            and self.product_id.tracking != 'serial'):
+            _logger.info(
+                f"[批次号数量验证] 批次产品保留实际数量: 批次号={self.lot_name}, "
+                f"数量={self.quantity}, 产品={self.product_id.name}"
+            )
         
         # 如果没有启用增强验证，或者没有批次号，继续处理序列号产品的逻辑
         
@@ -799,15 +949,17 @@ class StockMoveLine(models.Model):
         3. 检查当前批次创建调用中的重复（同一个 create 调用中不能有重复的批次号）
         4. 检查与已保存记录的重复（不能重复扫描已保存的批次号）
         5. 这样可以确保扫码时不能创建不在预填列表中的新记录，也不能重复扫码
-        6. **关键修改**：如果记录有批次号，强制设置 quantity = 1.0（按照序列号方式）
+        6. 增强条码验证只验证批次号，不覆盖批次产品的实际数量。
         """
         import logging
         import traceback
         from odoo.tools import float_compare
         _logger = logging.getLogger(__name__)
+
+        vals_list = [self._normalize_done_quantity_vals(vals) for vals in vals_list]
+        self._apply_default_lot_unit_values(vals_list)
         
-        # **关键修改**：在创建之前，检查是否启用了增强条码验证
-        # 如果启用，且有批次号，强制设置 quantity = 1.0（按照序列号方式）
+        # 创建前检查是否启用了增强条码验证。批次产品保留传入数量。
         for vals in vals_list:
             lot_name = vals.get('lot_name')
             if lot_name and lot_name.strip():
@@ -830,12 +982,7 @@ class StockMoveLine(models.Model):
                     except Exception as e:
                         _logger.warning(f"[批次号创建] 检查作业类型配置时出错: {str(e)}")
                 
-                # **关键修改**：只有当启用增强条码验证时，才强制设置 quantity = 1.0
-                # **重要**：只对非序列号产品应用此逻辑，序列号产品保持原有逻辑
-                # 完全按照序列号的方式：每个批次号对应 1.0 单位
                 if enable_enhanced_validation:
-                    # 检查产品不是序列号追踪（tracking != 'serial'）
-                    # 序列号产品应该保持原有的 Odoo 标准逻辑
                     product_tracking = None
                     product_id = vals.get('product_id')
                     if product_id:
@@ -855,33 +1002,11 @@ class StockMoveLine(models.Model):
                         except Exception as e:
                             _logger.warning(f"[批次号创建] 从移动获取产品追踪类型时出错: {str(e)}")
                     
-                    # **关键修复**：只对非序列号产品应用增强验证逻辑
-                    # 序列号产品（tracking == 'serial'）保持原有逻辑
                     if product_tracking != 'serial':
-                        # 如果 quantity 存在且不是 1.0，强制设置为 1.0
-                        if 'quantity' in vals:
-                            original_quantity = vals.get('quantity', 0.0)
-                            if original_quantity and float_compare(original_quantity, 1.0, precision_rounding=0.01) != 0:
-                                _logger.info(
-                                    f"[批次号创建] 强制设置 quantity = 1.0（启用增强验证，按照序列号方式）: 批次号={lot_name}, "
-                                    f"原数量={original_quantity}, 移动ID={move_id}, 追踪类型={product_tracking}"
-                                )
-                                vals['quantity'] = 1.0
-                        elif 'quantity' not in vals:
-                            # 如果 quantity 不存在，设置默认值为 1.0（按照序列号方式）
-                            _logger.info(
-                                f"[批次号创建] 设置默认 quantity = 1.0（启用增强验证，按照序列号方式）: 批次号={lot_name}, "
-                                f"移动ID={move_id}, 追踪类型={product_tracking}"
-                            )
-                            vals['quantity'] = 1.0
-                        # **关键修改**：如果没有 quantity，但需要 quantity，按照序列号的方式自动设置
-                        # 序列号产品在创建时，如果没有 quantity，会自动设置为 1
-                        if not vals.get('quantity'):
-                            vals['quantity'] = 1.0
-                            _logger.info(
-                                f"[批次号创建] 自动设置 quantity = 1.0（启用增强验证，按照序列号方式）: 批次号={lot_name}, "
-                                f"移动ID={move_id}, 追踪类型={product_tracking}"
-                            )
+                        _logger.info(
+                            f"[批次号创建] 批次产品保留原始数量: 批次号={lot_name}, "
+                            f"移动ID={move_id}, 追踪类型={product_tracking}, quantity={vals.get('quantity')}"
+                        )
                     else:
                         _logger.info(
                             f"[批次号创建] 跳过增强验证（序列号产品保持原有逻辑）: 批次号={lot_name}, "
@@ -1308,15 +1433,15 @@ class StockMoveLine(models.Model):
         """重写 write 方法，在更新记录时验证批次号
         扫码模块可能会先创建空记录，然后通过 write 方法更新批次号
         所以需要在 write 方法中也添加验证逻辑
-        6. **关键修改**：如果记录有批次号，强制设置 quantity = 1.0（按照序列号方式）
+        6. 增强条码验证只验证批次号，不覆盖批次产品的实际数量。
         """
         import logging
         import traceback
         from odoo.tools import float_compare
         _logger = logging.getLogger(__name__)
+        vals = self._normalize_done_quantity_vals(vals)
         
-        # **关键修改**：在更新之前，检查是否启用了增强条码验证
-        # 如果启用，且有批次号，强制设置 quantity = 1.0（按照序列号方式）
+        # 更新前检查是否启用了增强条码验证。批次产品保留实际数量。
         enable_enhanced_validation = False
         
         # 检查是否启用了增强条码验证
@@ -1335,60 +1460,31 @@ class StockMoveLine(models.Model):
                 except Exception as e:
                     _logger.warning(f"[批次号更新] 检查作业类型配置时出错: {str(e)}")
         
-        # **关键修改**：只有当启用增强条码验证时，才强制设置 quantity = 1.0
-        # **重要**：只对非序列号产品应用此逻辑，序列号产品保持原有逻辑
         if enable_enhanced_validation:
-            if 'lot_name' in vals and vals.get('lot_name') and vals.get('lot_name').strip():
-                # 如果更新了批次号，强制设置 quantity = 1.0
-                lot_name = vals.get('lot_name').strip()
-                # 检查产品不是序列号追踪（tracking != 'serial'）
-                # 序列号产品应该保持原有的 Odoo 标准逻辑
-                product_tracking = None
-                for record in self:
-                    if record.product_id:
-                        product_tracking = record.product_id.tracking
-                        break
-                
-                # **关键修复**：只对非序列号产品应用增强验证逻辑
-                if product_tracking != 'serial':
-                    if 'quantity' in vals:
-                        original_quantity = vals.get('quantity', 0.0)
-                        if original_quantity and float_compare(original_quantity, 1.0, precision_rounding=0.01) != 0:
-                            _logger.info(
-                                f"[批次号更新] 强制设置 quantity = 1.0（启用增强验证，按照序列号方式）: 批次号={lot_name}, "
-                                f"原数量={original_quantity}, 记录ID={[r.id for r in self]}, 追踪类型={product_tracking}"
-                            )
-                            vals['quantity'] = 1.0
-                    elif 'quantity' not in vals:
-                        # 如果 quantity 不在更新列表中，也需要设置为 1.0
-                        # 但需要检查现有记录是否有批次号
-                        for record in self:
-                            if record.lot_name and record.lot_name.strip():
-                                _logger.info(
-                                    f"[批次号更新] 设置 quantity = 1.0（启用增强验证，按照序列号方式）: 批次号={lot_name}, "
-                                    f"记录ID={record.id}, 当前 quantity={record.quantity}, 追踪类型={product_tracking}"
-                                )
-                                vals['quantity'] = 1.0
-                                break
-                else:
-                    _logger.info(
-                        f"[批次号更新] 跳过增强验证（序列号产品保持原有逻辑）: 批次号={lot_name}, "
-                        f"记录ID={[r.id for r in self]}, 追踪类型={product_tracking}"
+            for record in self:
+                lot_name = vals.get('lot_name') or record.lot_name
+                if not lot_name or not str(lot_name).strip():
+                    continue
+                if not record.product_id or record.product_id.tracking == 'serial':
+                    _logger.debug(
+                        f"[批次号更新] 序列号产品保持原有逻辑: 记录ID={record.id}, 批次号={lot_name}"
                     )
-            elif 'quantity' in vals:
-                # 如果只更新 quantity，检查记录是否有批次号
-                for record in self:
-                    if record.lot_name and record.lot_name.strip() and record.product_id and record.product_id.tracking != 'serial':
-                        # **关键修复**：只对非序列号产品应用增强验证逻辑
-                        lot_name = record.lot_name.strip()
-                        original_quantity = vals.get('quantity', 0.0)
-                        if original_quantity and float_compare(original_quantity, 1.0, precision_rounding=0.01) != 0:
-                            _logger.info(
-                                f"[批次号更新] 强制设置 quantity = 1.0（启用增强验证，按照序列号方式）: 批次号={lot_name}, "
-                                f"原数量={original_quantity}, 记录ID={record.id}, 追踪类型={record.product_id.tracking}"
-                            )
-                            vals['quantity'] = 1.0
-                            break
+                    continue
+                if 'quantity' in vals and record._should_preserve_barcode_quantity(record, vals.get('quantity')):
+                    _logger.info(
+                        f"[批次号更新] 扫码只做批次验证，保留原数量: 记录ID={record.id}, "
+                        f"批次号={lot_name}, 原quantity={record.quantity}, 扫码quantity={vals.get('quantity')}"
+                    )
+                    vals = dict(vals)
+                    vals['quantity'] = record.quantity
+                if 'qty_done' in vals and record._should_preserve_barcode_quantity(record, vals.get('qty_done')):
+                    _logger.info(
+                        f"[批次号更新] 扫码只做批次验证，保留原完成数量: 记录ID={record.id}, "
+                        f"批次号={lot_name}, 原quantity={record.quantity}, 扫码qty_done={vals.get('qty_done')}"
+                    )
+                    vals = dict(vals)
+                    vals['qty_done'] = record.quantity
+                break
         
         # **关键修复**：获取调用栈信息，以便区分扫码和手动编辑
         caller_info = traceback.extract_stack()[-4:-1] if len(traceback.extract_stack()) > 4 else []
@@ -2089,8 +2185,7 @@ class StockMoveLine(models.Model):
         # 调用父类的 write 方法
         result = super(StockMoveLine, self).write(vals)
         
-        # **关键修复**：在调用父类 write 之后，如果启用增强条码验证，且有批次号，强制设置 quantity = 1.0
-        # 因为 Odoo 的标准逻辑可能会根据 qty_done 自动更新 quantity，我们需要再次强制设置
+        # 调用父类 write 后只记录增强验证状态，不再把批次产品修正为 1。
         from odoo.tools import float_compare
         if not self.env.context.get('skip_quantity_fix'):
             # 检查是否启用了增强条码验证
@@ -2105,39 +2200,17 @@ class StockMoveLine(models.Model):
                     except Exception:
                         pass
             
-            # **关键修改**：只有当启用增强条码验证时，才强制设置 quantity = 1.0
-            # **重要**：只对非序列号产品应用此逻辑，序列号产品保持原有逻辑
             if enable_enhanced_validation:
                 for record in self:
-                    # **关键修复**：只对非序列号产品应用增强验证逻辑
-                    if (record.lot_name and record.lot_name.strip() and 
-                        record.product_id and record.product_id.tracking != 'serial'):
-                        lot_name = record.lot_name.strip()
-                        # 重新读取记录，获取最新的 quantity 值
-                        record.invalidate_recordset(['quantity'])
-                        current_quantity = record.quantity or 0.0
-                        # 检查 quantity 是否为 1.0（允许小的浮点误差）
-                        if current_quantity and float_compare(current_quantity, 1.0, precision_rounding=0.01) != 0:
-                            _logger.info(
-                                f"[批次号更新后修复] 强制设置 quantity = 1.0（启用增强验证）: 批次号={lot_name}, "
-                                f"当前 quantity={current_quantity}, 记录ID={record.id}, 追踪类型={record.product_id.tracking}"
-                            )
-                            # 使用 write 方法更新，但使用 context 避免递归调用
-                            try:
-                                record.with_context(skip_quantity_fix=True).write({'quantity': 1.0})
-                                # 清除缓存，使更改立即生效
-                                record.invalidate_recordset(['quantity'])
-                                _logger.info(
-                                    f"[批次号更新后修复] 更新成功: 批次号={lot_name}, 记录ID={record.id}"
-                                )
-                            except Exception as e:
-                                _logger.error(
-                                    f"[批次号更新后修复] 更新失败: 批次号={lot_name}, 记录ID={record.id}, 错误={str(e)}"
-                                )
-                    elif record.product_id and record.product_id.tracking == 'serial':
+                    if record.product_id and record.product_id.tracking == 'serial':
                         _logger.debug(
                             f"[批次号更新后修复] 跳过增强验证（序列号产品保持原有逻辑）: "
                             f"记录ID={record.id}, 追踪类型={record.product_id.tracking}"
+                        )
+                    elif record.lot_name and record.lot_name.strip():
+                        _logger.debug(
+                            f"[批次号更新后修复] 批次产品不再强制 quantity=1: "
+                            f"记录ID={record.id}, 批次号={record.lot_name}, quantity={record.quantity}"
                         )
         
         # 记录更新完成

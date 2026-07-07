@@ -53,4 +53,36 @@
             <!-- <xpath expr="//header//a[@class='btn-close']" position="replace"/> -->
         </field>
     </record>
+
+    <record id="mrp_production_return_backorder_view_form" model="ir.ui.view">
+        <field name="name">mrp.production.return.backorder.form</field>
+        <field name="model">mrp.production.backorder</field>
+        <field name="inherit_id" ref="mrp.view_mrp_production_backorder_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="attributes">
+                <attribute name="string">确认分卷</attribute>
+            </xpath>
+            <xpath expr="//p" position="replace">
+                <p colspan="2">
+                    本次生产数量小于计划数量。需要继续生产剩余数量时请选择分卷；不再生产剩余数量时请选择不分卷。
+                </p>
+            </xpath>
+            <xpath expr="(//button[@name='action_backorder'])[1]" position="attributes">
+                <attribute name="string">分卷</attribute>
+            </xpath>
+            <xpath expr="(//button[@name='action_backorder'])[2]" position="attributes">
+                <attribute name="string">确认分卷</attribute>
+            </xpath>
+            <xpath expr="//button[@name='action_close_mo']" position="attributes">
+                <attribute name="string">不分卷</attribute>
+            </xpath>
+            <xpath expr="//button[@special='cancel']" position="attributes">
+                <attribute name="string">取消</attribute>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="mrp.action_mrp_production_backorder" model="ir.actions.act_window">
+        <field name="name">本次生产少于计划数量</field>
+    </record>
 </odoo>

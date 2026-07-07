@@ -8,6 +8,7 @@
             <list string="返回历史">
                 <field name="processed_date" string="处理时间"/>
                 <field name="product_id" string="产品"/>
+                <field name="source_move_id" string="源组件移动" optional="hide"/>
                 <field name="quantity" string="数量"/>
                 <field name="return_strategy" string="返回策略"/>
                 <field name="target_location_id" string="目标位置"/>
@@ -29,6 +30,7 @@
                         <group string="基本信息">
                             <field name="production_id" string="制造订单"/>
                             <field name="product_id" string="产品"/>
+                            <field name="source_move_id" string="源组件移动"/>
                             <field name="quantity" string="数量"/>
                             <field name="return_strategy" string="返回策略"/>
                         </group>
@@ -70,4 +72,3 @@
         </field>
     </record>
 </odoo>
-

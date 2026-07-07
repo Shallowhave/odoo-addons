@@ -11,6 +11,13 @@ class ResConfigSettings(models.TransientModel):
         default='XQ',
         help='自动生成批次号的前缀。默认值：XQ'
     )
+
+    mrp_auto_lot_prefix_date_only = fields.Boolean(
+        string='只生成前缀和日期',
+        config_parameter='mrp_auto_lot_generate.prefix_date_only',
+        default=False,
+        help='启用后，自动批次号只生成“前缀+日期”（如：XQ260629），后续内容由业务人员手动补充。'
+    )
     
     mrp_auto_lot_enable_logging = fields.Boolean(
         string='启用详细日志',

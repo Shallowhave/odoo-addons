@@ -13,6 +13,12 @@
                             默认为 'XQ'。格式为：{PREFIX}YYMMDDHHMMAxx[-X]
                         </div>
                     </setting>
+                    <setting id="mrp_auto_lot_prefix_date_only_setting" string="只生成前缀和日期" help="启用后只自动生成前缀和日期，后续由业务人员手动填写">
+                        <field name="mrp_auto_lot_prefix_date_only"/>
+                        <div class="text-muted">
+                            启用后生成格式为：{PREFIX}YYMMDD，例如 XQ260629。该占位批次号和补全后的批次号都不能重复。
+                        </div>
+                    </setting>
                     <setting id="mrp_auto_lot_logging_setting" string="启用详细日志" help="启用批次生成过程的详细日志记录">
                         <field name="mrp_auto_lot_enable_logging"/>
                     </setting>

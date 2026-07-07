@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from odoo import models, fields, api
 from odoo.exceptions import UserError, ValidationError
+from odoo.tools.float_utils import float_compare, float_is_zero
 import logging
 from datetime import datetime
 
@@ -26,6 +27,7 @@ class MrpProductionReturnWizard(models.TransientModel):
     return_strategy = fields.Selection([
         ('before', '返回至生产前'),
         ('after', '返回至生产后'),
+        ('defective', '返回至不良品仓'),
         ('scrap', '报废处理'),
     ], string='返回策略', required=True, default='before')
     
@@ -137,6 +139,32 @@ class MrpProductionReturnWizard(models.TransientModel):
         ], limit=1)
 
     @api.model
+    def _get_unprocessed_remaining_moves(self, production):
+        """Return remaining raw moves that have not been processed by this return flow."""
+        if not production:
+            return self.env['stock.move']
+
+        remaining_moves = production.move_raw_ids.filtered(
+            lambda m: m.state in ('done', 'assigned', 'partially_available') and m.product_uom_qty > m.quantity
+        )
+        if not remaining_moves:
+            return remaining_moves
+
+        processed_history = self.env['mrp.production.return.history'].search([
+            ('production_id', '=', production.id),
+            ('source_move_id', '!=', False),
+            ('state', '=', 'done'),
+        ])
+        processed_source_moves = processed_history.mapped('source_move_id').exists()
+        if processed_source_moves:
+            remaining_moves = remaining_moves.filtered(lambda m: m not in processed_source_moves)
+        return remaining_moves
+
+    def _get_existing_component_move_ids(self):
+        """Return source move IDs already present in this wizard."""
+        return self.component_line_ids.filtered('move_id').mapped('move_id').ids
+
+    @api.model
     def default_get(self, fields_list):
         """设置默认值"""
         res = super().default_get(fields_list)
@@ -146,22 +174,8 @@ class MrpProductionReturnWizard(models.TransientModel):
             production = self.env['mrp.production'].browse(self.env.context['default_production_id'])
             res['production_id'] = production.id
             
-            # 获取剩余组件
-            remaining_moves = production.move_raw_ids.filtered(
-                lambda m: m.state in ('done', 'assigned', 'partially_available') and m.product_uom_qty > m.quantity
-            )
-            
-            # 获取已经处理过的产品（避免重复处理）
-            processed_history = self.env['mrp.production.return.history'].search([
-                ('production_id', '=', production.id)
-            ])
-            processed_products = processed_history.mapped('product_id')
-            
-            # 过滤掉已经处理过的组件
-            if processed_products:
-                remaining_moves = remaining_moves.filtered(
-                    lambda m: m.product_id not in processed_products
-                )
+            # 获取按源移动过滤后的剩余组件，避免同一产品的多批次/多移动互相隐藏。
+            remaining_moves = self._get_unprocessed_remaining_moves(production)
             
             # 自动填充剩余组件行
             _logger.info(f"[剩余组件向导] 开始填充组件行，找到 {len(remaining_moves)} 个剩余组件")
@@ -246,6 +260,99 @@ class MrpProductionReturnWizard(models.TransientModel):
         if self.return_strategy == 'scrap' and not self.return_reason_id:
             raise ValidationError('报废处理必须选择返回原因')
 
+    def _get_quantity_field_name(self):
+        """Return the done quantity field for the installed Odoo version."""
+        move_line_fields = self.env['stock.move.line']._fields
+        return 'qty_done' if 'qty_done' in move_line_fields else 'quantity'
+
+    def _get_source_move_line_quantity(self, move_line):
+        """Return quantity available on a source move line for lot split allocation."""
+        for field_name in ('quantity', 'qty_done'):
+            if field_name in move_line._fields:
+                quantity = move_line[field_name] or 0.0
+                if quantity > 0:
+                    return quantity
+        return 0.0
+
+    def _get_quantity_precision(self, line):
+        return (
+            (line.product_uom_id and line.product_uom_id.rounding)
+            or (line.product_id.uom_id and line.product_id.uom_id.rounding)
+            or 0.0001
+        )
+
+    def _prepare_return_move_line_vals(self, move, line, source_location, dest_location, quantity, source_line=False):
+        move_line_fields = self.env['stock.move.line']._fields
+        quantity_field = self._get_quantity_field_name()
+        vals = {
+            'move_id': move.id,
+            'product_id': line.product_id.id,
+            'product_uom_id': move.product_uom.id,
+            'location_id': source_location.id,
+            'location_dest_id': dest_location.id,
+            quantity_field: quantity,
+        }
+        if source_line:
+            if source_line.lot_id:
+                vals['lot_id'] = source_line.lot_id.id
+            elif 'lot_name' in move_line_fields and source_line.lot_name:
+                vals['lot_name'] = source_line.lot_name
+        return vals
+
+    def _create_return_move_lines_from_source(self, move, line, source_location, dest_location):
+        """Create return move lines by preserving the source component lots."""
+        precision = self._get_quantity_precision(line)
+        quantity_to_return = line.return_qty
+        if float_is_zero(quantity_to_return, precision_rounding=precision):
+            return self.env['stock.move.line']
+
+        source_move_lines = line.move_id.move_line_ids.filtered(
+            lambda ml: ml.lot_id or getattr(ml, 'lot_name', False)
+        ).sorted('id') if line.move_id else self.env['stock.move.line']
+        positive_source_lines = source_move_lines.filtered(
+            lambda ml: self._get_source_move_line_quantity(ml) > 0
+        )
+
+        created_lines = self.env['stock.move.line']
+        remaining_qty = quantity_to_return
+
+        if source_move_lines and not positive_source_lines:
+            if len(source_move_lines) == 1:
+                vals = self._prepare_return_move_line_vals(
+                    move, line, source_location, dest_location, remaining_qty, source_move_lines[0]
+                )
+                return self.env['stock.move.line'].create(vals)
+            raise UserError(
+                '源组件移动存在多个批次，但批次数量不可用，无法安全拆分退库。\n'
+                '请检查制造订单组件移动行的批次数量后再处理。'
+            )
+
+        for source_line in positive_source_lines:
+            if float_is_zero(remaining_qty, precision_rounding=precision):
+                break
+            source_qty = self._get_source_move_line_quantity(source_line)
+            split_qty = min(remaining_qty, source_qty)
+            if float_is_zero(split_qty, precision_rounding=precision):
+                continue
+            vals = self._prepare_return_move_line_vals(
+                move, line, source_location, dest_location, split_qty, source_line
+            )
+            created_lines |= self.env['stock.move.line'].create(vals)
+            remaining_qty -= split_qty
+
+        if float_compare(remaining_qty, 0.0, precision_rounding=precision) > 0:
+            if line.product_id.tracking != 'none' and source_move_lines:
+                raise UserError(
+                    '组件 %s 的退库数量 %.6g 超过源批次可分摊数量，已阻止退库以避免退错批次。'
+                    % (line.product_id.display_name, quantity_to_return)
+                )
+            vals = self._prepare_return_move_line_vals(
+                move, line, source_location, dest_location, remaining_qty
+            )
+            created_lines |= self.env['stock.move.line'].create(vals)
+
+        return created_lines
+
     def action_confirm_return(self):
         """确认返回剩余组件 - 优化版本"""
         self.ensure_one()
@@ -261,6 +368,7 @@ class MrpProductionReturnWizard(models.TransientModel):
                     history_vals = {
                         'production_id': self.production_id.id,
                         'product_id': line.product_id.id,
+                        'source_move_id': line.move_id.id if line.move_id else False,
                         'quantity': line.return_qty,
                         'return_strategy': self.return_strategy,
                         'target_location_id': self.target_location_id.id,
@@ -277,6 +385,7 @@ class MrpProductionReturnWizard(models.TransientModel):
                         self._process_scrap_return(history, line)
                     else:
                         self._process_location_return(history, line)
+                    history.action_done()
             
             # 发送通知
             if self.send_notification:
@@ -367,21 +476,9 @@ class MrpProductionReturnWizard(models.TransientModel):
             picking.action_confirm()
             
             # 创建移动行并设置完成数量
-            move_line_vals = {
-                'move_id': move.id,
-                'product_id': line.product_id.id,
-                'product_uom_id': line.product_id.uom_id.id,
-                'location_id': source_location.id,
-                'location_dest_id': self.target_location_id.id,
-                'qty_done': line.return_qty,
-            }
-            # 如果有批次号，需要处理批次号（通过 move_line_ids 获取）
-            if line.move_id.move_line_ids:
-                # 使用第一个移动行的批次号
-                first_move_line = line.move_id.move_line_ids[0]
-                if first_move_line.lot_id:
-                    move_line_vals['lot_id'] = first_move_line.lot_id.id
-            self.env['stock.move.line'].create(move_line_vals)
+            self._create_return_move_lines_from_source(
+                move, line, source_location, self.target_location_id
+            )
             
             # 完成调拨单
             if picking.state in ('assigned', 'confirmed'):
@@ -453,21 +550,9 @@ class MrpProductionReturnWizard(models.TransientModel):
             picking.action_confirm()
             
             # 创建移动行并设置完成数量
-            move_line_vals = {
-                'move_id': move.id,
-                'product_id': line.product_id.id,
-                'product_uom_id': line.product_id.uom_id.id,
-                'location_id': source_location.id,
-                'location_dest_id': self.scrap_location_id.id,
-                'qty_done': line.return_qty,
-            }
-            # 如果有批次号，需要处理批次号（通过 move_line_ids 获取）
-            if line.move_id.move_line_ids:
-                # 使用第一个移动行的批次号
-                first_move_line = line.move_id.move_line_ids[0]
-                if first_move_line.lot_id:
-                    move_line_vals['lot_id'] = first_move_line.lot_id.id
-            self.env['stock.move.line'].create(move_line_vals)
+            self._create_return_move_lines_from_source(
+                move, line, source_location, self.scrap_location_id
+            )
             
             # 完成调拨单
             if picking.state in ('assigned', 'confirmed'):
@@ -485,29 +570,15 @@ class MrpProductionReturnWizard(models.TransientModel):
         if not self.production_id:
             return []
         
-        # 获取剩余组件
-        remaining_moves = self.production_id.move_raw_ids.filtered(
-            lambda m: m.state in ('done', 'assigned', 'partially_available') and m.product_uom_qty > m.quantity
-        )
-        
-        # 获取已经处理过的产品（避免重复处理）
-        processed_history = self.env['mrp.production.return.history'].search([
-            ('production_id', '=', self.production_id.id)
-        ])
-        processed_products = processed_history.mapped('product_id')
-        
-        # 过滤掉已经处理过的组件
-        if processed_products:
-            remaining_moves = remaining_moves.filtered(
-                lambda m: m.product_id not in processed_products
-            )
+        # 获取未处理的剩余组件移动，按 move_id 区分同产品多批次。
+        remaining_moves = self._get_unprocessed_remaining_moves(self.production_id)
         
         # 获取当前已添加的组件
-        existing_product_ids = self.component_line_ids.mapped('product_id').ids
+        existing_move_ids = self._get_existing_component_move_ids()
         
         # 过滤掉已经添加的组件
         available_moves = remaining_moves.filtered(
-            lambda m: m.product_id.id not in existing_product_ids
+            lambda m: m.id not in existing_move_ids
         )
         
         return available_moves.mapped('product_id').ids
@@ -526,35 +597,22 @@ class MrpProductionReturnWizard(models.TransientModel):
         if not self.production_id:
             raise UserError('请先选择制造订单')
         
-        # 获取剩余组件
-        remaining_moves = self.production_id.move_raw_ids.filtered(
-            lambda m: m.state in ('done', 'assigned', 'partially_available') and m.product_uom_qty > m.quantity
-        )
-        
-        # 获取已经处理过的产品（避免重复处理）
-        processed_history = self.env['mrp.production.return.history'].search([
-            ('production_id', '=', self.production_id.id)
-        ])
-        processed_products = processed_history.mapped('product_id')
-        
-        # 过滤掉已经处理过的组件
-        if processed_products:
-            remaining_moves = remaining_moves.filtered(
-                lambda m: m.product_id not in processed_products
-            )
+        # 获取未处理的剩余组件移动，按 move_id 区分同产品多批次。
+        remaining_moves = self._get_unprocessed_remaining_moves(self.production_id)
         
         # 获取当前已添加的组件
-        existing_product_ids = self.component_line_ids.mapped('product_id').ids
+        existing_move_ids = self._get_existing_component_move_ids()
         
         # 过滤掉已经添加的组件
         available_moves = remaining_moves.filtered(
-            lambda m: m.product_id.id not in existing_product_ids
+            lambda m: m.id not in existing_move_ids
         )
         
         # 创建新的组件行
         for move in available_moves:
             self.env['mrp.production.return.wizard.line'].create({
                 'wizard_id': self.id,
+                'move_id': move.id,
                 'product_id': move.product_id.id,
                 'return_qty': move.product_uom_qty - move.quantity,
             })

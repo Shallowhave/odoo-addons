@@ -1,13 +1,42 @@
 from odoo import models, fields, api, _
-from datetime import datetime
 import logging
 import re
-from odoo.exceptions import ValidationError, UserError
+from psycopg2 import errors
+
+from odoo.exceptions import UserError, ValidationError
 
 _logger = logging.getLogger(__name__)
 
 class MrpProduction(models.Model):
     _inherit = 'mrp.production'
+
+    mrp_auto_lot_name = fields.Char(
+        string='批次/序列号',
+        compute='_compute_mrp_auto_lot_name',
+        inverse='_inverse_mrp_auto_lot_name',
+        readonly=False,
+    )
+
+    @api.depends('lot_producing_id.name')
+    def _compute_mrp_auto_lot_name(self):
+        for production in self:
+            production.mrp_auto_lot_name = production.lot_producing_id.name or False
+
+    def _inverse_mrp_auto_lot_name(self):
+        for production in self:
+            production._set_lot_producing_name_from_form(production.mrp_auto_lot_name)
+
+    def _set_lot_producing_name_from_form(self, lot_name):
+        self.ensure_one()
+        if not self.lot_producing_id:
+            return
+
+        lot_name = (lot_name or '').strip()
+        if not lot_name:
+            raise ValidationError(_('批次/序列号不能为空。'))
+
+        if self.lot_producing_id.name != lot_name:
+            self.lot_producing_id.write({'name': lot_name})
 
     @api.model
     def _get_batch_prefix(self):
@@ -35,6 +64,13 @@ class MrpProduction(models.Model):
         """检查是否启用覆盖原生批次号生成"""
         return self.env['ir.config_parameter'].sudo().get_param(
             'mrp_auto_lot_generate.override_generate_serial', 'True'
+        ).lower() == 'true'
+
+    @api.model
+    def _is_prefix_date_only_enabled(self):
+        """是否只生成前缀和日期，后续由业务人员填写"""
+        return self.env['ir.config_parameter'].sudo().get_param(
+            'mrp_auto_lot_generate.prefix_date_only', 'False'
         ).lower() == 'true'
 
     def _find_main_lot_for_production(self, Lot):
@@ -112,12 +148,60 @@ class MrpProduction(models.Model):
             # 所有订单都生成独立的主批次号（包括欠单）
             if self._is_logging_enabled():
                 _logger.info("[自动批次] 为制造单 %s 生成独立批次号", self.name)
+
+            if self._is_prefix_date_only_enabled():
+                return self._generate_prefix_date_batch(prefix, date_str)
             
             return self._generate_main_batch(prefix, date_str, time_str, Lot)
                 
         except Exception as e:
             _logger.error("[AutoBatch] 生成批次号失败: %s", str(e))
             raise UserError(f"生成批次号失败: {str(e)}")
+
+    def _generate_prefix_date_batch(self, prefix, date_str):
+        """只生成批次号的前缀和日期部分"""
+        lot_name = f"{prefix}{date_str}"
+        if self._is_logging_enabled():
+            _logger.info("[自动批次] 只生成批次号前缀和日期：%s", lot_name)
+        return lot_name
+
+    def _lock_lot_generation(self):
+        """串行化同公司、同前缀、同日期的批次号生成。"""
+        self.ensure_one()
+        utc_now = fields.Datetime.now()
+        user_dt = fields.Datetime.context_timestamp(self.env.user, utc_now)
+        lock_key = '%s:%s:%s' % (
+            self.company_id.id or 0,
+            self._get_batch_prefix(),
+            user_dt.strftime('%y%m%d'),
+        )
+        self.env.cr.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)",
+            [lock_key],
+        )
+
+    def _get_committed_lot_names_for_generation(self, pattern, product=None):
+        """用新游标读取最新已提交的批号名，避免当前事务旧快照漏读。"""
+        where_clauses = [
+            "name LIKE %s",
+            "name NOT LIKE %s",
+        ]
+        params = [pattern, '%-%']
+
+        if self.company_id:
+            where_clauses.append("company_id = %s")
+            params.append(self.company_id.id)
+        else:
+            where_clauses.append("company_id IS NULL")
+
+        if product:
+            where_clauses.append("product_id = %s")
+            params.append(product.id)
+
+        query = "SELECT name FROM stock_lot WHERE %s" % " AND ".join(where_clauses)
+        with self.env.registry.cursor() as cr:
+            cr.execute(query, params)
+            return [row[0] for row in cr.fetchall()]
 
     def _generate_main_batch(self, prefix, date_str, time_str, Lot):
         """生成主批次号"""
@@ -131,9 +215,11 @@ class MrpProduction(models.Model):
         
         # 提取已使用的序列号（支持2位数和3位数）
         used_sequences = set()
-        for lot in existing_lots:
+        existing_names = set(existing_lots.mapped('name'))
+        existing_names.update(self._get_committed_lot_names_for_generation(pattern))
+        for lot_name in existing_names:
             # 匹配 A01-A99 (2位数) 和 A100-A999 (3位数)
-            match = re.match(rf"^{re.escape(prefix)}\d{{6}}\d{{0,4}}A(\d{{2,3}})$", lot.name)
+            match = re.match(rf"^{re.escape(prefix)}\d{{6}}\d{{0,4}}A(\d{{2,3}})$", lot_name)
             if match:
                 used_sequences.add(int(match.group(1)))
         
@@ -172,9 +258,11 @@ class MrpProduction(models.Model):
         
         # 提取已使用的序列号（支持2位数和3位数）
         used_sequences = set()
-        for lot in existing_lots:
+        existing_names = set(existing_lots.mapped('name'))
+        existing_names.update(self._get_committed_lot_names_for_generation(pattern, product=product))
+        for lot_name in existing_names:
             # 匹配 A01-A99 (2位数) 和 A100-A999 (3位数)
-            match = re.match(rf"^{re.escape(prefix)}\d{{6}}\d{{0,4}}A(\d{{2,3}})$", lot.name)
+            match = re.match(rf"^{re.escape(prefix)}\d{{6}}\d{{0,4}}A(\d{{2,3}})$", lot_name)
             if match:
                 used_sequences.add(int(match.group(1)))
         
@@ -262,29 +350,173 @@ class MrpProduction(models.Model):
 
     def _create_lot_for_production(self, production):
         """为制造单创建批次号"""
-        lot_name = production._generate_batch_number()
-        
-        # 检查批次号是否已存在
-        existing_lot = self.env['stock.lot'].search([
-            ('name', '=', lot_name),
-            ('company_id', '=', production.company_id.id)
-        ], limit=1)
-        
-        if existing_lot:
-            _logger.warning("[自动批次] 批次号 %s 已存在，跳过创建", lot_name)
-            production.lot_producing_id = existing_lot.id
+        production._lock_lot_generation()
+        prefix_date_only = production._is_prefix_date_only_enabled()
+        max_attempts = 1 if prefix_date_only else 5
+        last_error = None
+
+        for attempt in range(max_attempts):
+            lot_name = production._generate_batch_number()
+            try:
+                with self.env.cr.savepoint():
+                    if not prefix_date_only:
+                        # 检查批次号是否已存在
+                        existing_lot = self.env['stock.lot'].search([
+                            ('name', '=', lot_name),
+                            ('company_id', '=', production.company_id.id)
+                        ], limit=1)
+
+                        if existing_lot:
+                            raise ValidationError(_(
+                                '批次/序列号 "%(lot_name)s" 已存在，不能重复使用。'
+                            ) % {'lot_name': lot_name})
+
+                    lot = self.env['stock.lot'].create({
+                        'name': lot_name,
+                        'product_id': production.product_id.id,
+                        'company_id': production.company_id.id,
+                        'ref': production.origin or production.name,
+                        'mrp_auto_lot_needs_suffix': prefix_date_only,
+                        'mrp_auto_lot_production_id': production.id,
+                    })
+                production.lot_producing_id = lot.id
+                if self._is_logging_enabled():
+                    _logger.info("[自动批次] 批次号 %s 已绑定到制造单 %s", lot_name, production.name)
+                return
+            except (ValidationError, errors.UniqueViolation) as error:
+                last_error = error
+                if prefix_date_only:
+                    raise
+                _logger.warning(
+                    "[自动批次] 批次号 %s 创建冲突，准备重试（第 %s/%s 次）: %s",
+                    lot_name, attempt + 1, max_attempts, error
+                )
+
+        raise UserError(_('无法生成唯一批次号，请稍后重试。最后错误：%s') % last_error)
+
+    def _check_lot_producing_id_selectable(self, lot):
+        """Prevent manually selecting an existing lot as the finished lot of an MO."""
+        self.ensure_one()
+        if not lot:
             return
-            
-        lot = self.env['stock.lot'].create({
-            'name': lot_name,
-            'product_id': production.product_id.id,
-            'company_id': production.company_id.id,
-            'ref': production.origin or production.name,
-        })
-        
-        production.lot_producing_id = lot.id
-        if self._is_logging_enabled():
-            _logger.info("[自动批次] 批次号 %s 已绑定到制造单 %s", lot_name, production.name)
+
+        source_production = lot.mrp_auto_lot_production_id
+        if source_production:
+            if source_production != self:
+                raise ValidationError(_(
+                    '批次/序列号 "%(lot_name)s" 已由制造订单 "%(production)s" 生成，不能用于当前制造订单。'
+                ) % {
+                    'lot_name': lot.name,
+                    'production': source_production.display_name,
+                })
+            return
+
+        raise ValidationError(_(
+            '批次/序列号 "%(lot_name)s" 已存在，不能直接选用已有批次号。'
+            '请点击“创建新序列号/批号”生成当前制造订单的批次号，或在当前批次号上补全后缀。'
+        ) % {'lot_name': lot.name})
+
+    def _check_prefix_date_lot_completed(self):
+        for production in self.filtered('lot_producing_id'):
+            if production.lot_producing_id.mrp_auto_lot_needs_suffix:
+                raise ValidationError(_(
+                    '制造订单 "%(production)s" 的批次/序列号 "%(lot_name)s" 还只有前缀和日期，'
+                    '请先补全后缀再完成生产。'
+                ) % {
+                    'production': production.display_name,
+                    'lot_name': production.lot_producing_id.name,
+                })
+
+    def _check_finished_lot_available(self, lot, product=None, exclude_move_lines=None):
+        """Ensure a finished-product lot is not reused by another manufacturing order."""
+        self.ensure_one()
+        if not lot:
+            return
+
+        if product and lot.product_id and lot.product_id != product:
+            raise ValidationError(_(
+                '批次/序列号 "%(lot_name)s" 属于产品 "%(lot_product)s"，不能用于产品 "%(product)s"。'
+            ) % {
+                'lot_name': lot.name,
+                'lot_product': lot.product_id.display_name,
+                'product': product.display_name,
+            })
+
+        if self.company_id and lot.company_id and lot.company_id != self.company_id:
+            raise ValidationError(_(
+                '批次/序列号 "%(lot_name)s" 属于公司 "%(lot_company)s"，不能用于当前制造订单。'
+            ) % {
+                'lot_name': lot.name,
+                'lot_company': lot.company_id.display_name,
+            })
+
+        conflict_production = self.sudo().search([
+            ('lot_producing_id', '=', lot.id),
+            ('id', '!=', self.id),
+            ('state', '!=', 'cancel'),
+        ], limit=1)
+        if conflict_production:
+            raise ValidationError(_(
+                '批次/序列号 "%(lot_name)s" 已被制造订单 "%(production)s" 使用，不能重复使用。'
+            ) % {
+                'lot_name': lot.name,
+                'production': conflict_production.display_name,
+            })
+
+        move_line_domain = [
+            ('lot_id', '=', lot.id),
+            ('state', '!=', 'cancel'),
+            ('move_id.production_id', '!=', False),
+            ('move_id.picking_id', '=', False),
+            ('picking_id', '=', False),
+        ]
+        if product:
+            move_line_domain.append(('product_id', '=', product.id))
+        if exclude_move_lines:
+            move_line_domain.append(('id', 'not in', exclude_move_lines.ids))
+
+        for move_line in self.env['stock.move.line'].sudo().search(move_line_domain):
+            line_production = move_line.move_id.production_id
+            if line_production and line_production.id != self.id and line_production.state != 'cancel':
+                raise ValidationError(_(
+                    '批次/序列号 "%(lot_name)s" 已被制造订单 "%(production)s" 的生产明细使用，不能重复使用。'
+                ) % {
+                    'lot_name': lot.name,
+                    'production': line_production.display_name,
+                })
+
+    @api.constrains('lot_producing_id', 'product_id', 'company_id')
+    def _check_lot_producing_id_not_reused(self):
+        for production in self.filtered('lot_producing_id'):
+            production._check_finished_lot_available(
+                production.lot_producing_id,
+                product=production.product_id,
+            )
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        productions = super().create(vals_list)
+        if not self.env.context.get('skip_mrp_auto_lot_selectable_check'):
+            for production, vals in zip(productions, vals_list):
+                if vals.get('lot_producing_id'):
+                    production._check_lot_producing_id_selectable(production.lot_producing_id)
+        return productions
+
+    def write(self, vals):
+        if (
+            not self.env.context.get('skip_mrp_auto_lot_selectable_check')
+            and 'lot_producing_id' in vals
+            and vals.get('lot_producing_id')
+        ):
+            lot = self.env['stock.lot'].browse(vals['lot_producing_id']).exists()
+            for production in self:
+                if lot and lot != production.lot_producing_id:
+                    production._check_lot_producing_id_selectable(lot)
+        return super().write(vals)
+
+    def button_mark_done(self):
+        self._check_prefix_date_lot_completed()
+        return super().button_mark_done()
     
     def action_create_lot_producing(self):
         """手动创建批次号按钮动作
@@ -325,12 +557,18 @@ class MrpProduction(models.Model):
         # 检查是否启用覆盖原生批次号生成
         if not self._is_override_generate_serial_enabled():
             # 如果未启用，使用原生方法
-            return super(MrpProduction, self).action_generate_serial()
+            return super(
+                MrpProduction,
+                self.with_context(skip_mrp_auto_lot_selectable_check=True),
+            ).action_generate_serial()
         
         # 检查产品是否需要批次号
         if self.product_id.tracking not in ['lot', 'serial']:
             # 如果不需要批次号，调用父类方法
-            return super(MrpProduction, self).action_generate_serial()
+            return super(
+                MrpProduction,
+                self.with_context(skip_mrp_auto_lot_selectable_check=True),
+            ).action_generate_serial()
         
         # 如果已经有批次号，提示用户
         if self.lot_producing_id:
@@ -462,8 +700,9 @@ class MrpProduction(models.Model):
         ], limit=1)
         
         if existing_lot:
-            _logger.warning("[自动批次] 副产品批次号 %s 已存在，使用现有批次号", lot_name)
-            lot = existing_lot
+            raise ValidationError(_(
+                '副产品批次/序列号 "%(lot_name)s" 已存在，不能重复使用。'
+            ) % {'lot_name': lot_name})
         else:
             # 创建新的批次号
             lot = self.env['stock.lot'].create({
@@ -596,6 +835,36 @@ class StockMove(models.Model):
 class StockMoveLine(models.Model):
     _inherit = 'stock.move.line'
 
+    def _is_mrp_finished_move_line(self):
+        self.ensure_one()
+        return bool(
+            self.move_id
+            and self.move_id.production_id
+            and not self.move_id.picking_id
+            and not self.picking_id
+        )
+
+    def _get_finished_production(self):
+        self.ensure_one()
+        if self._is_mrp_finished_move_line():
+            return self.move_id.production_id
+        return self.env['mrp.production']
+
+    def _check_finished_lot_not_reused(self):
+        for move_line in self.filtered(lambda line: line.lot_id and line.state != 'cancel'):
+            production = move_line._get_finished_production()
+            if not production:
+                continue
+            production._check_finished_lot_available(
+                move_line.lot_id,
+                product=move_line.product_id,
+                exclude_move_lines=move_line,
+            )
+
+    @api.constrains('lot_id', 'product_id', 'move_id', 'production_id', 'state')
+    def _check_finished_lot_id_not_reused(self):
+        self._check_finished_lot_not_reused()
+
     @api.model_create_multi
     def create(self, vals_list):
         """扩展创建方法，自动为副产品移动行关联预生成的批次号"""
@@ -636,6 +905,12 @@ class StockMoveLine(models.Model):
                             if production._is_logging_enabled():
                                 _logger.info("[自动批次] 自动关联副产品批次号 %s 到移动行（制造单：%s）",
                                              byproduct_lot.name, production.name)
-        
+
+        move_lines._check_finished_lot_not_reused()
         return move_lines
 
+    def write(self, vals):
+        res = super().write(vals)
+        if {'lot_id', 'product_id', 'move_id', 'production_id', 'state'} & set(vals):
+            self._check_finished_lot_not_reused()
+        return res

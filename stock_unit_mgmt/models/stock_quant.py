@@ -85,6 +85,39 @@ class StockQuant(models.Model):
         help='用于控制原膜产品专用字段的显示'
     )
 
+    def _get_move_line_base_quantity_for_lot_unit(self, move_line):
+        """Fallback quantity for continuous extra units when lot_quantity is empty."""
+        for field_name in ('quantity', 'qty_done'):
+            if field_name in move_line._fields:
+                value = move_line[field_name] or 0.0
+                if value > 0:
+                    return value
+        return 0.0
+
+    def _sum_move_line_done_quantities(self, move_lines):
+        """Sum completed quantities with Odoo 18 quantity / legacy qty_done compatibility."""
+        field_name = (
+            'quantity' if 'quantity' in move_lines._fields
+            else 'qty_done' if 'qty_done' in move_lines._fields
+            else False
+        )
+        if not field_name:
+            return 0.0
+        return sum(move_lines.mapped(field_name) or [0.0])
+
+    def _get_move_line_lot_unit_quantity(self, move_line):
+        """Return the extra-unit quantity represented by a done move line."""
+        if move_line.lot_quantity and move_line.lot_quantity > 0:
+            return move_line.lot_quantity
+        if not move_line.lot_unit_name:
+            return 0.0
+        if utils.should_default_quantity_to_one(
+            move_line.lot_unit_name,
+            move_line.lot_unit_name_custom,
+        ):
+            return 1.0
+        return self._get_move_line_base_quantity_for_lot_unit(move_line)
+
     @api.depends('lot_id', 'product_id', 'quantity', 'location_id')
     def _compute_lot_unit_info(self):
         """从批次记录中获取单位信息，累加所有入库，减去所有出库
@@ -169,38 +202,41 @@ class StockQuant(models.Model):
                 incoming_move_lines = relevant_move_lines.filtered(
                     lambda ml: ml.location_dest_id.id == quant.location_id.id
                 )
+                incoming_with_lot_qty = incoming_move_lines.filtered(
+                    lambda ml: ml.lot_quantity and ml.lot_quantity > 0
+                )
                 
                 outgoing_move_lines = relevant_move_lines.filtered(
                     lambda ml: ml.location_id.id == quant.location_id.id
                 )
                 
-                # 累加入库的单位数量
-                # **关键修复**：如果移动行有 lot_unit_name 但 lot_quantity 为空，使用默认值 1.0
+                # 累加入库的单位数量。卷/箱/袋等计数单位可默认 1；
+                # 米/㎡/kg 等连续单位回退到移动行实际数量。
                 total_incoming = 0.0
                 for ml in incoming_move_lines:
-                    if ml.lot_quantity and ml.lot_quantity > 0:
-                        total_incoming += ml.lot_quantity
+                    lot_unit_quantity = self._get_move_line_lot_unit_quantity(ml)
+                    if lot_unit_quantity:
+                        total_incoming += lot_unit_quantity
                     elif ml.lot_unit_name:
-                        # 如果移动行有单位名称但没有单位数量，使用默认值 1.0
-                        # 这通常发生在入库时没有正确设置 lot_quantity 的情况
-                        total_incoming += 1.0
                         _logger.debug(
-                            f"[批次数量计算] 移动行 {ml.id} 有单位名称但无单位数量，使用默认值 1.0: "
-                            f"lot_unit_name={ml.lot_unit_name}, lot_id={ml.lot_id.id if ml.lot_id else None}"
+                            f"[批次数量计算] 移动行 {ml.id} 有单位名称但无法取得单位数量: "
+                            f"lot_unit_name={ml.lot_unit_name}, "
+                            f"lot_unit_name_custom={ml.lot_unit_name_custom}, "
+                            f"lot_id={ml.lot_id.id if ml.lot_id else None}"
                         )
                 
-                # 累加出库的单位数量
-                # **关键修复**：如果移动行有 lot_unit_name 但 lot_quantity 为空，使用默认值 1.0
+                # 累加出库的单位数量，规则同入库。
                 total_outgoing = 0.0
                 for ml in outgoing_move_lines:
-                    if ml.lot_quantity and ml.lot_quantity > 0:
-                        total_outgoing += ml.lot_quantity
+                    lot_unit_quantity = self._get_move_line_lot_unit_quantity(ml)
+                    if lot_unit_quantity:
+                        total_outgoing += lot_unit_quantity
                     elif ml.lot_unit_name:
-                        # 如果移动行有单位名称但没有单位数量，使用默认值 1.0
-                        total_outgoing += 1.0
                         _logger.debug(
-                            f"[批次数量计算] 移动行 {ml.id} 有单位名称但无单位数量，使用默认值 1.0: "
-                            f"lot_unit_name={ml.lot_unit_name}, lot_id={ml.lot_id.id if ml.lot_id else None}"
+                            f"[批次数量计算] 移动行 {ml.id} 有单位名称但无法取得单位数量: "
+                            f"lot_unit_name={ml.lot_unit_name}, "
+                            f"lot_unit_name_custom={ml.lot_unit_name_custom}, "
+                            f"lot_id={ml.lot_id.id if ml.lot_id else None}"
                         )
                 
                 # 计算当前剩余的单位数量
@@ -252,7 +288,10 @@ class StockQuant(models.Model):
                 # 详细调试日志（仅在启用详细日志时输出）
                 if self.env['ir.config_parameter'].sudo().get_param('stock_unit_mgmt.enable_debug_logging', 'False').lower() == 'true':
                     incoming_with_lot_qty_count = len([ml for ml in incoming_move_lines if ml.lot_quantity and ml.lot_quantity > 0])
-                    incoming_details = [(ml.id, ml.lot_quantity or (1.0 if ml.lot_unit_name else 0.0)) for ml in incoming_move_lines]
+                    incoming_details = [
+                        (ml.id, self._get_move_line_lot_unit_quantity(ml))
+                        for ml in incoming_move_lines
+                    ]
                     _logger.debug(f"[批次数量计算] 批次={quant.lot_id.name if quant.lot_id else 'None'}, "
                                  f"位置={quant.location_id.name if quant.location_id else 'None'}, "
                                  f"所有移动行数={len(relevant_move_lines)}, "
@@ -265,8 +304,7 @@ class StockQuant(models.Model):
                 # 在这种情况下，按比例计算
                 if quant.quantity > 0 and current_lot_quantity <= 0 and total_incoming > 0:
                     # 找到总的入库数量
-                    total_incoming_qty = sum(incoming_move_lines.mapped('qty_done') or [0.0]) or \
-                                        sum(incoming_move_lines.mapped('quantity') or [0.0])
+                    total_incoming_qty = self._sum_move_line_done_quantities(incoming_move_lines)
                     if total_incoming_qty > 0:
                         # 按比例计算：当前库存数量 / 总入库数量 * 总入库单位数量
                         current_lot_quantity = (quant.quantity / total_incoming_qty) * total_incoming

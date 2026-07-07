@@ -245,7 +245,13 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                 f"enable_enhanced_barcode_validation={enable_enhanced_validation}"
                             )
                     except Exception as e:
-                        _logger.warning(f"[扫码验证] 检查作业类型配置时出错: {str(e)}")
+                        _logger.error(
+                            f"[扫码验证] 检查作业类型配置时出错: {str(e)}",
+                            exc_info=True
+                        )
+                        raise UserError(
+                            _('无法检查作业类型的增强条码验证配置，已阻止本次扫码。\n\n错误：%s') % str(e)
+                        )
                 
                 # **关键修复**：只在扫码操作且启用增强验证时才进行验证
                 # 如果是从表单编辑界面触发的查询，或者未启用增强验证，跳过验证
@@ -369,46 +375,22 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                     # 2. **重要**：扫码只是验证，不应该创建新记录或更新数量
                                     # 3. 用户预填了两卷，说明预填了两个批次号记录，扫码时应该匹配到对应的记录，而不是创建新记录或更新数量
                                     
-                                    # 查询当前 picking 中所有包含此批次号的移动行（包括所有记录，不管 qty_done 是否 > 0）
-                                    # **关键修复**：使用 sudo() 确保获取最新的 qty_done 值
+                                    # 查询当前 picking 中所有包含此批次号的移动行。
+                                    # 记录存在并不代表“已经扫描过”，它也可能只是预填行。
                                     all_lines_with_lot = request.env['stock.move.line'].sudo().search([
                                         ('move_id', 'in', moves.ids),
                                         ('lot_name', '=', scanned_barcode),
                                     ])
-                                    
-                                    # **关键修复**：清除缓存，确保获取最新的 qty_done 值
+
+                                    # 记录存在只说明它在预填列表中。真正的“重复扫描”优先由
+                                    # 当前会话追踪；数据库字段只作为跨会话兜底。
                                     if all_lines_with_lot:
-                                        # 清除缓存，从数据库重新读取最新值
-                                        all_lines_with_lot.invalidate_recordset(['qty_done'])
-                                    
-                                    # **关键修复**：检查是否重复扫描
-                                    # 重复扫描的定义：批次号在预填列表中，且已经有记录存在
-                                    # **重要**：如果记录已存在，说明用户已经预填了，扫码只是验证
-                                    # 如果用户扫描同一个批次号两次，就应该提示重复扫描
-                                    # 
-                                    # **关键问题**：由于扫码只是验证，不会修改 qty_done，所以无法通过 qty_done 判断是否已扫描
-                                    # 我们需要使用其他方法来检测重复扫描
-                                    # 
-                                    # **解决方案**：使用会话（session）变量来跟踪已扫描的批次号
-                                    # 在同一个会话中，如果批次号已经被扫描过，就提示重复扫描
-                                    if all_lines_with_lot:
-                                        # **关键修复**：检查是否重复扫描
-                                        # 使用 ORM 方式读取 qty_done，避免 SQL 查询导致事务失败
                                         scanned_lot_normalized = scanned_barcode.strip().lower()
-                                        
-                                        # 使用 ORM 方式读取 qty_done 值
                                         is_duplicate = False
-                                        qty_done_map = {}
-                                        
-                                        # **关键修复**：使用会话变量来跟踪已扫描的批次号
-                                        # 因为 qty_done 字段在数据库中可能不存在或不可靠
-                                        # 使用会话变量可以在同一会话中立即检测重复扫描
                                         session = request.session
                                         scanned_lots_key = f'scanned_lots_{picking_id}'
                                         scanned_lots = list(session.get(scanned_lots_key, []) or [])
-                                        
-                                        # **关键修复**：在检查重复之前，先清理会话变量中的重复项
-                                        # 确保会话变量中没有重复的批次号
+
                                         if scanned_lots:
                                             unique_scanned_lots = []
                                             seen = set()
@@ -425,9 +407,7 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                                     f"原始列表={scanned_lots}, 清理后列表={unique_scanned_lots}"
                                                 )
                                                 scanned_lots = unique_scanned_lots
-                                        
-                                        scanned_lot_normalized = scanned_barcode.strip().lower()
-                                        
+
                                         _logger.error(
                                             f"[扫码验证] 检查重复扫描: 批次号={scanned_barcode}, "
                                             f"标准化批次号={scanned_lot_normalized}, "
@@ -436,126 +416,14 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                             f"会话中已扫描列表={scanned_lots}, "
                                             f"是否在会话中={scanned_lot_normalized in scanned_lots}"
                                         )
-                                        
-                                        # **关键修复**：优先检查数据库中的实际记录状态
-                                        # 如果数据库中不存在记录或记录已被删除（qty_done = 0），即使会话中有，也不应该视为重复
-                                        is_duplicate = False
-                                        qty_done_map = {}
-                                        
-                                        # 方法1：检查数据库中的 qty_done（最可靠）
-                                        try:
-                                            # 尝试使用 ORM 读取 qty_done
-                                            all_lines_with_lot.invalidate_recordset(['qty_done'])
-                                            read_values = all_lines_with_lot.read(['qty_done'])
-                                            qty_done_map = {r['id']: float(r.get('qty_done') or 0.0) for r in read_values}
-                                            
-                                            # 检查是否有任何记录的 qty_done > 0（包括标记值 0.0001）
-                                            duplicate_line_ids = [
-                                                lid for lid in all_lines_with_lot.ids
-                                                if qty_done_map.get(lid, 0.0) > 0.0
-                                            ]
-                                            
-                                            if duplicate_line_ids:
-                                                is_duplicate = True
-                                                scanned_qty_dones = [qty_done_map.get(lid, 0.0) for lid in duplicate_line_ids]
-                                                _logger.error(
-                                                    f"[扫码验证] 重复扫描（数据库qty_done>0）: 批次号={scanned_barcode}, "
-                                                    f"已扫描的记录数={len(duplicate_line_ids)}, "
-                                                    f"已扫描的记录ID={duplicate_line_ids}, "
-                                                    f"qty_done列表={scanned_qty_dones}"
-                                                )
-                                            else:
-                                                _logger.error(
-                                                    f"[扫码验证] 检查 qty_done: 批次号={scanned_barcode}, "
-                                                    f"记录ID={all_lines_with_lot.ids}, "
-                                                    f"qty_done映射={qty_done_map}, 数据库中未检测到重复扫描"
-                                                )
-                                        except Exception as e:
-                                            _logger.warning(f"[扫码验证] 读取 qty_done 失败: {str(e)}, 使用会话跟踪作为备用")
-                                            # 如果读取失败，使用会话跟踪作为备用
-                                            qty_done_map = {}
-                                        
-                                        # 方法2：如果数据库中未检测到重复，检查会话变量并同步
-                                        # **关键修复**：优先检查数据库状态，如果数据库中没有记录或记录已被删除，从会话中移除
-                                        # 这样可以确保会话变量与数据库状态一致
-                                        if not is_duplicate:
-                                            # **关键修复**：首先同步会话变量与数据库状态
-                                            # 如果数据库中不存在记录，说明记录已被删除，从会话中移除
-                                            if not all_lines_with_lot:
-                                                # 数据库中不存在记录，说明记录已被删除
-                                                # 从会话中移除所有该批次号的记录（可能有多条重复的）
-                                                if scanned_lot_normalized in scanned_lots:
-                                                    # 移除所有重复的批次号（使用列表推导式，移除所有匹配的）
-                                                    scanned_lots = [lot for lot in scanned_lots if lot != scanned_lot_normalized]
-                                                    session[scanned_lots_key] = scanned_lots
-                                                    session.modified = True
-                                                    _logger.error(
-                                                        f"[扫码验证] 数据库中不存在记录，从会话中移除: 批次号={scanned_barcode}, "
-                                                        f"picking_id={picking_id}, 更新后的会话列表={scanned_lots}"
-                                                    )
-                                                # 允许扫描
-                                                is_duplicate = False
-                                            elif all_lines_with_lot:
-                                                # 数据库中存在记录，检查 qty_done 状态
-                                                # 如果所有记录的 qty_done 都是 0，说明记录存在但未被扫描，或者被删除了但记录还在
-                                                # 在这种情况下，检查会话变量
-                                                all_qty_done_zero = all(
-                                                    qty_done_map.get(lid, 0.0) == 0.0 
-                                                    for lid in all_lines_with_lot.ids
-                                                )
-                                                
-                                                if all_qty_done_zero:
-                                                    # 所有记录的 qty_done 都是 0，说明记录存在但未被扫描
-                                                    # 或者记录被删除后重新创建了（qty_done=0）
-                                                    # 在这种情况下，如果会话中有该批次号，需要检查是否真的是重复扫描
-                                                    # **关键修复**：如果数据库中有记录但 qty_done=0，且会话中有该批次号，
-                                                    # 说明可能是删除后重新扫描，应该从会话中移除，允许重新扫描
-                                                    if scanned_lot_normalized in scanned_lots:
-                                                        # 从会话中移除，允许重新扫描
-                                                        scanned_lots = [lot for lot in scanned_lots if lot != scanned_lot_normalized]
-                                                        session[scanned_lots_key] = scanned_lots
-                                                        session.modified = True
-                                                        _logger.error(
-                                                            f"[扫码验证] 数据库中记录存在但 qty_done=0，从会话中移除: 批次号={scanned_barcode}, "
-                                                            f"记录ID={all_lines_with_lot.ids}, qty_done映射={qty_done_map}, "
-                                                            f"picking_id={picking_id}, 更新后的会话列表={scanned_lots}, "
-                                                            f"允许重新扫描"
-                                                        )
-                                                    # 允许扫描
-                                                    is_duplicate = False
-                                                else:
-                                                    # 有记录的 qty_done > 0，说明已经被扫描过
-                                                    # 但是在方法1中已经检测到了，所以这里不应该到达
-                                                    # 如果到达这里，说明逻辑有问题，记录日志但不视为重复
-                                                    _logger.warning(
-                                                        f"[扫码验证] 数据库中有记录的 qty_done > 0，但未在方法1中检测到: "
-                                                        f"批次号={scanned_barcode}, 记录ID={all_lines_with_lot.ids}, "
-                                                        f"qty_done映射={qty_done_map}"
-                                                    )
-                                                    is_duplicate = False
-                                            else:
-                                                # 数据库中也没有，会话中也没有，说明是第一次扫描
-                                                is_duplicate = False
-                                            
-                                            # **关键修复**：清理会话变量中的重复项
-                                            # 确保会话变量中没有重复的批次号
-                                            if scanned_lots:
-                                                unique_scanned_lots = []
-                                                seen = set()
-                                                for lot in scanned_lots:
-                                                    if lot not in seen:
-                                                        unique_scanned_lots.append(lot)
-                                                        seen.add(lot)
-                                                if len(unique_scanned_lots) != len(scanned_lots):
-                                                    # 有重复项，更新会话变量
-                                                    session[scanned_lots_key] = unique_scanned_lots
-                                                    session.modified = True
-                                                    _logger.error(
-                                                        f"[扫码验证] 清理会话变量中的重复项: picking_id={picking_id}, "
-                                                        f"原始列表={scanned_lots}, 清理后列表={unique_scanned_lots}"
-                                                    )
-                                                    scanned_lots = unique_scanned_lots
-                                        
+
+                                        if scanned_lot_normalized in scanned_lots:
+                                            is_duplicate = True
+                                            _logger.error(
+                                                f"[扫码验证] 重复扫描（会话命中）: 批次号={scanned_barcode}, "
+                                                f"picking_id={picking_id}, 会话列表={scanned_lots}"
+                                            )
+
                                         if is_duplicate:
                                             # 批次号已经扫描过，提示重复扫描
                                             raise UserError(
@@ -577,26 +445,6 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                                     f"picking_id={picking_id}, 已扫描列表={scanned_lots}"
                                                 )
                                             
-                                            # 同时尝试在数据库中标记（如果可能）
-                                            line_ids = all_lines_with_lot.ids
-                                            if line_ids:
-                                                try:
-                                                    # 尝试使用 ORM 方式更新 qty_done（如果字段存在）
-                                                    # 注意：如果 qty_done 不存在，这个操作可能会失败，但不影响会话跟踪
-                                                    all_lines_with_lot.sudo().with_context(
-                                                        skip_duplicate_check=True
-                                                    ).write({'qty_done': 0.0001})
-                                                    all_lines_with_lot.invalidate_recordset(['qty_done'])
-                                                    _logger.error(
-                                                        f"[扫码验证] 在数据库中标记为正在扫描: 批次号={scanned_barcode}, "
-                                                        f"记录ID={line_ids}, 已设置 qty_done=0.0001（标记值）"
-                                                    )
-                                                except Exception as write_error:
-                                                    # 如果更新失败，不影响流程，因为我们已经使用会话跟踪
-                                                    _logger.warning(
-                                                        f"[扫码验证] 数据库标记失败（不影响流程）: {str(write_error)}"
-                                                    )
-                                            
                                             _logger.error(
                                                 f"[扫码验证] 批次号在预填列表中，且已有记录存在: {scanned_barcode}, "
                                                 f"已存在的记录数={len(all_lines_with_lot)}, "
@@ -616,7 +464,9 @@ class StockBarcodeController(OriginalStockBarcodeController):
                             f"[扫码验证] 验证批次号时出错: {str(e)}", 
                             exc_info=True
                         )
-                        # 验证出错时不阻止，让后续逻辑处理
+                        raise UserError(
+                            _('增强条码验证执行失败，已阻止本次扫码保存。\n\n错误：%s') % str(e)
+                        )
                 elif is_barcode_operation:
                     # 是扫码操作，但无法获取 picking_id，记录警告
                     _logger.warning(
@@ -678,6 +528,44 @@ class StockBarcodeController(OriginalStockBarcodeController):
         ]
         return {model: request.env[model]._barcode_field for model in list_model if hasattr(request.env[model], '_barcode_field')}
 
+    def _stock_move_line_done_quantity_field(self):
+        """Return the completed quantity field available on stock.move.line."""
+        fields_map = request.env['stock.move.line']._fields
+        if 'quantity' in fields_map:
+            return 'quantity'
+        if 'qty_done' in fields_map:
+            return 'qty_done'
+        return False
+
+    def _normalize_move_line_vals_for_done_quantity(self, vals):
+        """Map legacy qty_done payloads to quantity before writing on Odoo 18."""
+        if not isinstance(vals, dict) or 'qty_done' not in vals or 'qty_done' in request.env['stock.move.line']._fields:
+            return vals
+        vals['quantity'] = vals.pop('qty_done')
+        return vals
+
+    def _normalize_move_line_commands_for_done_quantity(self, write_vals):
+        if not isinstance(write_vals, list):
+            return write_vals
+        for command in write_vals:
+            if isinstance(command, (list, tuple)) and len(command) > 2:
+                self._normalize_move_line_vals_for_done_quantity(command[2])
+        return write_vals
+
+    def _get_move_line_done_quantity(self, line):
+        field_name = self._stock_move_line_done_quantity_field()
+        if not field_name:
+            return 0.0
+        try:
+            line.invalidate_recordset([field_name])
+            read_result = line.read([field_name])
+            return read_result[0].get(field_name, 0.0) or 0.0 if read_result else 0.0
+        except Exception:
+            try:
+                return line[field_name] or 0.0
+            except Exception:
+                return 0.0
+
     @http.route('/stock_barcode/save_barcode_data', type='json', auth='user')
     def save_barcode_data(self, model, res_id, write_field, write_vals, allow_duplicate_scan=False, **kwargs):
         """扩展 save_barcode_data 方法，添加日志以跟踪扫码操作
@@ -689,6 +577,8 @@ class StockBarcodeController(OriginalStockBarcodeController):
         - write_field = 'move_line_ids'
         - write_vals = 命令列表，格式如 [[1, line_id, {lot_name: 'xxx', ...}], [0, 0, {lot_name: 'yyy', ...}], ...]
         """
+        if model == 'stock.picking':
+            write_vals = self._normalize_move_line_commands_for_done_quantity(write_vals)
         # **关键修复**：使用 ERROR 级别确保日志输出
         _logger.error(
             f"[扫码保存数据] ========== save_barcode_data 被调用 ========== "
@@ -744,6 +634,7 @@ class StockBarcodeController(OriginalStockBarcodeController):
                         
                         command_type = command[0]
                         line_vals = command[2] if len(command) > 2 else {}
+                        line_vals = self._normalize_move_line_vals_for_done_quantity(line_vals)
                         line_id = command[1] if command_type == 1 else None
                         
                         _logger.error(
@@ -772,22 +663,22 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                 if existing_line.exists() and existing_line.lot_name:
                                     lot_name = existing_line.lot_name
                                     scanned_lot_name = str(lot_name).strip().lower()
+                                    existing_done_qty = self._get_move_line_done_quantity(existing_line)
+                                    done_quantity_field = self._stock_move_line_done_quantity_field()
                                     _logger.info(
                                         f"[扫码保存数据] 从数据库记录获取批次号: 记录ID={line_id}, "
-                                        f"批次号={lot_name}, qty_done={existing_line.qty_done}, "
-                                        f"新qty_done={line_vals.get('qty_done', 'N/A')}"
+                                        f"批次号={lot_name}, {done_quantity_field}={existing_done_qty}, "
+                                        f"新{done_quantity_field}={line_vals.get(done_quantity_field, 'N/A')}"
                                     )
                             except Exception as e:
                                 _logger.warning(
                                     f"[扫码保存数据] 无法从数据库记录获取批次号: 记录ID={line_id}, 错误={str(e)}"
                                 )
                         
-                        # **关键修改**：如果启用增强条码验证，且有批次号，按照序列号的方式处理，强制 quantity = 1.0
-                        # **重要**：只对非序列号产品应用此逻辑，序列号产品保持原有逻辑
+                        # 增强条码验证只确认批次号是否被扫过；批次产品不能按序列号强制为 1。
                         if lot_name and scanned_lot_name and command_type in (0, 1) and enable_enhanced_validation:
-                            # 检查产品不是序列号追踪（tracking != 'serial'）
-                            # 序列号产品应该保持原有的 Odoo 标准逻辑
                             product_tracking = None
+                            existing_quantity = None
                             
                             # 方法1：从 line_vals 中获取 product_id
                             product_id = line_vals.get('product_id')
@@ -805,38 +696,40 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                     existing_line = request.env['stock.move.line'].browse(line_id)
                                     if existing_line.exists() and existing_line.product_id:
                                         product_tracking = existing_line.product_id.tracking
+                                        existing_quantity = existing_line.quantity
                                 except Exception as e:
                                     _logger.warning(f"[扫码保存数据] 从数据库记录获取产品追踪类型时出错: {str(e)}")
-                            
-                            # **关键修复**：只对非序列号产品应用增强验证逻辑
-                            # 序列号产品（tracking == 'serial'）保持原有逻辑
+
+                            if existing_quantity is None and command_type == 1 and line_id:
+                                try:
+                                    existing_line = request.env['stock.move.line'].browse(line_id)
+                                    if existing_line.exists():
+                                        existing_quantity = existing_line.quantity
+                                except Exception:
+                                    existing_quantity = None
+
                             if product_tracking != 'serial':
-                                # **关键修改**：按照序列号的方式，每个批次号对应 1.0 单位
-                                # 如果 line_vals 中有 quantity 或 qty_done，确保它们被设置为 1.0
-                                if 'quantity' in line_vals:
-                                    original_quantity = line_vals.get('quantity')
-                                    if original_quantity != 1.0:
-                                        _logger.info(
-                                            f"[扫码保存数据] 批次号产品数量自动设置为 1.0（启用增强验证）: "
-                                            f"批次号={lot_name}, 原数量={original_quantity}, "
-                                            f"记录ID={line_id}, 命令类型={command_type}, 追踪类型={product_tracking}"
-                                        )
-                                        line_vals['quantity'] = 1.0
-                                elif 'qty_done' in line_vals:
-                                    # **关键修复**：如果只有 qty_done，强制设置 quantity = 1.0 和 qty_done = 1.0
-                                    # 按照序列号的方式，每个批次号对应 1.0 单位，不能是其他值
-                                    original_qty_done = line_vals.get('qty_done', 0.0)
+                                marker_quantity = line_vals.get('quantity', line_vals.get('qty_done'))
+                                if (
+                                    command_type == 1
+                                    and existing_quantity
+                                    and existing_quantity > 1
+                                    and marker_quantity == 1
+                                ):
+                                    if 'quantity' in line_vals:
+                                        line_vals['quantity'] = existing_quantity
+                                    if 'qty_done' in line_vals:
+                                        line_vals['qty_done'] = existing_quantity
                                     _logger.info(
-                                        f"[扫码保存数据] 批次号产品，强制设置 quantity = 1.0 和 qty_done = 1.0（启用增强验证）: "
-                                        f"批次号={lot_name}, 原qty_done={original_qty_done}, "
-                                        f"记录ID={line_id}, 命令类型={command_type}, 追踪类型={product_tracking}"
+                                        f"[扫码保存数据] 批次产品扫码只做验证，保留原数量: "
+                                        f"批次号={lot_name}, 记录ID={line_id}, 原quantity={existing_quantity}, "
+                                        f"扫码传入数量={marker_quantity}"
                                     )
-                                    # **关键修复**：强制设置 quantity = 1.0 和 qty_done = 1.0
-                                    line_vals['quantity'] = 1.0
-                                    line_vals['qty_done'] = 1.0
+                                else:
                                     _logger.info(
-                                        f"[扫码保存数据] 已强制设置: 批次号={lot_name}, "
-                                        f"quantity=1.0, qty_done=1.0, 记录ID={line_id}"
+                                        f"[扫码保存数据] 批次产品保留扫码传入数量: 批次号={lot_name}, "
+                                        f"记录ID={line_id}, quantity={line_vals.get('quantity')}, "
+                                        f"qty_done={line_vals.get('qty_done')}, 追踪类型={product_tracking}"
                                     )
                             else:
                                 _logger.info(
@@ -981,9 +874,9 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                         f"产品ID={product_id}, 错误={str(e)}"
                                     )
                         elif lot_name and scanned_lot_name and command_type in (0, 1) and not enable_enhanced_validation:
-                            # 如果没有启用增强验证，不强制设置 quantity = 1.0
+                            # 未启用增强验证时，批次数量仍按传入值处理。
                             _logger.debug(
-                                f"[扫码保存数据] 未启用增强验证，不强制设置 quantity = 1.0: "
+                                f"[扫码保存数据] 未启用增强验证，保留传入数量: "
                                 f"批次号={lot_name}, 记录ID={line_id}"
                             )
                             
@@ -1152,23 +1045,23 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                             # **关键修复**：但是，如果 qty_done 从 > 0 变为 0，这可能是包裹操作，不应该视为重复扫描
                                             existing_line = request.env['stock.move.line'].sudo().browse(line_id)
                                             if existing_line.exists():
-                                                # **关键修复**：清除缓存，从数据库重新读取最新的 qty_done 值
-                                                existing_line.invalidate_recordset(['qty_done', 'result_package_id', 'package_id'])
-                                                # 重新读取记录，获取最新的 qty_done 值
+                                                done_quantity_field = self._stock_move_line_done_quantity_field()
+                                                fields_to_read = [name for name in [done_quantity_field, 'result_package_id', 'package_id'] if name]
                                                 try:
-                                                    read_result = existing_line.read(['qty_done', 'result_package_id', 'package_id'])
+                                                    existing_line.invalidate_recordset(fields_to_read)
+                                                    read_result = existing_line.read(fields_to_read)
                                                     if read_result:
-                                                        old_qty_done = read_result[0].get('qty_done', 0.0) or 0.0
+                                                        old_qty_done = read_result[0].get(done_quantity_field, 0.0) or 0.0
                                                         old_result_package_id = read_result[0].get('result_package_id')
                                                         old_package_id = read_result[0].get('package_id')
                                                     else:
-                                                        old_qty_done = existing_line.qty_done or 0.0
+                                                        old_qty_done = self._get_move_line_done_quantity(existing_line)
                                                         old_result_package_id = existing_line.result_package_id.id if existing_line.result_package_id else False
                                                         old_package_id = existing_line.package_id.id if existing_line.package_id else False
                                                 except Exception as e:
                                                     # 如果读取失败，使用属性访问
                                                     _logger.warning(f"[扫码保存数据] 读取记录失败: {str(e)}, 使用属性访问")
-                                                    old_qty_done = existing_line.qty_done or 0.0
+                                                    old_qty_done = self._get_move_line_done_quantity(existing_line)
                                                     try:
                                                         old_result_package_id = existing_line.result_package_id.id if existing_line.result_package_id else False
                                                         old_package_id = existing_line.package_id.id if existing_line.package_id else False
@@ -1176,7 +1069,7 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                                         old_result_package_id = False
                                                         old_package_id = False
                                                 
-                                                new_qty_done = line_vals.get('qty_done')
+                                                new_qty_done = line_vals.get(done_quantity_field)
                                                 new_result_package_id = line_vals.get('result_package_id')
                                                 new_package_id = line_vals.get('package_id')
                                                 
@@ -1221,8 +1114,10 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                                 # **关键修复**：检查是否有其他命令创建新记录（quantity = 0 的新记录通常是包裹操作）
                                                 if not is_package_operation:
                                                     has_new_record_with_zero_qty = any(
-                                                        cmd[0] == 0 and isinstance(cmd[2], dict) and 
-                                                        (cmd[2].get('quantity', 1) == 0 or cmd[2].get('qty_done', 1) == 0)
+                                                        cmd[0] == 0 and isinstance(cmd[2], dict) and (
+                                                            self._normalize_move_line_vals_for_done_quantity(cmd[2]).get('quantity', 1) == 0
+                                                            or self._normalize_move_line_vals_for_done_quantity(cmd[2]).get('qty_done', 1) == 0
+                                                        )
                                                         for cmd in write_vals
                                                         if isinstance(cmd, (list, tuple)) and len(cmd) > 2
                                                     )
@@ -1373,10 +1268,12 @@ class StockBarcodeController(OriginalStockBarcodeController):
                             raise
                         except Exception as e:
                             _logger.error(
-                                f"[扫码保存数据] 验证批次号时出错: 移动ID={move_id}, 错误={str(e)}", 
+                                f"[扫码保存数据] 验证批次号时出错: 移动ID={move_id}, 错误={str(e)}",
                                 exc_info=True
                             )
-                            # 验证出错时不阻止，让模型方法处理
+                            raise UserError(
+                                _('增强条码保存验证失败，已阻止本次扫码保存。\n\n错误：%s') % str(e)
+                            )
                     
                     # **关键修复**：不再移除命令，允许更新数量
                     # 现在允许更新 qty_done，所以不需要移除命令
@@ -1390,7 +1287,9 @@ class StockBarcodeController(OriginalStockBarcodeController):
                     f"[扫码保存数据] 解析命令时出错: {str(e)}", 
                     exc_info=True
                 )
-                # 解析出错时不阻止，让原始逻辑处理
+                raise UserError(
+                    _('增强条码保存解析失败，已阻止本次扫码保存。\n\n错误：%s') % str(e)
+                )
         
         # **关键修复**：在保存之前处理删除命令，从会话中移除批次号
         # 这样可以在记录被删除之前读取批次号
@@ -1546,6 +1445,7 @@ class StockBarcodeController(OriginalStockBarcodeController):
                             command_type = command[0]
                             line_id = command[1] if len(command) > 1 else None
                             line_vals = command[2] if len(command) > 2 else {}
+                            line_vals = self._normalize_move_line_vals_for_done_quantity(line_vals)
                             
                             # 跳过删除命令（已经在保存前处理）
                             if command_type == 2:
@@ -1568,13 +1468,15 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                     # 重新查询数据库，获取最新的批次号
                                     existing_line = request.env['stock.move.line'].sudo().browse(line_id)
                                     if existing_line.exists():
+                                        done_quantity_field = self._stock_move_line_done_quantity_field()
+                                        fields_to_read = [name for name in ['lot_name', done_quantity_field, 'result_package_id', 'package_id'] if name]
                                         # 清除缓存，重新读取
-                                        existing_line.invalidate_recordset(['lot_name', 'qty_done', 'result_package_id', 'package_id'])
-                                        read_result = existing_line.read(['lot_name', 'qty_done', 'result_package_id', 'package_id'])
+                                        existing_line.invalidate_recordset(fields_to_read)
+                                        read_result = existing_line.read(fields_to_read)
                                         if read_result and read_result[0].get('lot_name'):
                                             lot_name = read_result[0].get('lot_name')
-                                            qty_done_after_save = read_result[0].get('qty_done', 0.0) or 0.0
-                                            new_qty_done_from_line_vals = line_vals.get('qty_done')
+                                            qty_done_after_save = read_result[0].get(done_quantity_field, 0.0) or 0.0
+                                            new_qty_done_from_line_vals = line_vals.get(done_quantity_field)
                                             
                                             # **关键修复**：检查是否是包裹操作
                                             # 如果 qty_done 被设为 0，这是包裹操作，不应该添加到会话变量
@@ -1603,7 +1505,7 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                             
                                             _logger.error(
                                                 f"[扫码保存数据] 从数据库重新读取批次号: 批次号={lot_name}, "
-                                                f"记录ID={line_id}, qty_done={qty_done_after_save}, "
+                                                f"记录ID={line_id}, {done_quantity_field}={qty_done_after_save}, "
                                                 f"是否包裹操作={is_package_op}, 命令索引={idx}"
                                             )
                                             
@@ -1611,7 +1513,7 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                             if is_package_op:
                                                 _logger.info(
                                                     f"[扫码保存数据] 跳过添加到会话变量（包裹操作）: 批次号={lot_name}, "
-                                                    f"记录ID={line_id}, qty_done={qty_done_after_save}"
+                                                    f"记录ID={line_id}, {done_quantity_field}={qty_done_after_save}"
                                                 )
                                                 continue  # 跳过，不添加到会话变量
                                 except Exception as e:
@@ -1718,41 +1620,31 @@ class StockBarcodeController(OriginalStockBarcodeController):
                                                     f"批次号={line.lot_name}"
                                                 )
                                 
-                                # 获取数据库中所有存在的批次号（标准化后），且 qty_done > 0
-                                # **关键修复**：只有 qty_done > 0 的批次号才应该保留在会话变量中
-                                # qty_done = 0 的批次号是包裹操作，不应该在会话中
-                                db_lot_names_with_qty_done = set()
+                                done_quantity_field = self._stock_move_line_done_quantity_field()
+                                db_lot_names = set()
                                 for line in all_lines_with_lot:
-                                    if line.lot_name:
-                                        try:
-                                            # 清除缓存，读取最新的 qty_done
-                                            line.invalidate_recordset(['qty_done'])
-                                            read_result = line.read(['qty_done'])
-                                            qty_done = read_result[0].get('qty_done', 0.0) or 0.0 if read_result else 0.0
-                                            
-                                            # 只有 qty_done > 0 的批次号才应该保留在会话变量中
-                                            if qty_done > 0:
-                                                db_lot_names_with_qty_done.add(line.lot_name.strip().lower())
-                                        except Exception as e:
-                                            # 如果读取失败，使用属性访问
-                                            try:
-                                                qty_done = line.qty_done or 0.0
-                                                if qty_done > 0:
-                                                    db_lot_names_with_qty_done.add(line.lot_name.strip().lower())
-                                            except:
-                                                # 如果还是失败，保守处理：不添加到集合中
-                                                pass
-                                
-                                # 从会话变量中移除数据库中不存在的批次号，或 qty_done = 0 的批次号
+                                    if not line.lot_name:
+                                        continue
+                                    lot_name_normalized = line.lot_name.strip().lower()
+                                    if not lot_name_normalized:
+                                        continue
+                                    if done_quantity_field:
+                                        done_qty = self._get_move_line_done_quantity(line)
+                                        if done_qty > 0:
+                                            db_lot_names.add(lot_name_normalized)
+                                    else:
+                                        db_lot_names.add(lot_name_normalized)
+
+                                # 从会话变量中移除数据库中不存在的批次号。
                                 original_scanned_lots = scanned_lots.copy()
-                                scanned_lots = [lot for lot in scanned_lots if lot in db_lot_names_with_qty_done]
+                                scanned_lots = [lot for lot in scanned_lots if lot in db_lot_names]
                                 
                                 if len(scanned_lots) != len(original_scanned_lots):
                                     removed_lots = set(original_scanned_lots) - set(scanned_lots)
                                     _logger.error(
                                         f"[扫码保存数据] 同步会话变量: picking_id={res_id}, "
                                         f"从会话中移除的批次号={list(removed_lots)} "
-                                        f"（数据库中不存在或 qty_done=0）, "
+                                        f"（数据库中不存在）, "
                                         f"原始列表={original_scanned_lots}, 同步后列表={scanned_lots}"
                                     )
                         except Exception as e:
@@ -1950,4 +1842,3 @@ class StockBarcodeController(OriginalStockBarcodeController):
         return super(StockBarcodeController, self).save_barcode_data(
             model, res_id, write_field, write_vals, allow_duplicate_scan, **kwargs
         )
-

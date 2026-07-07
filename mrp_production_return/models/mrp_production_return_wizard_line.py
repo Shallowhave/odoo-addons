@@ -239,34 +239,35 @@ class MrpProductionReturnWizardLine(models.TransientModel):
                 )
                 _logger.info(f"[向导行] 剩余组件移动记录数: {len(remaining_moves)}")
                 
-                # 排除已处理过的产品
+                # 排除已处理过的源组件移动，避免同一产品不同移动被误隐藏。
                 processed_history = record.env['mrp.production.return.history'].search([
-                    ('production_id', '=', production.id)
+                    ('production_id', '=', production.id),
+                    ('source_move_id', '!=', False),
                 ])
-                processed_products = processed_history.mapped('product_id')
-                _logger.info(f"[向导行] 已处理过的产品数: {len(processed_products)}")
+                processed_source_moves = processed_history.mapped('source_move_id').exists()
+                _logger.info(f"[向导行] 已处理过的源移动数: {len(processed_source_moves)}")
                 
-                if processed_products:
+                if processed_source_moves:
                     remaining_moves = remaining_moves.filtered(
-                        lambda m: m.product_id not in processed_products
+                        lambda m: m not in processed_source_moves
                     )
-                    _logger.info(f"[向导行] 过滤已处理产品后，剩余移动记录数: {len(remaining_moves)}")
+                    _logger.info(f"[向导行] 过滤已处理源移动后，剩余移动记录数: {len(remaining_moves)}")
                 
                 # 获取当前已添加的组件（排除当前记录自己）
                 # 关键：使用 exists() 确保只获取真实存在的记录，排除已删除的记录
                 all_lines = record.wizard_id.component_line_ids.exists()
                 existing_lines = all_lines.filtered(
-                    lambda l: l.id != record.id and l.product_id and l.exists()
+                    lambda l: l.id != record.id and l.move_id and l.exists()
                 )
-                existing_product_ids = existing_lines.mapped('product_id').ids if existing_lines else []
+                existing_move_ids = existing_lines.mapped('move_id').ids if existing_lines else []
                 _logger.info(
                     f"[向导行] 当前已添加的组件数: {len(existing_lines)}, "
-                    f"已添加组件ID列表: {existing_product_ids}"
+                    f"已添加移动ID列表: {existing_move_ids}"
                 )
                 
                 # 过滤掉已经添加的组件
                 available_moves = remaining_moves.filtered(
-                    lambda m: m.product_id.id not in existing_product_ids
+                    lambda m: m.id not in existing_move_ids
                 )
                 _logger.info(f"[向导行] 过滤已添加组件后，可用移动记录数: {len(available_moves)}")
                 
@@ -291,7 +292,7 @@ class MrpProductionReturnWizardLine(models.TransientModel):
                 _logger.info(
                     f"[向导行] _compute_available_product_ids 完成: "
                     f"record_id={record.id}, "
-                    f"已添加组件数量={len(existing_product_ids)}, "
+                    f"已添加移动数量={len(existing_move_ids)}, "
                     f"可用组件数量={len(available_products)}, "
                     f"可用组件ID列表={product_ids}, "
                     f"domain_ids={domain_ids}"
@@ -388,6 +389,9 @@ class MrpProductionReturnWizardLine(models.TransientModel):
         # 先触发 wizard_lines 的 onchange 来更新可用产品列表
         wizard_result = self._onchange_wizard_lines()
         domain = wizard_result.get('domain', {}).get('product_id', [('id', 'in', [0])])
+        available_ids = self._get_available_product_ids()
+        if not available_ids:
+            available_ids = [0]
         
         result = {
             'domain': {'product_id': domain}
@@ -425,11 +429,25 @@ class MrpProductionReturnWizardLine(models.TransientModel):
                 'domain': {'product_id': domain}
             }
         
-        # 查找对应的移动记录
-        move = production.move_raw_ids.filtered(
-            lambda m: m.product_id == self.product_id 
-            and m.state in ('done', 'assigned', 'partially_available')
-        )
+        # 查找对应的移动记录。已有 move_id 时优先保留，避免同一产品多移动时选到第一条。
+        move = self.move_id if self.move_id and self.move_id.product_id == self.product_id else self.env['stock.move']
+        if not move:
+            remaining_moves = production.move_raw_ids.filtered(
+                lambda m: m.product_id == self.product_id
+                and m.state in ('done', 'assigned', 'partially_available')
+                and m.product_uom_qty > m.quantity
+            )
+            processed_history = self.env['mrp.production.return.history'].search([
+                ('production_id', '=', production.id),
+                ('source_move_id', '!=', False),
+            ])
+            processed_source_moves = processed_history.mapped('source_move_id').exists()
+            if processed_source_moves:
+                remaining_moves = remaining_moves.filtered(lambda m: m not in processed_source_moves)
+            existing_move_ids = self.wizard_id.component_line_ids.filtered(
+                lambda l: l.id != self.id and l.move_id
+            ).mapped('move_id').ids
+            move = remaining_moves.filtered(lambda m: m.id not in existing_move_ids)
         
         _logger.info(
             f"[向导行] 查找移动记录: 找到 {len(move)} 条记录, "
@@ -451,9 +469,9 @@ class MrpProductionReturnWizardLine(models.TransientModel):
                 'domain': {'product_id': domain}
             }
         
-        # 如果有多个移动记录，使用第一个
+        # 如果有多个移动记录，使用第一条未添加的移动；自动生成行会直接带 move_id。
         if len(move) > 1:
-            _logger.warning(f"[向导行] 找到多条移动记录，使用第一条: {move[0].id}")
+            _logger.warning(f"[向导行] 找到多条候选移动记录，使用第一条未添加移动: {move[0].id}")
             move = move[0]
         
         self.move_id = move
