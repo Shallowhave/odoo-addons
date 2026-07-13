@@ -614,7 +614,7 @@ class StockBarcodeController(OriginalStockBarcodeController):
                         )
                         # 调用父类方法，使用原始的保存逻辑
                         return super(StockBarcodeController, self).save_barcode_data(
-                            model, res_id, write_field, write_vals, allow_duplicate_scan, **kwargs
+                            model, res_id, write_field, write_vals
                         )
                     
                     # 获取当前 picking 中所有移动（stock.move）
@@ -1840,5 +1840,5 @@ class StockBarcodeController(OriginalStockBarcodeController):
         
         # 如果不是 stock.picking 的 move_line_ids 写入，或者没有启用增强验证，调用父类方法
         return super(StockBarcodeController, self).save_barcode_data(
-            model, res_id, write_field, write_vals, allow_duplicate_scan, **kwargs
+            model, res_id, write_field, write_vals
         )

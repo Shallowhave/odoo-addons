@@ -36,6 +36,11 @@
         'wizard/product_unit_setup_wizard_views.xml',
         'views/menu_views.xml',
     ],
+    'assets': {
+        'web.assets_backend': [
+            'stock_unit_mgmt/static/src/js/barcode_picking_model_patch.js',
+        ],
+    },
     'installable': True,
     'auto_install': False,
     'application': False,
