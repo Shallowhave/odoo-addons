@@ -202,8 +202,10 @@ class TestFailClosedSource(unittest.TestCase):
         for value in ("si120x1", "active", "validated", "company_id"):
             self.assertIn(value, domain_source)
         self.assertIn("_find_selectable", self.point_source)
+        self.assertIn("_selectable_domain", self.point_source)
         self.assertIn("default_company_id", self.point_source)
         self.assertIn("default_test_type_id", self.point_source)
+        self.assertIn("default_rfid_device_id", self.point_source)
         self.assertIn("_find_selectable", self.wizard_source)
         self.assertIn("company_id", self.wizard_source)
 
@@ -281,6 +283,10 @@ class TestFailClosedSource(unittest.TestCase):
         self.assertIn('"base.group_multi_company"', test_source)
         self.assertIn('"picking_type_ids"', test_source)
         self.assertIn("self.quality_team.id", test_source)
+        self.assertIn("_ensure_mrp_picking_type", test_source)
+        self.assertIn("self.assertTrue(picking_type)", test_source)
+        self.assertIn('with_user(self.manager)', test_source)
+        self.assertIn("_set_tag_fixture_column", test_source)
         self.assertNotIn('quality.alert.team"].search([], limit=1)', test_source)
 
     def test_diagnostic_actions_require_manager_before_returning_data(self):
