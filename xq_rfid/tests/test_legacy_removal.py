@@ -136,6 +136,9 @@ class TestFailClosedSource(unittest.TestCase):
     def setUpClass(cls):
         cls.device_source = (ADDON / "models/rfid_device.py").read_text(encoding="utf-8")
         cls.point_source = (ADDON / "models/quality_point.py").read_text(encoding="utf-8")
+        cls.point_view_source = (ADDON / "views/quality_point_views.xml").read_text(
+            encoding="utf-8"
+        )
         cls.quality_source = (ADDON / "models/quality_check.py").read_text(encoding="utf-8")
         cls.wizard_source = (ADDON / "wizard/rfid_read_wizard.py").read_text(
             encoding="utf-8"
@@ -204,18 +207,37 @@ class TestFailClosedSource(unittest.TestCase):
         self.assertIn("_find_selectable", self.wizard_source)
         self.assertIn("company_id", self.wizard_source)
 
-    def test_quality_pass_is_recordset_safe_and_required_paths_fail_closed(self):
+    def test_quality_pass_has_pure_recordset_plan_before_execution(self):
         source = self._method_source(self.quality_source, "QualityCheck", "do_pass")
-        prepare_source = self._method_source(
-            self.quality_source, "QualityCheck", "_prepare_rfid_before_pass"
+        plan_source = self._method_source(
+            self.quality_source, "QualityCheck", "_plan_rfid_before_pass"
         )
-        self.assertIn("for check in self", source)
-        self.assertLess(source.index("_prepare_rfid_before_pass"), source.index("super("))
+        execute_source = self._method_source(
+            self.quality_source, "QualityCheck", "_execute_rfid_pass_plan"
+        )
+        self.assertIn("plans = [", source)
+        self.assertLess(source.index("_plan_rfid_before_pass"), source.index("_execute_rfid_pass_plan"))
+        self.assertLess(source.index("_execute_rfid_pass_plan"), source.index("super("))
         self.assertIn("super(QualityCheck, check).do_pass()", source)
-        self.assertIn("hardware_required", prepare_source)
-        self.assertIn("lot_producing_id", prepare_source)
-        self.assertIn("请先设置成品批次", prepare_source)
+        for forbidden in (
+            "generate_rfid_for_lot",
+            "write_and_verify",
+            "self.rfid_tag_id =",
+            ".write(",
+            ".create(",
+        ):
+            self.assertNotIn(forbidden, plan_source)
+        self.assertIn("hardware_required", plan_source)
+        self.assertIn("lot_producing_id", plan_source)
+        self.assertIn("请先设置成品批次", plan_source)
+        self.assertIn("generate_rfid_for_lot", execute_source)
         self.assertNotIn("_logger.warning", source)
+
+    def test_quality_point_view_configures_required_rfid_labels(self):
+        self.assertIn('name="rfid_device_required"', self.point_view_source)
+        self.assertIn("test_type != 'rfid_label'", self.point_view_source)
+        self.assertIn("test_type != 'rfid_write'", self.point_view_source)
+        self.assertIn("not rfid_device_required", self.point_view_source)
 
     def test_public_compatibility_methods_require_manager_before_returning_data(self):
         for method_name in (
@@ -234,21 +256,32 @@ class TestFailClosedSource(unittest.TestCase):
 
     def test_existing_label_tag_is_validated_before_hardware_write(self):
         prepare_source = self._method_source(
-            self.quality_source, "QualityCheck", "_prepare_rfid_before_pass"
+            self.quality_source, "QualityCheck", "_plan_rfid_before_pass"
         )
         write_source = self._method_source(
             self.quality_source, "QualityCheck", "_write_to_rfid_device"
         )
         self.assertIn("_ensure_rfid_tag_matches_finished_lot", prepare_source)
-        self.assertLess(
-            prepare_source.index("_ensure_rfid_tag_matches_finished_lot"),
-            prepare_source.index("_write_to_rfid_device"),
+        execute_source = self._method_source(
+            self.quality_source, "QualityCheck", "_execute_rfid_pass_plan"
         )
+        self.assertIn("_write_to_rfid_device", execute_source)
         self.assertIn("finished_lot.name", write_source)
         self.assertIn("product = self.production_id.product_id", write_source)
         self.assertNotIn("rfid_tag.stock_prod_lot_id.name", write_source)
         self.assertNotIn("self.product_id.default_code", write_source)
         self.assertNotIn("self.product_id.name", write_source)
+
+    def test_deferred_transaction_fixtures_use_real_manager_and_valid_qc_structure(self):
+        test_source = (ADDON / "tests/test_device_fail_closed.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("cls.env = cls.setup_env(user=cls.manager)", test_source)
+        self.assertIn('"xq_rfid.group_rfid_manager"', test_source)
+        self.assertIn('"base.group_multi_company"', test_source)
+        self.assertIn('"picking_type_ids"', test_source)
+        self.assertIn("self.quality_team.id", test_source)
+        self.assertNotIn('quality.alert.team"].search([], limit=1)', test_source)
 
     def test_diagnostic_actions_require_manager_before_returning_data(self):
         for method_name in ("action_view_write_logs", "action_view_read_logs"):

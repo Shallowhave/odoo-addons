@@ -71,39 +71,89 @@ class QualityCheck(models.Model):
                 record.rfid_write_content = ''
 
     def do_pass(self):
-        """Preflight every check, then preserve singleton parent semantics."""
-        for check in self:
-            check._prepare_rfid_before_pass()
+        """Validate the full recordset before any RFID side effect."""
+        plans = [check._plan_rfid_before_pass() for check in self]
+
+        for check, plan in zip(self, plans):
+            check._execute_rfid_pass_plan(plan)
 
         result = None
         for check in self:
             result = super(QualityCheck, check).do_pass()
         return result
 
-    def _prepare_rfid_before_pass(self):
+    def _plan_rfid_before_pass(self):
+        """Return a read-only execution plan for one quality check."""
         self.ensure_one()
         if self.test_type == 'rfid_label':
             hardware_required = self.point_id.rfid_device_required
             if not self.production_id:
                 if hardware_required:
                     raise UserError(_('RFID 标签质检缺少生产订单。'))
-                return
-            lot = self.production_id.lot_producing_id
-            if not lot:
+                return None
+            finished_lot = self.production_id.lot_producing_id
+            if not finished_lot:
                 if hardware_required:
                     raise UserError(_('请先设置成品批次/序列号。'))
-                return
-            rfid_tag = self.rfid_tag_id or self.production_id.generate_rfid_for_lot(
-                lot_id=lot,
+                return None
+            self._ensure_finished_lot_matches_production(finished_lot)
+            rfid_tag = self.rfid_tag_id or self.env['rfid.tag'].search([
+                ('stock_prod_lot_id', '=', finished_lot.id),
+            ], limit=1)
+            if rfid_tag:
+                self._ensure_rfid_tag_matches_finished_lot(rfid_tag, finished_lot)
+            device = self.point_id.rfid_device_id
+            if hardware_required:
+                self._ensure_rfid_device_ready(device)
+            return {
+                'operation': 'rfid_label',
+                'finished_lot': finished_lot,
+                'rfid_tag': rfid_tag,
+                'hardware_required': hardware_required,
+            }
+        if self.test_type == 'rfid_write':
+            device = self.point_id.rfid_device_id
+            self._ensure_rfid_device_ready(device)
+            return {
+                'operation': 'rfid_write',
+                'payload': self._prepare_rfid_write_data(),
+            }
+        return None
+
+    def _execute_rfid_pass_plan(self, plan):
+        self.ensure_one()
+        if not plan:
+            return
+        if plan['operation'] == 'rfid_label':
+            finished_lot = plan['finished_lot']
+            rfid_tag = plan['rfid_tag'] or self.production_id.generate_rfid_for_lot(
+                lot_id=finished_lot,
                 quality_check_id=self.id,
             )
-            self._ensure_rfid_tag_matches_finished_lot(rfid_tag, lot)
+            self._ensure_rfid_tag_matches_finished_lot(rfid_tag, finished_lot)
             if not self.rfid_tag_id:
                 self.rfid_tag_id = rfid_tag
-            if hardware_required:
-                self._write_to_rfid_device(rfid_tag, lot)
-        elif self.test_type == 'rfid_write':
-            self._execute_rfid_write()
+            if plan['hardware_required']:
+                self._write_to_rfid_device(rfid_tag, finished_lot)
+        elif plan['operation'] == 'rfid_write':
+            self._execute_rfid_write(plan['payload'])
+
+    def _ensure_finished_lot_matches_production(self, finished_lot):
+        self.ensure_one()
+        if self.production_id.company_id not in self.env.companies:
+            raise UserError(_('无权访问该生产订单的公司。'))
+        if finished_lot.product_id != self.production_id.product_id:
+            raise UserError(_('成品批次产品与生产订单产品不一致。'))
+        if finished_lot.company_id != self.production_id.company_id:
+            raise UserError(_('成品批次与生产订单公司不一致。'))
+        if self.product_id and self.product_id != self.production_id.product_id:
+            raise UserError(_('质检产品与生产订单产品不一致。'))
+
+    def _ensure_rfid_device_ready(self, device):
+        if not device:
+            raise UserError(_('请先配置 RFID 设备！'))
+        device._ensure_rfid_manager()
+        device._ensure_operational()
 
     def _ensure_rfid_tag_matches_finished_lot(self, rfid_tag, finished_lot):
         self.ensure_one()
@@ -149,18 +199,12 @@ class QualityCheck(models.Model):
             'production_order': self.production_id.name,
         })
 
-    def _execute_rfid_write(self):
-        """
-        执行 RFID 写入操作
-
-        此方法处理 rfid_write 类型的质检点
-        """
-        # 检查是否配置了 RFID 设备
-        if not self.point_id.rfid_device_id:
-            raise UserError(_('请先配置 RFID 设备！'))
-
+    def _execute_rfid_write(self, payload=None):
+        """Execute the already validated RFID write plan."""
         device = self.point_id.rfid_device_id
-        return device.write_and_verify(self._prepare_rfid_write_data())
+        if not device:
+            raise UserError(_('请先配置 RFID 设备！'))
+        return device.write_and_verify(payload or self._prepare_rfid_write_data())
 
     def _prepare_rfid_write_data(self):
         """
