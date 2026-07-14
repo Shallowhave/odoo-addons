@@ -139,6 +139,12 @@ class TestFailClosedSource(unittest.TestCase):
         cls.point_view_source = (ADDON / "views/quality_point_views.xml").read_text(
             encoding="utf-8"
         )
+        cls.security_source = (ADDON / "security/security.xml").read_text(
+            encoding="utf-8"
+        )
+        cls.device_view_source = (ADDON / "views/rfid_device_views.xml").read_text(
+            encoding="utf-8"
+        )
         cls.quality_source = (ADDON / "models/quality_check.py").read_text(encoding="utf-8")
         cls.wizard_source = (ADDON / "wizard/rfid_read_wizard.py").read_text(
             encoding="utf-8"
@@ -240,6 +246,40 @@ class TestFailClosedSource(unittest.TestCase):
         self.assertIn("test_type != 'rfid_label'", self.point_view_source)
         self.assertIn("test_type != 'rfid_write'", self.point_view_source)
         self.assertIn("not rfid_device_required", self.point_view_source)
+
+    def test_device_company_rule_uses_allowed_company_context(self):
+        self.assertIn('id="rfid_device_company_rule"', self.security_source)
+        self.assertIn("model_rfid_device_config", self.security_source)
+        self.assertIn("[('company_id', 'in', company_ids)]", self.security_source)
+        self.assertIn("xq_rfid.group_rfid_user", self.security_source)
+
+    def test_device_company_is_visible_in_form_and_list_views(self):
+        from lxml import etree
+
+        root = etree.fromstring(self.device_view_source.encode())
+        for view_id in (
+            "rfid_device_config_form_view",
+            "rfid_device_config_tree_view",
+        ):
+            with self.subTest(view=view_id):
+                fields = root.xpath(
+                    f'./record[@id="{view_id}"]/field[@name="arch"]'
+                    '//field[@name="company_id"]'
+                )
+                self.assertEqual(len(fields), 1)
+                self.assertNotIn("groups", fields[0].attrib)
+
+    def test_quality_point_has_explicit_device_company_constraint(self):
+        self.assertIn("check_company=True", self.point_source)
+        self.assertIn(
+            '@api.constrains("company_id", "rfid_device_id")',
+            self.point_source,
+        )
+        constraint_source = self._method_source(
+            self.point_source, "QualityPoint", "_check_rfid_device_company"
+        )
+        self.assertIn("rfid_device_id.company_id != point.company_id", constraint_source)
+        self.assertIn("ValidationError", constraint_source)
 
     def test_public_compatibility_methods_require_manager_before_returning_data(self):
         for method_name in (

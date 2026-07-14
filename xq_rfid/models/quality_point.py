@@ -6,7 +6,8 @@
 #
 ##############################################################################
 
-from odoo import api, fields, models
+from odoo import _, api, fields, models
+from odoo.exceptions import ValidationError
 
 
 _SELECTABLE_DEVICE_DOMAIN = """[
@@ -83,6 +84,18 @@ class QualityPoint(models.Model):
             if device_was_supplied or needs_default:
                 vals["rfid_device_id"] = eligible_device.id or False
         return super().create(vals_list)
+
+    @api.constrains("company_id", "rfid_device_id")
+    def _check_rfid_device_company(self):
+        for point in self:
+            if (
+                point.rfid_device_id
+                and point.company_id
+                and point.rfid_device_id.company_id != point.company_id
+            ):
+                raise ValidationError(_(
+                    "RFID device and quality point must belong to the same company."
+                ))
 
     @api.onchange("test_type_id", "company_id")
     def _onchange_test_type_id(self):

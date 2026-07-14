@@ -34,7 +34,7 @@
                         <group string="基本信息">
                             <field name="active"/>
                             <field name="sequence"/>
-                            <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="company_id"/>
                             <field name="device_type"/>
                             <field name="migration_required" readonly="1"/>
                         </group>
@@ -84,7 +84,7 @@
             <list string="RFID 设备">
                 <field name="sequence" widget="handle"/>
                 <field name="name"/>
-                <field name="company_id" groups="base.group_multi_company"/>
+                <field name="company_id"/>
                 <field name="device_type"/>
                 <field name="validation_state" widget="badge"/>
                 <field name="connection_status" widget="badge"
@@ -106,7 +106,7 @@
             <search string="RFID 设备">
                 <field name="name"/>
                 <field name="device_type"/>
-                <field name="company_id" groups="base.group_multi_company"/>
+                <field name="company_id"/>
                 <filter string="启用" name="active" domain="[('active', '=', True)]"/>
                 <filter string="已验证" name="validated" domain="[('validation_state', '=', 'validated')]"/>
                 <filter string="连接错误" name="error" domain="[('connection_status', '=', 'error')]"/>
