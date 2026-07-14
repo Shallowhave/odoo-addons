@@ -71,45 +71,38 @@ class QualityCheck(models.Model):
                 record.rfid_write_content = ''
 
     def do_pass(self):
-        """
-        质检通过时自动生成 RFID 标签
-        """
-        # 如果是 RFID 标签类型的质检，先生成 RFID，再通过质检
-        if self.test_type == 'rfid_label' and self.production_id and not self.rfid_tag_id:
-            # 使用生产订单的成品批次号
+        """Preflight every check, then preserve singleton parent semantics."""
+        for check in self:
+            check._prepare_rfid_before_pass()
+
+        result = None
+        for check in self:
+            result = super(QualityCheck, check).do_pass()
+        return result
+
+    def _prepare_rfid_before_pass(self):
+        self.ensure_one()
+        if self.test_type == 'rfid_label':
+            hardware_required = self.point_id.rfid_device_required
+            if not self.production_id:
+                if hardware_required:
+                    raise UserError(_('RFID 标签质检缺少生产订单。'))
+                return
             lot = self.production_id.lot_producing_id
-
-            if lot:
-                try:
-                    # 调用生产订单的生成方法
-                    rfid_tag = self.production_id.generate_rfid_for_lot(
-                        lot_id=lot,
-                        quality_check_id=self.id
-                    )
-
-                    # 关联到当前质检
-                    self.rfid_tag_id = rfid_tag.id
-
-                    # 硬件写入被要求时必须成功，否则质检保持未通过。
-                    if self.point_id.rfid_device_required:
-                        self._write_to_rfid_device(rfid_tag)
-
-                except Exception as e:
-                    # RFID 生成失败会抛出异常，阻止质检通过
-                    raise UserError(_('RFID 生成失败：%s') % str(e))
-
-        # 如果是 RFID 写入类型的质检，执行 RFID 写入操作
+            if not lot:
+                if hardware_required:
+                    raise UserError(_('请先设置成品批次/序列号。'))
+                return
+            rfid_tag = self.rfid_tag_id or self.production_id.generate_rfid_for_lot(
+                lot_id=lot,
+                quality_check_id=self.id,
+            )
+            if not self.rfid_tag_id:
+                self.rfid_tag_id = rfid_tag
+            if hardware_required:
+                self._write_to_rfid_device(rfid_tag)
         elif self.test_type == 'rfid_write':
-            try:
-                self._execute_rfid_write()
-            except Exception as e:
-                # RFID 写入失败会抛出异常，阻止质检通过
-                raise UserError(_('RFID 写入失败：%s') % str(e))
-
-        # 调用父类方法执行质检通过
-        res = super(QualityCheck, self).do_pass()
-
-        return res
+            self._execute_rfid_write()
 
     def action_view_rfid_tag(self):
         """查看关联的 RFID 标签"""
@@ -128,13 +121,18 @@ class QualityCheck(models.Model):
         }
 
     def _write_to_rfid_device(self, rfid_tag):
-        """Validate the required device and fail until the Adapter exists."""
-        del rfid_tag
+        """Delegate required label writes to the canonical device operation."""
         device = self.point_id.rfid_device_id
         if not device:
             raise UserError(_('请先配置 RFID 设备！'))
-        device._ensure_operational()
-        device._raise_adapter_not_configured()
+        return device.write_and_verify({
+            'rfid_number': rfid_tag.name,
+            'product_code': self.product_id.default_code or '',
+            'product_name': self.product_id.name,
+            'lot_number': rfid_tag.stock_prod_lot_id.name,
+            'production_date': rfid_tag.production_date,
+            'production_order': self.production_id.name,
+        })
 
     def _execute_rfid_write(self):
         """
@@ -146,11 +144,8 @@ class QualityCheck(models.Model):
         if not self.point_id.rfid_device_id:
             raise UserError(_('请先配置 RFID 设备！'))
 
-        # 获取 RFID 设备
         device = self.point_id.rfid_device_id
-
-        device._ensure_operational()
-        device._raise_adapter_not_configured()
+        return device.write_and_verify(self._prepare_rfid_write_data())
 
     def _prepare_rfid_write_data(self):
         """

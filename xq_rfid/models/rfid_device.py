@@ -137,7 +137,23 @@ class RfidDeviceConfig(models.Model):
         if not self.env.user.has_group("xq_rfid.group_rfid_manager"):
             raise UserError(_("只有 RFID 管理员可以执行设备配置和硬件操作。"))
 
-    def _ensure_operational(self):
+    @api.model
+    def _selectable_domain(self, company=None):
+        company = company or self.env.company
+        if company not in self.env.companies:
+            raise UserError(_("无权访问该公司的 RFID 设备。"))
+        return [
+            ("device_type", "=", "si120x1"),
+            ("active", "=", True),
+            ("validation_state", "=", "validated"),
+            ("company_id", "=", company.id),
+        ]
+
+    @api.model
+    def _find_selectable(self, company=None):
+        return self.search(self._selectable_domain(company), limit=1)
+
+    def _ensure_probe_ready(self):
         self.ensure_one()
         if not self.active:
             raise UserError(_("RFID 设备已停用。"))
@@ -145,32 +161,46 @@ class RfidDeviceConfig(models.Model):
             raise UserError(_("旧 RFID 设备必须重新配置。"))
         if self.device_type != "si120x1":
             raise UserError(_("该设备不是 SI120X1。"))
-        if self.validation_state != "validated":
-            raise UserError(_("SI120X1 设备尚未验证。"))
         if self.company_id not in self.env.companies:
             raise UserError(_("无权访问该公司的 RFID 设备。"))
+        return True
+
+    def _ensure_operational(self):
+        self._ensure_probe_ready()
+        if self.validation_state != "validated":
+            raise UserError(_("SI120X1 设备尚未验证。"))
         return True
 
     def _raise_adapter_not_configured(self):
         raise UserError(_("RFID Adapter 尚未配置。"))
 
+    def write_and_verify(self, payload):
+        del payload
+        self._ensure_rfid_manager()
+        self._ensure_operational()
+        self._raise_adapter_not_configured()
+
+    def read_memory(self, epc_hex, memory_bank, word_offset, word_count):
+        del epc_hex, memory_bank, word_offset, word_count
+        self._ensure_rfid_manager()
+        self._ensure_operational()
+        self._raise_adapter_not_configured()
+
     def action_test_connection(self):
         self.ensure_one()
         self._ensure_rfid_manager()
-        self._ensure_operational()
+        self._ensure_probe_ready()
         self._raise_adapter_not_configured()
 
     def action_write_test_tag(self):
         self.ensure_one()
         self._ensure_rfid_manager()
-        self._ensure_operational()
-        self._raise_adapter_not_configured()
+        self.write_and_verify({"test": True})
 
     def action_read_test_tag(self):
         self.ensure_one()
         self._ensure_rfid_manager()
-        self._ensure_operational()
-        self._raise_adapter_not_configured()
+        self.read_memory("00", "user", 0, 1)
 
     def action_view_write_logs(self):
         self.ensure_one()

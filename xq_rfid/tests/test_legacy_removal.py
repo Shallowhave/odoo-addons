@@ -135,7 +135,11 @@ class TestFailClosedSource(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.device_source = (ADDON / "models/rfid_device.py").read_text(encoding="utf-8")
+        cls.point_source = (ADDON / "models/quality_point.py").read_text(encoding="utf-8")
         cls.quality_source = (ADDON / "models/quality_check.py").read_text(encoding="utf-8")
+        cls.wizard_source = (ADDON / "wizard/rfid_read_wizard.py").read_text(
+            encoding="utf-8"
+        )
 
     @staticmethod
     def _method_source(source, class_name, method_name):
@@ -153,18 +157,64 @@ class TestFailClosedSource(unittest.TestCase):
         )
         return ast.get_source_segment(source, method)
 
-    def test_required_rfid_label_write_uses_selected_operational_device(self):
-        source = self._method_source(
+    def test_business_paths_delegate_to_canonical_device_operations(self):
+        label_source = self._method_source(
             self.quality_source, "QualityCheck", "_write_to_rfid_device"
         )
-        self.assertIn("self.point_id.rfid_device_id", source)
-        self.assertIn("device._ensure_operational()", source)
-        self.assertIn("device._raise_adapter_not_configured()", source)
-        self.assertNotIn("rfid.device.service", source)
+        write_source = self._method_source(
+            self.quality_source, "QualityCheck", "_execute_rfid_write"
+        )
+        read_source = self._method_source(
+            self.wizard_source, "RfidReadWizard", "action_read_rfid"
+        )
+        self.assertIn("device.write_and_verify(", label_source)
+        self.assertIn("device.write_and_verify(", write_source)
+        self.assertIn("self.device_id.read_memory(", read_source)
+        for source in (label_source, write_source, read_source):
+            self.assertNotIn("_ensure_operational", source)
+            self.assertNotIn("_raise_adapter_not_configured", source)
 
-    def test_required_rfid_label_write_failure_is_not_swallowed(self):
+    def test_device_operations_own_the_fail_closed_guards(self):
+        for method_name in ("write_and_verify", "read_memory"):
+            with self.subTest(method=method_name):
+                source = self._method_source(
+                    self.device_source, "RfidDeviceConfig", method_name
+                )
+                self.assertIn("self._ensure_rfid_manager()", source)
+                self.assertIn("self._ensure_operational()", source)
+                self.assertIn("self._raise_adapter_not_configured()", source)
+
+    def test_connection_probe_does_not_require_validated_state(self):
+        source = self._method_source(
+            self.device_source, "RfidDeviceConfig", "action_test_connection"
+        )
+        self.assertIn("self._ensure_probe_ready()", source)
+        self.assertNotIn("self._ensure_operational()", source)
+
+    def test_selectable_policy_is_canonical_and_company_aware(self):
+        domain_source = self._method_source(
+            self.device_source, "RfidDeviceConfig", "_selectable_domain"
+        )
+        self.assertIn("company", domain_source)
+        for value in ("si120x1", "active", "validated", "company_id"):
+            self.assertIn(value, domain_source)
+        self.assertIn("_find_selectable", self.point_source)
+        self.assertIn("default_company_id", self.point_source)
+        self.assertIn("default_test_type_id", self.point_source)
+        self.assertIn("_find_selectable", self.wizard_source)
+        self.assertIn("company_id", self.wizard_source)
+
+    def test_quality_pass_is_recordset_safe_and_required_paths_fail_closed(self):
         source = self._method_source(self.quality_source, "QualityCheck", "do_pass")
-        self.assertNotIn("RFID 设备写入失败不影响", source)
+        prepare_source = self._method_source(
+            self.quality_source, "QualityCheck", "_prepare_rfid_before_pass"
+        )
+        self.assertIn("for check in self", source)
+        self.assertLess(source.index("_prepare_rfid_before_pass"), source.index("super("))
+        self.assertIn("super(QualityCheck, check).do_pass()", source)
+        self.assertIn("hardware_required", prepare_source)
+        self.assertIn("lot_producing_id", prepare_source)
+        self.assertIn("请先设置成品批次", prepare_source)
         self.assertNotIn("_logger.warning", source)
 
     def test_diagnostic_actions_require_manager_before_returning_data(self):
