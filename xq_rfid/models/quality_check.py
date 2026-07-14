@@ -90,15 +90,9 @@ class QualityCheck(models.Model):
                     # 关联到当前质检
                     self.rfid_tag_id = rfid_tag.id
 
-                    # 如果质检点配置了需要 RFID 设备，则调用写入接口
+                    # 硬件写入被要求时必须成功，否则质检保持未通过。
                     if self.point_id.rfid_device_required:
-                        try:
-                            self._write_to_rfid_device(rfid_tag)
-                        except Exception as e:
-                            # 设备写入失败不影响 RFID 生成，只记录日志
-                            import logging
-                            _logger = logging.getLogger(__name__)
-                            _logger.warning('RFID 设备写入失败：%s', str(e))
+                        self._write_to_rfid_device(rfid_tag)
 
                 except Exception as e:
                     # RFID 生成失败会抛出异常，阻止质检通过
@@ -134,43 +128,13 @@ class QualityCheck(models.Model):
         }
 
     def _write_to_rfid_device(self, rfid_tag):
-        """
-        写入 RFID 设备（硬件接口）
-
-        此方法为硬件对接预留接口，子类或其他模块可以重写此方法
-        实现具体的硬件写入逻辑
-
-        :param rfid_tag: RFID 标签记录
-        :return: True 表示写入成功，False 或抛出异常表示失败
-        """
-        # 调用 RFID 设备服务
-        device_service = self.env['rfid.device.service']
-
-        # 准备要写入的数据
-        write_data = {
-            'rfid_number': rfid_tag.name,
-            'product_code': self.product_id.default_code or '',
-            'product_name': self.product_id.name,
-            'lot_number': self.lot_id.name,
-            'production_date': rfid_tag.production_date,
-            'production_order': self.production_id.name,
-        }
-
-        # 调用设备写入方法
-        result = device_service.write_rfid_tag(write_data)
-
-        if not result.get('success'):
-            raise UserError(_('RFID 设备写入失败：%s') % result.get('error', '未知错误'))
-
-        # 记录写入日志
-        rfid_tag.message_post(
-            body=_('RFID 标签已写入硬件设备<br/>质检点: %s<br/>设备响应: %s') % (
-                self.point_id.title,
-                result.get('message', '成功')
-            )
-        )
-
-        return True
+        """Validate the required device and fail until the Adapter exists."""
+        del rfid_tag
+        device = self.point_id.rfid_device_id
+        if not device:
+            raise UserError(_('请先配置 RFID 设备！'))
+        device._ensure_operational()
+        device._raise_adapter_not_configured()
 
     def _execute_rfid_write(self):
         """
@@ -185,34 +149,8 @@ class QualityCheck(models.Model):
         # 获取 RFID 设备
         device = self.point_id.rfid_device_id
 
-        # 检查设备连接状态
-        if device.connection_status != 'connected':
-            raise UserError(_('RFID 设备未连接，请先测试连接！'))
-
-        # 准备要写入的数据
-        write_data = self._prepare_rfid_write_data()
-
-        # 根据设备类型调用相应的写入服务
-        if device.device_type == 'uhf_reader18':
-            result = self._write_to_uhf_reader18(device, write_data)
-        else:
-            # 使用通用设备服务
-            device_service = self.env['rfid.device.service']
-            result = device_service.write_rfid_tag(write_data)
-
-        if not result.get('success'):
-            raise UserError(_('RFID 写入失败：%s') % result.get('error', '未知错误'))
-
-        # 记录写入日志
-        self.message_post(
-            body=_('RFID 写入成功<br/>设备: %s<br/>数据: %s<br/>响应: %s') % (
-                device.name,
-                str(write_data),
-                result.get('message', '成功')
-            )
-        )
-
-        return result
+        device._ensure_operational()
+        device._raise_adapter_not_configured()
 
     def _prepare_rfid_write_data(self):
         """
@@ -233,66 +171,4 @@ class QualityCheck(models.Model):
         }
 
         return data
-
-    def _write_to_uhf_reader18(self, device, write_data):
-        """
-        使用 UHFReader18 设备写入 RFID
-        """
-        try:
-            # 获取 UHFReader18 服务
-            uhf_service = self.env['uhf.reader18.service']
-
-            # 准备写入的数据（转换为设备需要的格式）
-            formatted_data = self._format_data_for_uhf(write_data)
-
-            # 将字符串转换为字节数据
-            data_bytes = formatted_data.encode('utf-8')
-
-            # 将字节数据转换为字列表（每2个字节为一个字）
-            word_list = []
-            for i in range(0, len(data_bytes), 2):
-                if i + 1 < len(data_bytes):
-                    word = (data_bytes[i] << 8) | data_bytes[i + 1]
-                else:
-                    word = data_bytes[i] << 8  # 最后一个字节
-                word_list.append(word)
-
-            inventory = uhf_service.inventory_tags(device.ip_address, int(device.port))
-            epc_list = inventory.get('epc_list') or []
-            if not inventory.get('success') or not epc_list:
-                raise UserError(_('未检测到可写入的 RFID 标签，请先将目标标签放到读写器范围内。'))
-            if len(epc_list) > 1:
-                raise UserError(_('检测到多个 RFID 标签，请一次只放置一个目标标签后重试。'))
-            epc_hex = epc_list[0]['epc']
-
-            # 执行写入操作 - 使用用户存储区而不是EPC存储区
-            result = uhf_service.write_data(
-                ip=device.ip_address,
-                port=int(device.port),
-                epc_hex=epc_hex,
-                mem_bank=0x03,  # 用户存储区（User Memory）
-                word_ptr=0x00,  # 从用户存储区的开始位置写入
-                write_data=word_list
-            )
-
-            return result
-
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-
-    def _format_data_for_uhf(self, data):
-        """
-        将数据格式化为 UHFReader18 设备需要的格式
-        """
-        # 这里可以根据实际需求格式化数据
-        # 例如：将数据转换为十六进制、JSON 或其他格式
-
-        # 简单示例：将关键信息组合成字符串
-        formatted_data = f"PO:{data.get('production_order', '')}|" \
-                        f"PN:{data.get('product_name', '')}|" \
-                        f"PC:{data.get('product_code', '')}|" \
-                        f"BN:{data.get('batch_number', '')}|" \
-                        f"PD:{data.get('production_date', '')}"
-
-        return formatted_data
 

@@ -16,13 +16,7 @@ FORBIDDEN_ROOTS = [
     ADDON / "static",
 ]
 TOKENS = ("UHFReader18", "uhf_reader18", "uhf.reader18")
-EXPECTED_TRANSITIONAL_OFFENDERS = {
-    "models/quality_point.py",
-    "models/quality_check.py",
-    "models/rfid_device.py",
-    "wizard/rfid_read_wizard.py",
-    "views/rfid_device_views.xml",
-}
+EXPECTED_TRANSITIONAL_OFFENDERS = set()
 
 
 def _legacy_offenders():
@@ -135,6 +129,52 @@ class TestMigration(unittest.TestCase):
                 "uhf_reader18",
             ],
         )
+
+
+class TestFailClosedSource(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.device_source = (ADDON / "models/rfid_device.py").read_text(encoding="utf-8")
+        cls.quality_source = (ADDON / "models/quality_check.py").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _method_source(source, class_name, method_name):
+        tree = ast.parse(source)
+        model = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        )
+        method = next(
+            node
+            for node in model.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == method_name
+        )
+        return ast.get_source_segment(source, method)
+
+    def test_required_rfid_label_write_uses_selected_operational_device(self):
+        source = self._method_source(
+            self.quality_source, "QualityCheck", "_write_to_rfid_device"
+        )
+        self.assertIn("self.point_id.rfid_device_id", source)
+        self.assertIn("device._ensure_operational()", source)
+        self.assertIn("device._raise_adapter_not_configured()", source)
+        self.assertNotIn("rfid.device.service", source)
+
+    def test_required_rfid_label_write_failure_is_not_swallowed(self):
+        source = self._method_source(self.quality_source, "QualityCheck", "do_pass")
+        self.assertNotIn("RFID 设备写入失败不影响", source)
+        self.assertNotIn("_logger.warning", source)
+
+    def test_diagnostic_actions_require_manager_before_returning_data(self):
+        for method_name in ("action_view_write_logs", "action_view_read_logs"):
+            with self.subTest(method=method_name):
+                source = self._method_source(
+                    self.device_source, "RfidDeviceConfig", method_name
+                )
+                self.assertIn("self._ensure_rfid_manager()", source)
+                self.assertLess(source.index("_ensure_rfid_manager"), source.index("return"))
 
 
 class TestLegacyDisabledRestrictions(unittest.TestCase):
