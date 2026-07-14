@@ -17,17 +17,11 @@ FORBIDDEN_ROOTS = [
 ]
 TOKENS = ("UHFReader18", "uhf_reader18", "uhf.reader18")
 EXPECTED_TRANSITIONAL_OFFENDERS = {
-    "models/__init__.py",
-    "models/uhf_reader18_client.py",
     "models/quality_point.py",
     "models/quality_check.py",
     "models/rfid_device.py",
-    "wizard/uhf_reader18_wizard.py",
-    "wizard/__init__.py",
-    "wizard/uhf_reader18_wizard_views.xml",
     "wizard/rfid_read_wizard.py",
     "views/rfid_device_views.xml",
-    "security/ir.model.access.csv",
 }
 
 
@@ -82,6 +76,16 @@ class TestLegacyRemoval(unittest.TestCase):
             set(),
             "Tasks 2-3 must remove the explicitly tracked transitional offenders",
         )
+
+    def test_manifest_does_not_load_legacy_wizard(self):
+        manifest = ast.literal_eval((ADDON / "__manifest__.py").read_text(encoding="utf-8"))
+        self.assertNotIn("wizard/uhf_reader18_wizard_views.xml", manifest["data"])
+
+    def test_acl_does_not_reference_deleted_models(self):
+        acl = (ADDON / "security/ir.model.access.csv").read_text(encoding="utf-8")
+        self.assertNotIn("model_uhf_reader18_service", acl)
+        self.assertNotIn("model_uhf_reader18_config_wizard", acl)
+        self.assertNotIn("model_uhf_reader18_demo_wizard", acl)
 
     def test_manifest_references_existing_files(self):
         manifest = ast.literal_eval((ADDON / "__manifest__.py").read_text(encoding="utf-8"))

@@ -76,7 +76,6 @@
         'views/mrp_production_views.xml',  # 生产订单视图
         'views/quality_check_wizard_views.xml',  # 质检向导视图
         'wizard/rfid_read_wizard_views.xml',  # RFID 读取向导视图
-        'wizard/uhf_reader18_wizard_views.xml',  # UHFReader18 向导视图
     ],
     'application': True,
 }
