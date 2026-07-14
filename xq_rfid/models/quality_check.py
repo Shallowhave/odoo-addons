@@ -97,12 +97,26 @@ class QualityCheck(models.Model):
                 lot_id=lot,
                 quality_check_id=self.id,
             )
+            self._ensure_rfid_tag_matches_finished_lot(rfid_tag, lot)
             if not self.rfid_tag_id:
                 self.rfid_tag_id = rfid_tag
             if hardware_required:
-                self._write_to_rfid_device(rfid_tag)
+                self._write_to_rfid_device(rfid_tag, lot)
         elif self.test_type == 'rfid_write':
             self._execute_rfid_write()
+
+    def _ensure_rfid_tag_matches_finished_lot(self, rfid_tag, finished_lot):
+        self.ensure_one()
+        if rfid_tag.stock_prod_lot_id != finished_lot:
+            raise UserError(_('现有 RFID 标签与生产订单的成品批次不一致。'))
+        if finished_lot.product_id != self.production_id.product_id:
+            raise UserError(_('成品批次产品与生产订单产品不一致。'))
+        if rfid_tag.product_id and rfid_tag.product_id != self.production_id.product_id:
+            raise UserError(_('现有 RFID 标签关联了不同的产品。'))
+        if rfid_tag.production_id and rfid_tag.production_id != self.production_id:
+            raise UserError(_('现有 RFID 标签关联了不同的生产订单。'))
+        if rfid_tag.company_id != self.production_id.company_id:
+            raise UserError(_('现有 RFID 标签与生产订单公司不一致。'))
 
     def action_view_rfid_tag(self):
         """查看关联的 RFID 标签"""
@@ -120,8 +134,8 @@ class QualityCheck(models.Model):
             'target': 'current',
         }
 
-    def _write_to_rfid_device(self, rfid_tag):
-        """Delegate required label writes to the canonical device operation."""
+    def _write_to_rfid_device(self, rfid_tag, finished_lot):
+        """Delegate a validated finished-lot label to the canonical device."""
         device = self.point_id.rfid_device_id
         if not device:
             raise UserError(_('请先配置 RFID 设备！'))
@@ -129,7 +143,7 @@ class QualityCheck(models.Model):
             'rfid_number': rfid_tag.name,
             'product_code': self.product_id.default_code or '',
             'product_name': self.product_id.name,
-            'lot_number': rfid_tag.stock_prod_lot_id.name,
+            'lot_number': finished_lot.name,
             'production_date': rfid_tag.production_date,
             'production_order': self.production_id.name,
         })

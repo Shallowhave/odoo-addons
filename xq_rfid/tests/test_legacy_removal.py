@@ -217,6 +217,36 @@ class TestFailClosedSource(unittest.TestCase):
         self.assertIn("请先设置成品批次", prepare_source)
         self.assertNotIn("_logger.warning", source)
 
+    def test_public_compatibility_methods_require_manager_before_returning_data(self):
+        for method_name in (
+            "write_rfid_tag",
+            "read_rfid_tag",
+            "verify_rfid_tag",
+            "erase_rfid_tag",
+            "get_device_status",
+        ):
+            with self.subTest(method=method_name):
+                source = self._method_source(
+                    self.device_source, "RfidDeviceService", method_name
+                )
+                self.assertIn("self._ensure_rfid_manager()", source)
+                self.assertLess(source.index("_ensure_rfid_manager"), source.index("return"))
+
+    def test_existing_label_tag_is_validated_before_hardware_write(self):
+        prepare_source = self._method_source(
+            self.quality_source, "QualityCheck", "_prepare_rfid_before_pass"
+        )
+        write_source = self._method_source(
+            self.quality_source, "QualityCheck", "_write_to_rfid_device"
+        )
+        self.assertIn("_ensure_rfid_tag_matches_finished_lot", prepare_source)
+        self.assertLess(
+            prepare_source.index("_ensure_rfid_tag_matches_finished_lot"),
+            prepare_source.index("_write_to_rfid_device"),
+        )
+        self.assertIn("finished_lot.name", write_source)
+        self.assertNotIn("rfid_tag.stock_prod_lot_id.name", write_source)
+
     def test_diagnostic_actions_require_manager_before_returning_data(self):
         for method_name in ("action_view_write_logs", "action_view_read_logs"):
             with self.subTest(method=method_name):

@@ -24,15 +24,22 @@ class RfidDeviceService(models.AbstractModel):
     _name = "rfid.device.service"
     _description = "RFID 设备服务接口"
 
+    def _ensure_rfid_manager(self):
+        if not self.env.user.has_group("xq_rfid.group_rfid_manager"):
+            raise UserError(_("只有 RFID 管理员可以执行设备硬件操作。"))
+
     def write_rfid_tag(self, data):
         del data
+        self._ensure_rfid_manager()
         return {"success": False, "error": _("未配置可用的 RFID Adapter 驱动。")}
 
     def read_rfid_tag(self):
+        self._ensure_rfid_manager()
         return {"success": False, "error": _("未配置可用的 RFID Adapter 驱动。")}
 
     def verify_rfid_tag(self, rfid_number):
         del rfid_number
+        self._ensure_rfid_manager()
         return {
             "success": False,
             "valid": False,
@@ -40,9 +47,11 @@ class RfidDeviceService(models.AbstractModel):
         }
 
     def erase_rfid_tag(self):
+        self._ensure_rfid_manager()
         return {"success": False, "error": _("未配置可用的 RFID Adapter 驱动。")}
 
     def get_device_status(self):
+        self._ensure_rfid_manager()
         return {
             "connected": False,
             "error": _("未配置可用的 RFID Adapter 驱动。"),
