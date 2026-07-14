@@ -420,6 +420,7 @@ class TestDeviceFailClosed(TransactionCase):
     def _assert_label_payload_uses_finished_lot(self, existing_tag):
         product = self.env["product.product"].create({
             "name": "RFID label payload product",
+            "default_code": "RFID-PAYLOAD-PRODUCT",
             "tracking": "lot",
         })
         production = self.env["mrp.production"].create({
@@ -454,6 +455,8 @@ class TestDeviceFailClosed(TransactionCase):
             with self.assertRaisesRegex(UserError, "Adapter 尚未配置"):
                 check.do_pass()
         self.assertEqual(captured["lot_number"], lot.name)
+        self.assertEqual(captured["product_code"], product.default_code)
+        self.assertEqual(captured["product_name"], product.name)
         self.assertEqual(check.rfid_tag_id.stock_prod_lot_id, lot)
         self.assertEqual(check.quality_state, "none")
 

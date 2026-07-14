@@ -139,10 +139,11 @@ class QualityCheck(models.Model):
         device = self.point_id.rfid_device_id
         if not device:
             raise UserError(_('请先配置 RFID 设备！'))
+        product = self.production_id.product_id
         return device.write_and_verify({
             'rfid_number': rfid_tag.name,
-            'product_code': self.product_id.default_code or '',
-            'product_name': self.product_id.name,
+            'product_code': product.default_code or '',
+            'product_name': product.name,
             'lot_number': finished_lot.name,
             'production_date': rfid_tag.production_date,
             'production_order': self.production_id.name,

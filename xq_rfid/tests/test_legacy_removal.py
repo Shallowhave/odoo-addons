@@ -245,7 +245,10 @@ class TestFailClosedSource(unittest.TestCase):
             prepare_source.index("_write_to_rfid_device"),
         )
         self.assertIn("finished_lot.name", write_source)
+        self.assertIn("product = self.production_id.product_id", write_source)
         self.assertNotIn("rfid_tag.stock_prod_lot_id.name", write_source)
+        self.assertNotIn("self.product_id.default_code", write_source)
+        self.assertNotIn("self.product_id.name", write_source)
 
     def test_diagnostic_actions_require_manager_before_returning_data(self):
         for method_name in ("action_view_write_logs", "action_view_read_logs"):
