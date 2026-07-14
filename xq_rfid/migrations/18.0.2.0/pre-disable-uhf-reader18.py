@@ -1,5 +1,5 @@
-def migrate(cr, installed_version):
-    del installed_version
+def migrate(cr, version):
+    del version
     cr.execute("SELECT to_regclass('rfid_device_config')")
     if not cr.fetchone()[0]:
         return

@@ -16,6 +16,11 @@ import logging
 _logger = logging.getLogger(__name__)
 
 
+def _validate_device_type(device_type):
+    if device_type == "legacy_disabled":
+        raise UserError(_("不能创建或设置已停用的旧设备类型。"))
+
+
 class RfidDeviceService(models.AbstractModel):
     """
     RFID 设备服务抽象模型
@@ -240,9 +245,14 @@ class RfidDeviceConfig(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
-        if any(vals.get("device_type") == "legacy_disabled" for vals in vals_list):
-            raise UserError(_("不能新建已停用的旧设备配置。"))
+        default_device_type = self.env.context.get("default_device_type")
+        for vals in vals_list:
+            _validate_device_type(vals.get("device_type", default_device_type))
         return super().create(vals_list)
+
+    def write(self, vals):
+        _validate_device_type(vals.get("device_type"))
+        return super().write(vals)
 
     @api.depends("device_type")
     def _compute_migration_required(self):
