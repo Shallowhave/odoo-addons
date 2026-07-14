@@ -167,19 +167,32 @@ class RfidDeviceConfig(models.Model):
     _name = 'rfid.device.config'
     _description = 'RFID 设备配置'
     _order = 'sequence, id'
+    _check_company_auto = True
 
     name = fields.Char(string='设备名称', required=True)
     sequence = fields.Integer(string='序号', default=10)
     active = fields.Boolean(string='启用', default=True)
-
-    device_type = fields.Selection([
-        ('simulation', '模拟设备'),
-        ('usb', 'USB 读写器'),
-        ('serial', '串口读写器'),
-        ('network', '网络读写器'),
-        ('uhf_reader18', 'UHFReader18'),
-        ('custom', '自定义设备'),
-    ], string='设备类型', default='simulation', required=True)
+    company_id = fields.Many2one(
+        "res.company",
+        required=True,
+        default=lambda self: self.env.company,
+        index=True,
+    )
+    device_type = fields.Selection(
+        [
+            ("simulation", "模拟设备"),
+            ("legacy_disabled", "旧设备（需要重新配置）"),
+            ("si120x1", "SI120X1"),
+            ("custom", "自定义设备"),
+        ],
+        default="simulation",
+        required=True,
+    )
+    migration_required = fields.Boolean(
+        readonly=True,
+        compute="_compute_migration_required",
+        store=True,
+    )
 
     # 连接参数
     connection_string = fields.Char(
@@ -224,6 +237,17 @@ class RfidDeviceConfig(models.Model):
     read_count = fields.Integer(string='读取次数', default=0, readonly=True)
 
     notes = fields.Text(string='备注')
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        if any(vals.get("device_type") == "legacy_disabled" for vals in vals_list):
+            raise UserError(_("不能新建已停用的旧设备配置。"))
+        return super().create(vals_list)
+
+    @api.depends("device_type")
+    def _compute_migration_required(self):
+        for device in self:
+            device.migration_required = device.device_type == "legacy_disabled"
 
     @api.depends('device_type')
     def _compute_service_model_name(self):

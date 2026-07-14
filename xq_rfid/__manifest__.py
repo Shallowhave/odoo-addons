@@ -37,7 +37,7 @@
     # Check https://github.com/odoo/odoo/blob/14.0/odoo/addons/base/data/ir_module_category_data.xml
     # for the full list
     'category': 'Technical',
-    'version': '18.0.1.0.0',
+    'version': '18.0.2.0.0',
 
     # any module necessary for this one to work correctly
     'depends': [
@@ -71,12 +71,12 @@
         'views/stock_picking_views.xml',
         'views/stock_lot_views.xml',
         'views/rfid_tag_views.xml',        # RFID 标签视图（包含 action 和菜单项）
-           'views/rfid_device_views.xml',     # RFID 设备配置视图（包含 action 和菜单项）
+        'views/rfid_device_views.xml',     # RFID 设备配置视图（包含 action 和菜单项）
         'views/quality_point_views.xml',   # 质量控制点视图扩展
         'views/mrp_production_views.xml',  # 生产订单视图
-           'views/quality_check_wizard_views.xml',  # 质检向导视图
-           'wizard/rfid_read_wizard_views.xml',  # RFID 读取向导视图
-           'wizard/uhf_reader18_wizard_views.xml',  # UHFReader18 向导视图
+        'views/quality_check_wizard_views.xml',  # 质检向导视图
+        'wizard/rfid_read_wizard_views.xml',  # RFID 读取向导视图
+        'wizard/uhf_reader18_wizard_views.xml',  # UHFReader18 向导视图
     ],
     'application': True,
 }
