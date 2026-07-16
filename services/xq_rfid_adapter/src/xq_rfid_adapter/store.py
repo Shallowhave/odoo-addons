@@ -20,7 +20,6 @@ _MAX_LEASE_SECONDS = 86_400
 _MAX_TIMESTAMP = 253_402_300_799
 _DEFAULT_RECOVERY_BATCH = 100
 _MAX_RECOVERY_BATCH = 1000
-_MAX_ACTIVE_PER_DEVICE = 1000
 _IDENTIFIER_RE = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
 _HASH_RE = re.compile(r"\A[a-f0-9]{64}\Z")
 _DEVICE_CODE_RE = re.compile(r"\A[A-Za-z0-9._:-]{1,64}\Z")
@@ -68,6 +67,106 @@ _SAFE_ERRORS = {
     "write_uncertain": ("write outcome is uncertain", True),
     "verification_failed": ("write verification failed", False),
 }
+_ACTIVE_STATE_SQL = "'claimed','inventorying','writing','verifying'"
+_SCHEMA_STATEMENTS = (
+    """CREATE TABLE operations (
+        id INTEGER PRIMARY KEY,
+        request_id TEXT NOT NULL UNIQUE
+            CHECK(length(request_id) BETWEEN 1 AND 128
+                AND request_id NOT GLOB '*[^A-Za-z0-9._-]*'),
+        device_id TEXT NOT NULL
+            CHECK(length(device_id) BETWEEN 1 AND 128
+                AND device_id NOT GLOB '*[^A-Za-z0-9._-]*'),
+        operation_type TEXT NOT NULL CHECK(operation_type = 'write_and_verify'),
+        payload BLOB NOT NULL CHECK(typeof(payload) = 'blob' AND length(payload) = 24),
+        payload_version INTEGER NOT NULL
+            CHECK(typeof(payload_version) = 'integer' AND payload_version BETWEEN 1 AND 255),
+        payload_hash TEXT NOT NULL
+            CHECK(length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'),
+        request_fingerprint TEXT NOT NULL
+            CHECK(length(request_fingerprint) = 64
+                AND request_fingerprint NOT GLOB '*[^0-9a-f]*'),
+        state TEXT NOT NULL CHECK(state IN (
+            'queued','claimed','inventorying','writing','verifying','succeeded',
+            'failed_retryable','failed_manual','cancelled'
+        )),
+        claim_owner TEXT CHECK(claim_owner IS NULL OR (
+            length(claim_owner) BETWEEN 1 AND 128
+            AND claim_owner NOT GLOB '*[^A-Za-z0-9._-]*'
+        )),
+        lease_until INTEGER CHECK(lease_until IS NULL OR (
+            typeof(lease_until) = 'integer' AND lease_until BETWEEN 0 AND 253402300799
+        )),
+        created_at INTEGER NOT NULL CHECK(
+            typeof(created_at) = 'integer' AND created_at BETWEEN 0 AND 253402300799
+        ),
+        updated_at INTEGER NOT NULL CHECK(
+            typeof(updated_at) = 'integer' AND updated_at BETWEEN created_at AND 253402300799
+        ),
+        claimed_at INTEGER CHECK(claimed_at IS NULL OR (
+            typeof(claimed_at) = 'integer'
+            AND claimed_at BETWEEN created_at AND 253402300799
+        )),
+        completed_at INTEGER CHECK(completed_at IS NULL OR (
+            typeof(completed_at) = 'integer'
+            AND completed_at BETWEEN created_at AND 253402300799
+        )),
+        attempts INTEGER NOT NULL DEFAULT 0
+            CHECK(typeof(attempts) = 'integer' AND attempts >= 0),
+        result_json TEXT,
+        error_json TEXT,
+        CHECK(
+            (state IN ('claimed','inventorying','writing','verifying')
+                AND claim_owner IS NOT NULL AND lease_until IS NOT NULL
+                AND claimed_at IS NOT NULL AND completed_at IS NULL)
+            OR
+            (state NOT IN ('claimed','inventorying','writing','verifying')
+                AND claim_owner IS NULL AND lease_until IS NULL)
+        ),
+        CHECK(
+            (state IN ('succeeded','failed_retryable','failed_manual','cancelled')
+                AND completed_at IS NOT NULL)
+            OR
+            (state NOT IN ('succeeded','failed_retryable','failed_manual','cancelled')
+                AND completed_at IS NULL)
+        )
+    )""",
+    """CREATE TABLE device_leases (
+        device_id TEXT PRIMARY KEY
+            CHECK(length(device_id) BETWEEN 1 AND 128
+                AND device_id NOT GLOB '*[^A-Za-z0-9._-]*'),
+        owner_id TEXT NOT NULL
+            CHECK(length(owner_id) BETWEEN 1 AND 128
+                AND owner_id NOT GLOB '*[^A-Za-z0-9._-]*'),
+        lease_until INTEGER NOT NULL CHECK(
+            typeof(lease_until) = 'integer' AND lease_until BETWEEN 0 AND 253402300799
+        )
+    )""",
+    """CREATE TABLE adapter_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )""",
+    """CREATE INDEX operations_claim_idx
+        ON operations(device_id, state, created_at, id)""",
+    """CREATE INDEX operations_recovery_idx
+        ON operations(state, lease_until, created_at, id)""",
+    """CREATE UNIQUE INDEX operations_one_active_device_idx
+        ON operations(device_id)
+        WHERE state IN ('claimed','inventorying','writing','verifying')""",
+    """CREATE INDEX device_leases_expiry_idx
+        ON device_leases(lease_until, device_id)""",
+)
+
+
+def _normalize_schema_sql(value: str) -> str:
+    return " ".join(value.split())
+
+
+_SCHEMA_SIGNATURE = hashlib.sha256(
+    "\n".join(_normalize_schema_sql(statement) for statement in _SCHEMA_STATEMENTS).encode(
+        "utf-8"
+    )
+).hexdigest()
 _SAFE_STORE_MESSAGES = {
     "store_unavailable": "operation store is unavailable",
     "store_busy": "operation store is busy",
@@ -209,13 +308,31 @@ class OperationStore:
         terminal = new_state in _TERMINAL_STATES
         try:
             with self._transaction() as connection:
+                self._validate_active_device_invariant(connection)
                 current = connection.execute(
-                    "SELECT state FROM operations WHERE request_id = ?", (request_id,)
+                    "SELECT state, updated_at, device_id, claim_owner, lease_until "
+                    "FROM operations WHERE request_id = ?",
+                    (request_id,),
                 ).fetchone()
                 if current is None:
                     raise StoreError("not_found")
                 if current["state"] != expected_state:
                     raise StoreError("stale_state")
+                if timestamp < current["updated_at"]:
+                    raise StoreError("invalid_argument")
+                lease = connection.execute(
+                    "SELECT device_id, owner_id, lease_until FROM device_leases "
+                    "WHERE device_id = ?",
+                    (current["device_id"],),
+                ).fetchone()
+                if lease is None:
+                    raise StoreError("store_unavailable")
+                public_lease = _public_lease(lease)
+                if (
+                    current["claim_owner"] != public_lease["owner_id"]
+                    or current["lease_until"] != public_lease["lease_until"]
+                ):
+                    raise StoreError("store_unavailable")
                 if terminal:
                     cursor = connection.execute(
                         """
@@ -263,22 +380,46 @@ class OperationStore:
     ) -> dict:
         device_id = _identifier(device_id, "invalid_argument")
         owner_id = _identifier(owner_id, "invalid_argument")
-        timestamp, lease_until = _lease_times(now, lease_seconds)
         try:
             with self._transaction() as connection:
+                timestamp, lease_until = _lease_times(now, lease_seconds)
+                self._validate_active_device_invariant(connection)
                 current = connection.execute(
-                    "SELECT owner_id, lease_until FROM device_leases WHERE device_id = ?",
+                    "SELECT device_id, owner_id, lease_until FROM device_leases WHERE device_id = ?",
                     (device_id,),
                 ).fetchone()
+                lease = None if current is None else _public_lease(current)
+                active = self._active_operation(connection, device_id)
+                if active is not None:
+                    if (
+                        lease is None
+                        or active["claim_owner"] != lease["owner_id"]
+                        or active["lease_until"] != lease["lease_until"]
+                    ):
+                        raise StoreError("store_unavailable")
+                    if timestamp < active["updated_at"]:
+                        raise StoreError("invalid_argument")
                 takeover = (
-                    current is not None
-                    and current["owner_id"] != owner_id
-                    and current["lease_until"] < timestamp
+                    lease is not None
+                    and lease["owner_id"] != owner_id
+                    and lease["lease_until"] < timestamp
                 )
-                if takeover:
-                    self._recover_device_operations(
-                        connection, device_id, current["owner_id"], timestamp
+                expired_same_owner = (
+                    lease is not None
+                    and lease["owner_id"] == owner_id
+                    and lease["lease_until"] < timestamp
+                )
+                if takeover or expired_same_owner:
+                    recovered = self._recover_device_operations(
+                        connection, device_id, lease["owner_id"], timestamp
                     )
+                    remaining = connection.execute(
+                        f"SELECT 1 FROM operations WHERE device_id = ? "
+                        f"AND state IN ({_ACTIVE_STATE_SQL}) LIMIT 1",
+                        (device_id,),
+                    ).fetchone()
+                    if recovered not in {0, 1} or remaining is not None:
+                        raise StoreError("store_unavailable")
                 if not self._upsert_lease(
                     connection, device_id, owner_id, timestamp, lease_until
                 ):
@@ -301,9 +442,26 @@ class OperationStore:
     ) -> dict:
         device_id = _identifier(device_id, "invalid_argument")
         owner_id = _identifier(owner_id, "invalid_argument")
-        timestamp, lease_until = _lease_times(now, lease_seconds)
         try:
             with self._transaction() as connection:
+                timestamp, lease_until = _lease_times(now, lease_seconds)
+                self._validate_active_device_invariant(connection)
+                current = connection.execute(
+                    "SELECT device_id, owner_id, lease_until FROM device_leases WHERE device_id = ?",
+                    (device_id,),
+                ).fetchone()
+                if current is None:
+                    raise StoreError("lease_conflict")
+                lease = _public_lease(current)
+                active = self._active_operation(connection, device_id)
+                if active is not None:
+                    if (
+                        active["claim_owner"] != lease["owner_id"]
+                        or active["lease_until"] != lease["lease_until"]
+                    ):
+                        raise StoreError("store_unavailable")
+                    if timestamp < active["updated_at"]:
+                        raise StoreError("invalid_argument")
                 cursor = connection.execute(
                     """
                     UPDATE device_leases SET lease_until = ?
@@ -327,16 +485,20 @@ class OperationStore:
         owner_id = _identifier(owner_id, "invalid_argument")
         try:
             with self._transaction() as connection:
-                active = connection.execute(
-                    """
-                    SELECT 1 FROM operations
-                    WHERE device_id = ? AND claim_owner = ?
-                      AND state IN ('claimed','inventorying','writing','verifying')
-                    LIMIT 1
-                    """,
-                    (device_id, owner_id),
+                self._validate_active_device_invariant(connection)
+                current = connection.execute(
+                    "SELECT device_id, owner_id, lease_until FROM device_leases WHERE device_id = ?",
+                    (device_id,),
                 ).fetchone()
+                lease = None if current is None else _public_lease(current)
+                active = self._active_operation(connection, device_id)
                 if active is not None:
+                    if (
+                        lease is None
+                        or active["claim_owner"] != lease["owner_id"]
+                        or active["lease_until"] != lease["lease_until"]
+                    ):
+                        raise StoreError("store_unavailable")
                     raise StoreError("lease_conflict")
                 cursor = connection.execute(
                     "DELETE FROM device_leases WHERE device_id = ? AND owner_id = ?",
@@ -356,7 +518,9 @@ class OperationStore:
                     "SELECT device_id, owner_id, lease_until FROM device_leases WHERE device_id = ?",
                     (device_id,),
                 ).fetchone()
-                return None if row is None else dict(row)
+                return None if row is None else _public_lease(row)
+        except StoreError:
+            raise
         except sqlite3.Error as error:
             raise _translate_sqlite_error(error) from None
 
@@ -369,30 +533,34 @@ class OperationStore:
     ) -> dict | None:
         device_id = _identifier(device_id, "invalid_argument")
         owner_id = _identifier(owner_id, "invalid_argument")
-        timestamp, lease_until = _lease_times(now, lease_seconds)
         try:
             with self._transaction() as connection:
+                timestamp, lease_until = _lease_times(now, lease_seconds)
+                self._validate_active_device_invariant(connection)
                 current = connection.execute(
-                    "SELECT owner_id, lease_until FROM device_leases WHERE device_id = ?",
+                    "SELECT device_id, owner_id, lease_until FROM device_leases WHERE device_id = ?",
                     (device_id,),
                 ).fetchone()
-                if (
-                    current is not None
-                    and current["owner_id"] != owner_id
-                    and current["lease_until"] < timestamp
-                ):
-                    self._recover_device_operations(
-                        connection, device_id, current["owner_id"], timestamp
+                lease = None if current is None else _public_lease(current)
+                active = self._active_operation(connection, device_id)
+                if active is not None:
+                    if (
+                        lease is None
+                        or active["claim_owner"] != lease["owner_id"]
+                        or active["lease_until"] != lease["lease_until"]
+                    ):
+                        raise StoreError("store_unavailable")
+                    if timestamp < active["updated_at"]:
+                        raise StoreError("invalid_argument")
+                expired = lease is not None and lease["lease_until"] < timestamp
+                if expired and active is not None:
+                    recovered = self._recover_device_operations(
+                        connection, device_id, lease["owner_id"], timestamp
                     )
-                active_count = connection.execute(
-                    """
-                    SELECT COUNT(*) FROM operations
-                    WHERE device_id = ?
-                      AND state IN ('claimed','inventorying','writing','verifying')
-                    """,
-                    (device_id,),
-                ).fetchone()[0]
-                if active_count >= _MAX_ACTIVE_PER_DEVICE:
+                    if recovered != 1:
+                        raise StoreError("store_unavailable")
+                    active = None
+                if active is not None:
                     raise StoreError("lease_conflict")
                 candidate = connection.execute(
                     """
@@ -408,10 +576,6 @@ class OperationStore:
                     connection, device_id, owner_id, timestamp, lease_until
                 ):
                     raise StoreError("lease_conflict")
-                if active_count:
-                    self._renew_active_operations(
-                        connection, device_id, owner_id, lease_until, timestamp
-                    )
                 cursor = connection.execute(
                     """
                     UPDATE operations
@@ -481,20 +645,71 @@ class OperationStore:
                 connection.execute(
                     """
                     DELETE FROM device_leases
-                    WHERE lease_until < ? AND NOT EXISTS (
-                        SELECT 1 FROM operations
-                        WHERE operations.device_id = device_leases.device_id
-                          AND operations.claim_owner = device_leases.owner_id
-                          AND operations.state IN (
-                              'claimed','inventorying','writing','verifying'
-                          )
+                    WHERE device_id IN (
+                        SELECT device_leases.device_id FROM device_leases
+                        WHERE lease_until < ? AND NOT EXISTS (
+                            SELECT 1 FROM operations
+                            WHERE operations.device_id = device_leases.device_id
+                              AND operations.claim_owner = device_leases.owner_id
+                              AND operations.state IN (
+                                  'claimed','inventorying','writing','verifying'
+                              )
+                        )
+                        ORDER BY lease_until, device_id LIMIT ?
                     )
                     """,
-                    (timestamp,),
+                    (timestamp, batch_limit),
                 )
             return recovered
         except sqlite3.Error as error:
             raise _translate_sqlite_error(error) from None
+
+    @staticmethod
+    def _validate_active_device_invariant(connection: sqlite3.Connection) -> None:
+        index = connection.execute(
+            "SELECT type, sql FROM sqlite_master "
+            "WHERE name = 'operations_one_active_device_idx'"
+        ).fetchone()
+        if (
+            index is None
+            or index["type"] != "index"
+            or _normalize_schema_sql(index["sql"] or "")
+            != _normalize_schema_sql(_SCHEMA_STATEMENTS[5])
+        ):
+            raise StoreError("store_schema")
+        duplicate = connection.execute(
+            f"SELECT 1 FROM operations WHERE state IN ({_ACTIVE_STATE_SQL}) "
+            "GROUP BY device_id HAVING COUNT(*) > 1 LIMIT 1"
+        ).fetchone()
+        if duplicate is not None:
+            raise StoreError("store_schema")
+
+    @staticmethod
+    def _active_operation(
+        connection: sqlite3.Connection, device_id: str
+    ) -> sqlite3.Row | None:
+        row = connection.execute(
+            f"SELECT claim_owner, lease_until, claimed_at, updated_at, attempts "
+            f"FROM operations WHERE device_id = ? AND state IN ({_ACTIVE_STATE_SQL}) "
+            "LIMIT 1",
+            (device_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if (
+            not isinstance(row["claim_owner"], str)
+            or _IDENTIFIER_RE.fullmatch(row["claim_owner"]) is None
+            or type(row["lease_until"]) is not int
+            or not 0 <= row["lease_until"] <= _MAX_TIMESTAMP
+            or type(row["claimed_at"]) is not int
+            or not 0 <= row["claimed_at"] <= _MAX_TIMESTAMP
+            or type(row["updated_at"]) is not int
+            or not row["claimed_at"] <= row["updated_at"] <= _MAX_TIMESTAMP
+            or type(row["attempts"]) is not int
+            or row["attempts"] < 1
+        ):
+            raise StoreError("store_unavailable")
+        return row
 
     @staticmethod
     def _recover_device_operations(
@@ -502,41 +717,31 @@ class OperationStore:
         device_id: str,
         owner_id: str,
         now: int,
-    ) -> None:
-        rows = connection.execute(
+    ) -> int:
+        cursor = connection.execute(
             """
-            SELECT id, state FROM operations
-            WHERE device_id = ? AND claim_owner = ?
+            UPDATE operations
+            SET state='failed_retryable', updated_at=?, completed_at=?,
+                error_json=CASE
+                    WHEN state IN ('writing','verifying') THEN ? ELSE ? END,
+                result_json=NULL, claim_owner=NULL, lease_until=NULL
+            WHERE device_id=? AND claim_owner=?
               AND state IN ('claimed','inventorying','writing','verifying')
               AND lease_until < ?
-            ORDER BY created_at, id
             """,
-            (device_id, owner_id, now),
-        ).fetchall()
-        for row in rows:
-            code = (
-                "write_uncertain"
-                if row["state"] in {"writing", "verifying"}
-                else "connection_error"
-            )
-            connection.execute(
-                """
-                UPDATE operations
-                SET state='failed_retryable', updated_at=?, completed_at=?,
-                    error_json=?, result_json=NULL, claim_owner=NULL,
-                    lease_until=NULL
-                WHERE id=? AND state=? AND claim_owner=? AND lease_until < ?
-                """,
-                (
-                    now,
-                    now,
-                    _json_dump(_fixed_error(code)),
-                    row["id"],
-                    row["state"],
-                    owner_id,
-                    now,
-                ),
-            )
+            (
+                now,
+                now,
+                _json_dump(_fixed_error("write_uncertain")),
+                _json_dump(_fixed_error("connection_error")),
+                device_id,
+                owner_id,
+                now,
+            ),
+        )
+        if cursor.rowcount > 1:
+            raise StoreError("store_schema")
+        return cursor.rowcount
 
     @staticmethod
     def _renew_active_operations(
@@ -587,6 +792,11 @@ class OperationStore:
                 try:
                     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
                     if version == 0:
+                        existing = connection.execute(
+                            "SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
+                        ).fetchone()
+                        if existing is not None:
+                            raise StoreError("store_schema")
                         self._create_schema(connection)
                         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                     elif version == SCHEMA_VERSION:
@@ -607,117 +817,117 @@ class OperationStore:
 
     @staticmethod
     def _validate_schema(connection: sqlite3.Connection) -> None:
-        expected_types = {
-            "operations": "table",
-            "device_leases": "table",
-            "operations_claim_idx": "index",
-            "operations_recovery_idx": "index",
-            "device_leases_expiry_idx": "index",
+        expected_objects = {
+            "operations": ("table", _SCHEMA_STATEMENTS[0]),
+            "device_leases": ("table", _SCHEMA_STATEMENTS[1]),
+            "adapter_meta": ("table", _SCHEMA_STATEMENTS[2]),
+            "operations_claim_idx": ("index", _SCHEMA_STATEMENTS[3]),
+            "operations_recovery_idx": ("index", _SCHEMA_STATEMENTS[4]),
+            "operations_one_active_device_idx": ("index", _SCHEMA_STATEMENTS[5]),
+            "device_leases_expiry_idx": ("index", _SCHEMA_STATEMENTS[6]),
         }
+        placeholders = ",".join("?" for _ in expected_objects)
         present = {
-            row[0]: row[1]
+            row["name"]: (row["type"], row["sql"])
             for row in connection.execute(
-                "SELECT name, type FROM sqlite_master WHERE name IN (?,?,?,?,?)",
-                tuple(sorted(expected_types)),
+                f"SELECT name, type, sql FROM sqlite_master WHERE name IN ({placeholders})",
+                tuple(expected_objects),
             )
         }
-        if present != expected_types:
+        if set(present) != set(expected_objects):
             raise StoreError("store_schema")
-        expected_operation_columns = {
-            "id", "request_id", "device_id", "operation_type", "payload",
-            "payload_version", "payload_hash", "request_fingerprint", "state",
-            "claim_owner", "lease_until", "created_at", "updated_at", "claimed_at",
-            "completed_at", "attempts", "result_json", "error_json",
-        }
-        expected_lease_columns = {"device_id", "owner_id", "lease_until"}
-        operation_columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(operations)")
-        }
-        lease_columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(device_leases)")
-        }
-        if operation_columns != expected_operation_columns or lease_columns != expected_lease_columns:
+        unexpected = connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_%' AND name NOT IN "
+            f"({placeholders}) LIMIT 1",
+            tuple(expected_objects),
+        ).fetchone()
+        if unexpected is not None:
             raise StoreError("store_schema")
-        operations_sql = connection.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='operations'"
-        ).fetchone()[0]
-        lease_sql = connection.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='device_leases'"
-        ).fetchone()[0]
-        required_fragments = (
-            "request_id TEXT NOT NULL UNIQUE",
-            "device_id TEXT NOT NULL",
-            "operation_type TEXT NOT NULL CHECK(operation_type = 'write_and_verify')",
-            "payload BLOB NOT NULL CHECK(length(payload) = 24)",
-            "payload_version INTEGER NOT NULL CHECK(payload_version BETWEEN 1 AND 255)",
-            "payload_hash TEXT NOT NULL CHECK(length(payload_hash) = 64)",
-            "request_fingerprint TEXT NOT NULL CHECK(length(request_fingerprint) = 64)",
-            "state TEXT NOT NULL CHECK(state IN (",
-            "created_at INTEGER NOT NULL",
-            "updated_at INTEGER NOT NULL",
-            "attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0)",
-            "CHECK((claim_owner IS NULL) = (lease_until IS NULL))",
-        )
-        if any(fragment not in operations_sql for fragment in required_fragments):
-            raise StoreError("store_schema")
-        required_lease_fragments = (
-            "device_id TEXT PRIMARY KEY",
-            "owner_id TEXT NOT NULL",
-            "lease_until INTEGER NOT NULL",
-        )
-        if any(fragment not in lease_sql for fragment in required_lease_fragments):
-            raise StoreError("store_schema")
-        expected_indexes = {
-            "operations_claim_idx": ["device_id", "state", "created_at", "id"],
-            "operations_recovery_idx": ["state", "lease_until", "created_at", "id"],
-            "device_leases_expiry_idx": ["lease_until", "device_id"],
-        }
-        for name, columns in expected_indexes.items():
-            actual = [row[2] for row in connection.execute(f"PRAGMA index_info({name})")]
-            if actual != columns:
+        for name, (object_type, sql) in expected_objects.items():
+            actual_type, actual_sql = present[name]
+            if actual_type != object_type or actual_sql is None:
                 raise StoreError("store_schema")
+            if _normalize_schema_sql(actual_sql) != _normalize_schema_sql(sql):
+                raise StoreError("store_schema")
+        meta = connection.execute(
+            "SELECT value FROM adapter_meta WHERE key = 'schema_signature'"
+        ).fetchall()
+        if len(meta) != 1 or meta[0]["value"] != _SCHEMA_SIGNATURE:
+            raise StoreError("store_schema")
+        expected_columns = {
+            "operations": [
+                ("id", "INTEGER", 0, None, 1),
+                ("request_id", "TEXT", 1, None, 0),
+                ("device_id", "TEXT", 1, None, 0),
+                ("operation_type", "TEXT", 1, None, 0),
+                ("payload", "BLOB", 1, None, 0),
+                ("payload_version", "INTEGER", 1, None, 0),
+                ("payload_hash", "TEXT", 1, None, 0),
+                ("request_fingerprint", "TEXT", 1, None, 0),
+                ("state", "TEXT", 1, None, 0),
+                ("claim_owner", "TEXT", 0, None, 0),
+                ("lease_until", "INTEGER", 0, None, 0),
+                ("created_at", "INTEGER", 1, None, 0),
+                ("updated_at", "INTEGER", 1, None, 0),
+                ("claimed_at", "INTEGER", 0, None, 0),
+                ("completed_at", "INTEGER", 0, None, 0),
+                ("attempts", "INTEGER", 1, "0", 0),
+                ("result_json", "TEXT", 0, None, 0),
+                ("error_json", "TEXT", 0, None, 0),
+            ],
+            "device_leases": [
+                ("device_id", "TEXT", 0, None, 1),
+                ("owner_id", "TEXT", 1, None, 0),
+                ("lease_until", "INTEGER", 1, None, 0),
+            ],
+            "adapter_meta": [
+                ("key", "TEXT", 0, None, 1),
+                ("value", "TEXT", 1, None, 0),
+            ],
+        }
+        for table, expected in expected_columns.items():
+            actual = [tuple(row)[1:6] for row in connection.execute(f"PRAGMA table_info({table})")]
+            if actual != expected:
+                raise StoreError("store_schema")
+        expected_indexes = {
+            "operations_claim_idx": (False, False, ["device_id", "state", "created_at", "id"]),
+            "operations_recovery_idx": (False, False, ["state", "lease_until", "created_at", "id"]),
+            "operations_one_active_device_idx": (True, True, ["device_id"]),
+            "device_leases_expiry_idx": (False, False, ["lease_until", "device_id"]),
+        }
+        table_indexes = {
+            "operations": {
+                "operations_claim_idx",
+                "operations_recovery_idx",
+                "operations_one_active_device_idx",
+            },
+            "device_leases": {"device_leases_expiry_idx"},
+        }
+        for table, names in table_indexes.items():
+            listed = {row[1]: row for row in connection.execute(f"PRAGMA index_list({table})")}
+            for name in names:
+                unique, partial, columns = expected_indexes[name]
+                row = listed.get(name)
+                if row is None or bool(row[2]) is not unique or bool(row[4]) is not partial:
+                    raise StoreError("store_schema")
+                actual = [entry[2] for entry in connection.execute(f"PRAGMA index_info({name})")]
+                if actual != columns:
+                    raise StoreError("store_schema")
+        if connection.execute(
+            f"SELECT COUNT(*) FROM operations WHERE state IN ({_ACTIVE_STATE_SQL}) "
+            "GROUP BY device_id HAVING COUNT(*) > 1 LIMIT 1"
+        ).fetchone() is not None:
+            raise StoreError("store_schema")
 
     @staticmethod
     def _create_schema(connection: sqlite3.Connection) -> None:
-        statements = (
-            """CREATE TABLE operations (
-                id INTEGER PRIMARY KEY,
-                request_id TEXT NOT NULL UNIQUE,
-                device_id TEXT NOT NULL,
-                operation_type TEXT NOT NULL CHECK(operation_type = 'write_and_verify'),
-                payload BLOB NOT NULL CHECK(length(payload) = 24),
-                payload_version INTEGER NOT NULL CHECK(payload_version BETWEEN 1 AND 255),
-                payload_hash TEXT NOT NULL CHECK(length(payload_hash) = 64),
-                request_fingerprint TEXT NOT NULL CHECK(length(request_fingerprint) = 64),
-                state TEXT NOT NULL CHECK(state IN (
-                    'queued','claimed','inventorying','writing','verifying','succeeded',
-                    'failed_retryable','failed_manual','cancelled'
-                )),
-                claim_owner TEXT,
-                lease_until INTEGER,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                claimed_at INTEGER,
-                completed_at INTEGER,
-                attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
-                result_json TEXT,
-                error_json TEXT,
-                CHECK((claim_owner IS NULL) = (lease_until IS NULL))
-            )""",
-            """CREATE TABLE device_leases (
-                device_id TEXT PRIMARY KEY,
-                owner_id TEXT NOT NULL,
-                lease_until INTEGER NOT NULL
-            )""",
-            """CREATE INDEX operations_claim_idx
-                ON operations(device_id, state, created_at, id)""",
-            """CREATE INDEX operations_recovery_idx
-                ON operations(state, lease_until, created_at, id)""",
-            """CREATE INDEX device_leases_expiry_idx
-                ON device_leases(lease_until, device_id)""",
-        )
-        for statement in statements:
+        for statement in _SCHEMA_STATEMENTS:
             connection.execute(statement)
+        connection.execute(
+            "INSERT INTO adapter_meta(key, value) VALUES ('schema_signature', ?)",
+            (_SCHEMA_SIGNATURE,),
+        )
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -890,6 +1100,52 @@ def _public_operation(row: sqlite3.Row) -> dict:
         result = _json_load(row["result_json"])
         error = _json_load(row["error_json"])
         state = row["state"]
+        if state not in _STATES:
+            raise StoreError("store_unavailable")
+        for identifier_column in ("request_id", "device_id"):
+            if _IDENTIFIER_RE.fullmatch(row[identifier_column]) is None:
+                raise StoreError("store_unavailable")
+        if row["operation_type"] != "write_and_verify":
+            raise StoreError("store_unavailable")
+        if type(row["payload_version"]) is not int or not 1 <= row["payload_version"] <= 255:
+            raise StoreError("store_unavailable")
+        if not isinstance(row["payload"], bytes) or len(row["payload"]) != 24:
+            raise StoreError("store_unavailable")
+        if _HASH_RE.fullmatch(row["payload_hash"]) is None:
+            raise StoreError("store_unavailable")
+        if hashlib.sha256(row["payload"]).hexdigest() != row["payload_hash"]:
+            raise StoreError("store_unavailable")
+        if _HASH_RE.fullmatch(row["request_fingerprint"]) is None:
+            raise StoreError("store_unavailable")
+        expected_fingerprint = _fingerprint(
+            {
+                "request_id": row["request_id"],
+                "device_id": row["device_id"],
+                "operation_type": row["operation_type"],
+                "payload_hash": row["payload_hash"],
+                "payload_version": row["payload_version"],
+            }
+        )
+        if row["request_fingerprint"] != expected_fingerprint:
+            raise StoreError("store_unavailable")
+        if type(row["attempts"]) is not int or row["attempts"] < 0:
+            raise StoreError("store_unavailable")
+        for column in ("created_at", "updated_at", "claimed_at", "completed_at", "lease_until"):
+            value = row[column]
+            if value is not None and (type(value) is not int or not 0 <= value <= _MAX_TIMESTAMP):
+                raise StoreError("store_unavailable")
+        if row["updated_at"] < row["created_at"]:
+            raise StoreError("store_unavailable")
+        for column in ("claimed_at", "completed_at"):
+            if row[column] is not None and row[column] < row["created_at"]:
+                raise StoreError("store_unavailable")
+        if row["claimed_at"] is not None and row["updated_at"] < row["claimed_at"]:
+            raise StoreError("store_unavailable")
+        if row["completed_at"] is not None and (
+            row["updated_at"] < row["completed_at"]
+            or (row["claimed_at"] is not None and row["completed_at"] < row["claimed_at"])
+        ):
+            raise StoreError("store_unavailable")
         if state == "succeeded":
             result = _validate_result(result, state)
             if error is not None or row["completed_at"] is None:
@@ -906,7 +1162,18 @@ def _public_operation(row: sqlite3.Row) -> dict:
         if state in {"queued", "succeeded", "failed_retryable", "failed_manual", "cancelled"}:
             if row["claim_owner"] is not None or row["lease_until"] is not None:
                 raise StoreError("store_unavailable")
-        elif row["claim_owner"] is None or row["lease_until"] is None:
+            if state == "queued":
+                if row["claimed_at"] is not None or row["attempts"] != 0:
+                    raise StoreError("store_unavailable")
+            elif row["claimed_at"] is None or row["attempts"] < 1:
+                raise StoreError("store_unavailable")
+        elif (
+            row["claim_owner"] is None
+            or _IDENTIFIER_RE.fullmatch(row["claim_owner"]) is None
+            or row["lease_until"] is None
+            or row["claimed_at"] is None
+            or row["attempts"] < 1
+        ):
             raise StoreError("store_unavailable")
     except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError, StoreError):
         raise StoreError("store_unavailable") from None
@@ -931,6 +1198,18 @@ def _public_operation(row: sqlite3.Row) -> dict:
 
 def _lease_dict(device_id: str, owner_id: str, lease_until: int) -> dict:
     return {"device_id": device_id, "owner_id": owner_id, "lease_until": lease_until}
+
+
+def _public_lease(row: sqlite3.Row) -> dict:
+    try:
+        device_id = _identifier(row["device_id"], "store_unavailable")
+        owner_id = _identifier(row["owner_id"], "store_unavailable")
+        lease_until = row["lease_until"]
+        if type(lease_until) is not int or not 0 <= lease_until <= _MAX_TIMESTAMP:
+            raise StoreError("store_unavailable")
+        return _lease_dict(device_id, owner_id, lease_until)
+    except (KeyError, TypeError, ValueError, StoreError):
+        raise StoreError("store_unavailable") from None
 
 
 def _json_dump(value: object) -> str | None:

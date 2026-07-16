@@ -1,9 +1,11 @@
 import json
 import math
 import os
+import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 
@@ -118,6 +120,28 @@ class TestSchemaAndSafety(StoreCase):
         finally:
             connection.close()
 
+    def test_version_zero_nonempty_database_is_rejected_without_mutation(self):
+        self.store.close()
+        os.remove(self.path)
+        connection = sqlite3.connect(self.path)
+        connection.execute("CREATE TABLE attacker_data(value TEXT)")
+        connection.commit()
+        before = list(connection.execute(
+            "SELECT type,name,sql FROM sqlite_master ORDER BY type,name"
+        ))
+        connection.close()
+        with self.assertRaises(StoreError) as caught:
+            OperationStore(self.path)
+        self.assertEqual(caught.exception.code, "store_schema")
+        connection = sqlite3.connect(self.path)
+        try:
+            self.assertEqual(list(connection.execute(
+                "SELECT type,name,sql FROM sqlite_master ORDER BY type,name"
+            )), before)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 0)
+        finally:
+            connection.close()
+
     def test_schema_creation_rolls_back_on_mid_migration_failure(self):
         self.store.close()
         os.remove(self.path)
@@ -173,6 +197,123 @@ class TestSchemaAndSafety(StoreCase):
             OperationStore(self.path)
         self.assertEqual(caught.exception.code, "store_schema")
 
+    def test_schema_signature_and_active_device_index_are_canonical(self):
+        connection = sqlite3.connect(self.path)
+        try:
+            meta = dict(connection.execute("SELECT key, value FROM adapter_meta"))
+            self.assertRegex(meta["schema_signature"], r"\A[a-f0-9]{64}\Z")
+            index_rows = {
+                row[1]: row for row in connection.execute("PRAGMA index_list(operations)")
+            }
+            active = index_rows["operations_one_active_device_idx"]
+            self.assertEqual(active[2], 1)
+            self.assertEqual(active[4], 1)
+            self.assertEqual(
+                [row[2] for row in connection.execute(
+                    "PRAGMA index_info(operations_one_active_device_idx)"
+                )],
+                ["device_id"],
+            )
+        finally:
+            connection.close()
+
+    def test_signature_or_schema_sql_tampering_is_rejected_without_mutation(self):
+        self.store.close()
+        cases = {
+            "signature": (
+                "UPDATE adapter_meta SET value='0' WHERE key='schema_signature'",
+                None,
+            ),
+            "partial_predicate": (
+                "DROP INDEX operations_one_active_device_idx",
+                "CREATE UNIQUE INDEX operations_one_active_device_idx ON operations(device_id) "
+                "WHERE state IN ('claimed','inventorying','writing')",
+            ),
+            "index_order": (
+                "DROP INDEX operations_claim_idx",
+                "CREATE INDEX operations_claim_idx ON operations(state,device_id,created_at,id)",
+            ),
+        }
+        pristine = self.path + ".pristine"
+        shutil.copyfile(self.path, pristine)
+        for name, statements in cases.items():
+            with self.subTest(name=name):
+                shutil.copyfile(pristine, self.path)
+                connection = sqlite3.connect(self.path)
+                before_version = connection.execute("PRAGMA user_version").fetchone()[0]
+                for statement in statements:
+                    if statement is not None:
+                        connection.execute(statement)
+                connection.commit()
+                before_sql = list(connection.execute(
+                    "SELECT type,name,sql FROM sqlite_master ORDER BY type,name"
+                ))
+                connection.close()
+                with self.assertRaises(StoreError) as caught:
+                    OperationStore(self.path)
+                self.assertEqual(caught.exception.code, "store_schema")
+                connection = sqlite3.connect(self.path)
+                try:
+                    self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], before_version)
+                    self.assertEqual(list(connection.execute(
+                        "SELECT type,name,sql FROM sqlite_master ORDER BY type,name"
+                    )), before_sql)
+                finally:
+                    connection.close()
+
+    def test_table_constraints_are_validated_exactly(self):
+        self.store.close()
+        connection = sqlite3.connect(self.path)
+        operations_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='operations'"
+        ).fetchone()[0]
+        connection.execute("PRAGMA writable_schema=ON")
+        connection.execute(
+            "UPDATE sqlite_master SET sql=? WHERE type='table' AND name='operations'",
+            (operations_sql.replace("attempts >= 0", "attempts >= -1"),),
+        )
+        connection.execute("PRAGMA writable_schema=OFF")
+        connection.commit()
+        connection.close()
+        with self.assertRaises(StoreError) as caught:
+            OperationStore(self.path)
+        self.assertEqual(caught.exception.code, "store_schema")
+
+    def test_schema_rejects_semantic_literal_changes_and_extra_user_objects(self):
+        self.store.close()
+        pristine = self.path + ".schema-pristine"
+        shutil.copyfile(self.path, pristine)
+        for name, tamper in (
+            (
+                "literal_case",
+                lambda connection: connection.execute(
+                    "UPDATE sqlite_master SET sql=replace(sql, "
+                    "\"'write_and_verify'\", \"'WRITE_AND_VERIFY'\") "
+                    "WHERE type='table' AND name='operations'"
+                ),
+            ),
+            (
+                "trigger",
+                lambda connection: connection.execute(
+                    "CREATE TRIGGER deny_operations BEFORE INSERT ON operations "
+                    "BEGIN SELECT RAISE(ABORT, 'denied'); END"
+                ),
+            ),
+        ):
+            with self.subTest(name=name):
+                shutil.copyfile(pristine, self.path)
+                connection = sqlite3.connect(self.path)
+                if name == "literal_case":
+                    connection.execute("PRAGMA writable_schema=ON")
+                tamper(connection)
+                if name == "literal_case":
+                    connection.execute("PRAGMA writable_schema=OFF")
+                connection.commit()
+                connection.close()
+                with self.assertRaises(StoreError) as caught:
+                    OperationStore(self.path)
+                self.assertEqual(caught.exception.code, "store_schema")
+
     def test_tampered_serialized_data_fails_with_safe_store_error(self):
         self.store.create_or_get(sample_request())
         connection = sqlite3.connect(self.path)
@@ -205,6 +346,54 @@ class TestSchemaAndSafety(StoreCase):
         with self.assertRaises(StoreError) as caught:
             self.store.get("r1")
         self.assertEqual(caught.exception.code, "store_unavailable")
+
+    def test_tampered_row_scalar_and_state_invariants_fail_closed(self):
+        self.store.create_or_get(sample_request())
+        tampering = {
+            "invented_state": "state='invented'",
+            "negative_attempts": "attempts=-1",
+            "queued_attempts": "attempts=1",
+            "negative_time": "created_at=-1",
+            "reversed_time": "updated_at=created_at-1",
+            "queued_claim_timestamp": "claimed_at=created_at",
+            "bad_hash": "payload_hash='not-a-hash'",
+            "valid_but_wrong_fingerprint": "request_fingerprint='0' || substr(request_fingerprint,2)",
+            "bad_payload": "payload=zeroblob(23)",
+        }
+        pristine = self.path + ".row-pristine"
+        shutil.copyfile(self.path, pristine)
+        for name, assignment in tampering.items():
+            with self.subTest(name=name):
+                shutil.copyfile(pristine, self.path)
+                connection = sqlite3.connect(self.path)
+                connection.execute("PRAGMA ignore_check_constraints=ON")
+                connection.execute(f"UPDATE operations SET {assignment} WHERE request_id='r1'")
+                connection.commit()
+                connection.close()
+                with self.assertRaises(StoreError) as caught:
+                    self.store.get("r1")
+                self.assertEqual(caught.exception.code, "store_unavailable")
+
+    def test_tampered_terminal_history_and_lease_rows_fail_closed(self):
+        self.store.create_or_get(sample_request(), now=1)
+        self.store.claim_next("reader-1", "worker-a", 10, now=2)
+        self.store.transition("r1", "claimed", "cancelled", now=3)
+        connection = sqlite3.connect(self.path)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE operations SET claimed_at=NULL,attempts=0 WHERE request_id='r1'"
+        )
+        connection.execute(
+            "UPDATE device_leases SET owner_id='bad owner',lease_until=-1 "
+            "WHERE device_id='reader-1'"
+        )
+        connection.commit()
+        connection.close()
+        for call in (lambda: self.store.get("r1"), lambda: self.store.get_lease("reader-1")):
+            with self.subTest(call=call):
+                with self.assertRaises(StoreError) as caught:
+                    call()
+                self.assertEqual(caught.exception.code, "store_unavailable")
 
     def test_uncreatable_path_has_fixed_safe_error(self):
         secret_path = os.path.join(self.tempdir.name, "missing", "private-name.sqlite3")
@@ -367,8 +556,11 @@ class TestTransitions(StoreCase):
         for expected in ("claimed", "inventorying"):
             with self.subTest(expected=expected):
                 request_id = "r-" + expected
-                self.store.create_or_get(sample_request(request_id), now=20)
-                self.store.claim_next("reader-1", "worker-a", 30, now=21)
+                device_id = "reader-" + expected
+                self.store.create_or_get(
+                    sample_request(request_id, device_id=device_id), now=20
+                )
+                self.store.claim_next(device_id, "worker-a", 30, now=21)
                 if expected == "inventorying":
                     self.store.transition(request_id, "claimed", "inventorying", now=22)
                 failed = self.store.transition(
@@ -376,8 +568,10 @@ class TestTransitions(StoreCase):
                 )
                 self.assertEqual(failed["state"], "failed_retryable")
         request_id = "r-cancel"
-        self.store.create_or_get(sample_request(request_id), now=30)
-        self.store.claim_next("reader-1", "worker-a", 30, now=31)
+        self.store.create_or_get(
+            sample_request(request_id, device_id="reader-cancel"), now=30
+        )
+        self.store.claim_next("reader-cancel", "worker-a", 30, now=31)
         cancelled = self.store.transition(request_id, "claimed", "cancelled", now=32)
         self.assertEqual(cancelled["state"], "cancelled")
 
@@ -435,6 +629,23 @@ class TestTransitions(StoreCase):
                 with self.assertRaises(StoreError):
                     self.store.transition("r1", "claimed", "failed_retryable", error=error, now=12)
         self.assertEqual(self.store.get("r1")["state"], "claimed")
+
+    def test_transition_requires_matching_active_device_lease(self):
+        connection = sqlite3.connect(self.path)
+        connection.execute("DELETE FROM device_leases WHERE device_id='reader-1'")
+        connection.commit()
+        connection.close()
+        with self.assertRaises(StoreError) as caught:
+            self.store.transition("r1", "claimed", "inventorying", now=12)
+        self.assertEqual(caught.exception.code, "store_unavailable")
+        self.assertEqual(self.store.get("r1")["state"], "claimed")
+
+    def test_transition_timestamp_cannot_regress(self):
+        self.store.transition("r1", "claimed", "inventorying", now=15)
+        with self.assertRaises(StoreError) as caught:
+            self.store.transition("r1", "inventorying", "writing", now=12)
+        self.assertEqual(caught.exception.code, "invalid_argument")
+        self.assertEqual(self.store.get("r1")["updated_at"], 15)
 
     def test_repeated_completion_does_not_change_timestamp_or_result(self):
         self.store.transition("r1", "claimed", "inventorying", now=12)
@@ -499,16 +710,44 @@ class TestClaimsAndLeases(StoreCase):
         self.assertEqual(self.store.get("r1")["lease_until"], renewed["lease_until"])
         self.assertEqual(self.store.recover_expired_claims(now=12), [])
 
-    def test_repeated_claim_renews_all_active_operations(self):
+    def test_second_claim_same_owner_leaves_queue_and_lease_unchanged(self):
         self.store.create_or_get(sample_request("r1"), now=1)
         self.store.create_or_get(sample_request("r2"), now=2)
-        first = self.store.claim_next("reader-1", "worker-a", 1, now=10)
-        second = self.store.claim_next("reader-1", "worker-a", 10, now=11)
+        first = self.store.claim_next("reader-1", "worker-a", 10, now=10)
+        lease_before = self.store.get_lease("reader-1")
         self.assertEqual(first["request_id"], "r1")
-        self.assertEqual(second["request_id"], "r2")
-        self.assertEqual(self.store.get("r1")["lease_until"], 21)
-        self.assertEqual(self.store.get("r2")["lease_until"], 21)
-        self.assertEqual(self.store.recover_expired_claims(now=12), [])
+        with self.assertRaises(StoreError) as caught:
+            self.store.claim_next("reader-1", "worker-a", 30, now=11)
+        self.assertEqual(caught.exception.code, "lease_conflict")
+        self.assertEqual(self.store.get("r2")["state"], "queued")
+        self.assertEqual(self.store.get_lease("reader-1"), lease_before)
+        self.assertEqual(self.store.get("r1")["lease_until"], lease_before["lease_until"])
+
+    def test_second_claim_other_owner_leaves_queue_and_lease_unchanged(self):
+        self.store.create_or_get(sample_request("r1"), now=1)
+        self.store.create_or_get(sample_request("r2"), now=2)
+        self.store.claim_next("reader-1", "worker-a", 10, now=10)
+        lease_before = self.store.get_lease("reader-1")
+        with self.assertRaises(StoreError) as caught:
+            self.store.claim_next("reader-1", "worker-b", 30, now=11)
+        self.assertEqual(caught.exception.code, "lease_conflict")
+        self.assertEqual(self.store.get("r2")["state"], "queued")
+        self.assertEqual(self.store.get_lease("reader-1"), lease_before)
+
+    def test_partial_unique_index_prevents_two_active_operations_per_device(self):
+        self.store.create_or_get(sample_request("r1"), now=1)
+        self.store.create_or_get(sample_request("r2"), now=2)
+        self.store.claim_next("reader-1", "worker-a", 10, now=10)
+        connection = sqlite3.connect(self.path)
+        try:
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "UPDATE operations SET state='claimed',claim_owner='worker-a',"
+                    "lease_until=20,claimed_at=11,attempts=1 WHERE request_id='r2'"
+                )
+        finally:
+            connection.close()
+        self.assertEqual(self.store.get("r2")["state"], "queued")
 
     def test_expired_takeover_recovers_previous_active_operation_atomically(self):
         self.store.create_or_get(sample_request("old"), now=1)
@@ -521,6 +760,121 @@ class TestClaimsAndLeases(StoreCase):
         self.assertIsNone(old["claim_owner"])
         with self.assertRaises(StoreError):
             self.store.transition("old", "claimed", "inventorying", now=13)
+
+    def test_lease_mutations_reject_missing_malformed_or_expired_claim_leases(self):
+        scenarios = {
+            "missing": "DELETE FROM device_leases WHERE device_id='reader-1'",
+            "malformed": "UPDATE device_leases SET lease_until='x' WHERE device_id='reader-1'",
+        }
+        pristine = self.path + ".lease-pristine"
+        self.store.create_or_get(sample_request("old"), now=1)
+        self.store.claim_next("reader-1", "worker-a", 1, now=10)
+        shutil.copyfile(self.path, pristine)
+        for name, tamper in scenarios.items():
+            with self.subTest(name=name):
+                shutil.copyfile(pristine, self.path)
+                connection = sqlite3.connect(self.path)
+                connection.execute("PRAGMA ignore_check_constraints=ON")
+                connection.execute(tamper)
+                connection.commit()
+                connection.close()
+                with self.assertRaises(StoreError) as caught:
+                    self.store.acquire_lease("reader-1", "worker-b", 5, now=12)
+                self.assertEqual(caught.exception.code, "store_unavailable")
+        shutil.copyfile(pristine, self.path)
+        recovered = self.store.acquire_lease("reader-1", "worker-a", 5, now=12)
+        self.assertEqual(recovered["owner_id"], "worker-a")
+        self.assertEqual(self.store.get("old")["state"], "failed_retryable")
+
+    def test_lease_renewal_rejects_time_before_active_history(self):
+        self.store.create_or_get(sample_request("old"), now=1)
+        self.store.claim_next("reader-1", "worker-a", 30, now=10)
+        self.store.transition("old", "claimed", "inventorying", now=20)
+        for call in (
+            lambda: self.store.renew_lease("reader-1", "worker-a", 5, now=15),
+            lambda: self.store.acquire_lease("reader-1", "worker-a", 5, now=15),
+        ):
+            with self.subTest(call=call):
+                with self.assertRaises(StoreError) as caught:
+                    call()
+                self.assertEqual(caught.exception.code, "invalid_argument")
+        self.assertEqual(self.store.get("old")["updated_at"], 20)
+
+    def test_default_clock_is_sampled_after_claim_lock_acquisition(self):
+        self.store.create_or_get(sample_request("old"))
+        other = OperationStore(self.path, busy_timeout_ms=3000)
+        lock = sqlite3.connect(self.path, isolation_level=None)
+        lock.execute("BEGIN IMMEDIATE")
+        started = threading.Event()
+        outcome = {}
+
+        def claim():
+            started.set()
+            outcome["value"] = other.claim_next("reader-1", "worker-a", 1)
+
+        thread = threading.Thread(target=claim)
+        thread.start()
+        started.wait()
+        time.sleep(1.1)
+        lock.rollback()
+        lock.close()
+        thread.join()
+        try:
+            claimed = outcome["value"]
+            self.assertGreaterEqual(claimed["lease_until"], int(time.time()))
+        finally:
+            other.close()
+
+    def test_takeover_rejects_active_owner_mismatched_with_expired_lease(self):
+        self.store.create_or_get(sample_request("old"), now=1)
+        self.store.claim_next("reader-1", "worker-a", 1, now=10)
+        connection = sqlite3.connect(self.path)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE operations SET claim_owner='worker-x' WHERE request_id='old'"
+        )
+        connection.commit()
+        connection.close()
+        with self.assertRaises(StoreError) as caught:
+            self.store.acquire_lease("reader-1", "worker-b", 5, now=12)
+        self.assertEqual(caught.exception.code, "store_unavailable")
+        self.assertEqual(self.store.get_lease("reader-1")["owner_id"], "worker-a")
+
+    def test_missing_active_index_and_duplicate_active_rows_fail_closed_quickly(self):
+        self.store.create_or_get(sample_request("old"), now=1)
+        self.store.create_or_get(sample_request("queued"), now=2)
+        self.store.claim_next("reader-1", "worker-a", 1, now=10)
+        connection = sqlite3.connect(self.path)
+        connection.execute("DROP INDEX operations_one_active_device_idx")
+        connection.execute(
+            "UPDATE operations SET state='claimed',claim_owner='worker-a',lease_until=11,"
+            "claimed_at=10,attempts=1 WHERE request_id='queued'"
+        )
+        connection.commit()
+        connection.close()
+        for call in (
+            lambda: self.store.acquire_lease("reader-1", "worker-a", 5, now=12),
+            lambda: self.store.claim_next("reader-1", "worker-b", 5, now=12),
+        ):
+            with self.subTest(call=call):
+                with self.assertRaises(StoreError) as caught:
+                    call()
+                self.assertEqual(caught.exception.code, "store_schema")
+        with self.assertRaises(StoreError) as caught:
+            OperationStore(self.path)
+        self.assertEqual(caught.exception.code, "store_schema")
+
+    def test_active_zero_attempts_fail_closed(self):
+        self.store.create_or_get(sample_request("old"), now=1)
+        self.store.claim_next("reader-1", "worker-a", 5, now=10)
+        connection = sqlite3.connect(self.path)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute("UPDATE operations SET attempts=0 WHERE request_id='old'")
+        connection.commit()
+        connection.close()
+        with self.assertRaises(StoreError) as caught:
+            self.store.get("old")
+        self.assertEqual(caught.exception.code, "store_unavailable")
 
     def test_renew_updates_active_operation_lease_atomically(self):
         self.store.create_or_get(sample_request(), now=1)
@@ -540,6 +894,19 @@ class TestClaimsAndLeases(StoreCase):
         self.assertEqual(self.store.get_lease("reader-1")["owner_id"], "worker-a")
         with self.assertRaises(StoreError):
             self.store.acquire_lease("reader-1", "worker-b", 5, now=11)
+
+    def test_release_rejects_mismatched_active_owner_without_deleting_lease(self):
+        self.store.create_or_get(sample_request(), now=1)
+        self.store.claim_next("reader-1", "worker-a", 5, now=10)
+        connection = sqlite3.connect(self.path)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute("UPDATE operations SET claim_owner='worker-x' WHERE request_id='r1'")
+        connection.commit()
+        connection.close()
+        with self.assertRaises(StoreError) as caught:
+            self.store.release_lease("reader-1", "worker-a")
+        self.assertEqual(caught.exception.code, "store_unavailable")
+        self.assertEqual(self.store.get_lease("reader-1")["owner_id"], "worker-a")
 
     def test_claim_requires_or_establishes_matching_persisted_lease(self):
         self.store.create_or_get(sample_request(), now=1)
@@ -584,8 +951,11 @@ class TestClaimsAndLeases(StoreCase):
 
 class TestRecovery(StoreCase):
     def make_state(self, request_id, state, claimed_at):
-        self.store.create_or_get(sample_request(request_id), now=claimed_at - 2)
-        self.store.claim_next("reader-1", "worker-a", 1, now=claimed_at)
+        device_id = f"reader-{request_id}"
+        self.store.create_or_get(
+            sample_request(request_id, device_id=device_id), now=claimed_at - 2
+        )
+        self.store.claim_next(device_id, "worker-a", 1, now=claimed_at)
         if state != "claimed":
             self.store.transition(request_id, "claimed", "inventorying", now=claimed_at)
         if state in {"writing", "verifying"}:
@@ -620,14 +990,34 @@ class TestRecovery(StoreCase):
             self.make_state(request_id, "claimed", 10)
         first = self.store.recover_expired_claims(now=12, batch_limit=2)
         self.assertEqual([item["request_id"] for item in first], ["c", "a"])
-        self.assertIsNotNone(self.store.get_lease("reader-1"))
+        self.assertIsNotNone(self.store.get_lease("reader-b"))
         remaining = self.store.get("b")
-        self.assertEqual(remaining["claim_owner"], self.store.get_lease("reader-1")["owner_id"])
+        self.assertEqual(remaining["claim_owner"], self.store.get_lease("reader-b")["owner_id"])
         second = self.store.recover_expired_claims(now=12, batch_limit=2)
         self.assertEqual([item["request_id"] for item in second], ["b"])
-        self.assertIsNone(self.store.get_lease("reader-1"))
+        self.assertIsNone(self.store.get_lease("reader-b"))
         with self.assertRaises(StoreError):
             self.store.recover_expired_claims(now=12, batch_limit=0)
+
+    def test_orphan_lease_cleanup_is_bounded_by_batch_limit(self):
+        connection = sqlite3.connect(self.path)
+        connection.executemany(
+            "INSERT INTO device_leases(device_id,owner_id,lease_until) VALUES (?,?,?)",
+            [(f"orphan-{index}", "worker-a", 1) for index in range(5)],
+        )
+        connection.commit()
+        connection.close()
+        self.assertEqual(self.store.recover_expired_claims(now=2, batch_limit=1), [])
+        connection = sqlite3.connect(self.path)
+        try:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM device_leases WHERE device_id LIKE 'orphan-%'"
+                ).fetchone()[0],
+                4,
+            )
+        finally:
+            connection.close()
 
     def test_restart_and_concurrent_recovery_have_no_duplicates(self):
         self.make_state("restart", "verifying", 100)
