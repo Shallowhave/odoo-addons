@@ -396,7 +396,7 @@ def make_handler(
                     secret, self.headers, method, request_target, body, replay_guard,
                     now=clock(),
                 )
-                result, request_id = self._route(method, body)
+                result, request_id = self._route(method, self.path, body)
                 self._send_json(
                     200, success_envelope(_safe_result(result), request_id=request_id)
                 )
@@ -411,10 +411,12 @@ def make_handler(
                     AdapterError(AdapterErrorCode.DEVICE_ERROR, _SAFE_MESSAGES[AdapterErrorCode.DEVICE_ERROR]),
                 )
 
-        def _route(self, method: str, body: bytes) -> tuple[dict, str | None]:
+        def _route(
+            self, method: str, normalized_target: str, body: bytes
+        ) -> tuple[dict, str | None]:
             if method not in {"GET", "POST"}:
                 raise _HttpError(405, AdapterErrorCode.PROTOCOL_ERROR)
-            path = self._raw_request_target().split("?", 1)[0]
+            path = normalized_target.split("?", 1)[0]
             if path.startswith("/v1/devices/"):
                 suffix = path[len("/v1/devices/"):]
                 if suffix.endswith("/test-connection"):

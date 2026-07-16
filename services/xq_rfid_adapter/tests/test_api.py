@@ -168,17 +168,30 @@ class TestAuthenticationAndReplay(unittest.TestCase):
         finally:
             reopened.close()
 
-    def test_future_timestamp_replay_remains_blocked_for_full_validity_window(self):
-        guard = ReplayGuard(self.db_path, ttl_seconds=300)
+    def test_future_timestamp_replay_remains_blocked_after_restart_for_full_window(self):
         headers = self.headers(timestamp="1300", nonce="f" * 32)
+        guard = ReplayGuard(self.db_path, ttl_seconds=300)
         authenticate_request(
             self.secret, headers, "POST", "/v1/operations", b"", guard, now=1000
         )
-        with self.assertRaisesRegex(Exception, "authentication"):
-            authenticate_request(
-                self.secret, headers, "POST", "/v1/operations", b"", guard, now=1301
-            )
         guard.close()
+
+        reopened = ReplayGuard(self.db_path, ttl_seconds=300)
+        try:
+            for now in (1301, 1600):
+                with self.subTest(now=now):
+                    with self.assertRaisesRegex(Exception, "authentication"):
+                        authenticate_request(
+                            self.secret,
+                            headers,
+                            "POST",
+                            "/v1/operations",
+                            b"",
+                            reopened,
+                            now=now,
+                        )
+        finally:
+            reopened.close()
 
     def test_signature_checked_before_replay_storage(self):
         guard = ReplayGuard(self.db_path)
@@ -247,10 +260,25 @@ class TestConfig(unittest.TestCase):
                     load_secret(environment)
                 self.assertNotIn("short-secret-value", str(raised.exception))
 
-    def test_empty_secret_file_setting_does_not_fall_back(self):
+    def test_invalid_secret_file_settings_never_fall_back(self):
+        secret_file = self.root / "secret"
+        cases = [
+            "",
+            str(self.root / "missing"),
+            str(secret_file),
+        ]
+        secret_file.write_bytes(b"")
+        for secret_path in cases:
+            with self.subTest(secret_path=secret_path):
+                with self.assertRaises(ConfigError):
+                    load_secret({
+                        "RFID_ADAPTER_SECRET_FILE": secret_path,
+                        "RFID_ADAPTER_SECRET": "e" * 32,
+                    })
+        secret_file.write_bytes(b"short")
         with self.assertRaises(ConfigError):
             load_secret({
-                "RFID_ADAPTER_SECRET_FILE": "",
+                "RFID_ADAPTER_SECRET_FILE": str(secret_file),
                 "RFID_ADAPTER_SECRET": "e" * 32,
             })
 
@@ -263,16 +291,25 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(ConfigError):
             load_secret(env)
 
-    def test_duplicate_config_keys_rejected(self):
-        self.config_path.write_text(
+    def test_duplicate_config_keys_rejected_recursively(self):
+        database = json.dumps(str(self.root / "adapter.sqlite3"))
+        cases = [
             '{"bind":{"host":"127.0.0.1","port":0},'
-            f'"sqlite_path":{json.dumps(str(self.root / "adapter.sqlite3"))},'
-            '"production":true,"production":false,"tls":null,'
-            '"devices":{"reader-1":{"driver":"fake"}}}',
-            encoding="utf-8",
-        )
-        with self.assertRaises(ConfigError):
-            load_config(self.config_path)
+            f'"sqlite_path":{database},"production":true,"production":false,'
+            '"tls":null,"devices":{}}',
+            '{"bind":{"host":"127.0.0.1","port":0},'
+            f'"sqlite_path":{database},"production":false,"tls":null,'
+            '"devices":{"reader-1":{"driver":"real","driver":"fake"}}}',
+            '{"bind":{"host":"127.0.0.1","port":0},'
+            f'"sqlite_path":{database},"production":false,"tls":null,'
+            '"devices":{"reader-1":{"driver":"real"},'
+            '"reader-1":{"driver":"fake"}}}',
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                self.config_path.write_text(text, encoding="utf-8")
+                with self.assertRaises(ConfigError):
+                    load_config(self.config_path)
 
     def test_unknown_keys_production_fake_and_plaintext_remote_rejected(self):
         cases = []
@@ -402,23 +439,48 @@ class TestHttpApi(unittest.TestCase):
         bad["X-RFID-Signature"] = "0" * 64
         self.assert_safe_error(self.request("GET", "/v1/devices/reader-1", headers=bad), 401, "authentication_error")
         nonce = "a" * 32
-        headers = self.auth("GET", "/v1/devices/reader-1?b=&a=1&a=2", nonce=nonce)
-        ok = self.request("GET", "/v1/devices/reader-1?b=&a=1&a=2", headers=headers)
+        target = "/v1/devices/reader-1?b=&a=1&a=2&blank=&encoded=%2f"
+        headers = self.auth("GET", target, nonce=nonce)
+        ok = self.request("GET", target, headers=headers)
         self.assertEqual(ok[0], 200)
-        self.assert_safe_error(self.request("GET", "/v1/devices/reader-1?b=&a=1&a=2", headers=headers), 401, "authentication_error")
-        wrong_target = self.auth("GET", "/v1/devices/reader-1?a=1&a=2&b=")
-        self.assert_safe_error(self.request("GET", "/v1/devices/reader-1?b=&a=1&a=2", headers=wrong_target), 401, "authentication_error")
+        self.assert_safe_error(self.request("GET", target, headers=headers), 401, "authentication_error")
+        altered_targets = (
+            "/v1/devices/reader-1?a=1&a=2&b=&blank=&encoded=%2f",
+            "/v1/devices/reader-1?b=&a=2&a=1&blank=&encoded=%2f",
+            "/v1/devices/reader-1?b=&a=1&a=2&blank=&encoded=%2F",
+        )
+        for altered_target in altered_targets:
+            with self.subTest(altered_target=altered_target):
+                wrong_target = self.auth("GET", altered_target)
+                self.assert_safe_error(
+                    self.request("GET", target, headers=wrong_target),
+                    401,
+                    "authentication_error",
+                )
 
     def test_raw_double_slash_target_is_not_normalized_before_authentication(self):
         target = "//v1/devices/reader-1"
-        headers = self.auth("GET", "/v1/devices/reader-1")
-        raw = (
+        bad_headers = self.auth("GET", "/v1/devices/reader-1")
+        bad_raw = (
             f"GET {target} HTTP/1.1\r\n"
             f"Host: 127.0.0.1\r\n"
-            + "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+            + "".join(f"{name}: {value}\r\n" for name, value in bad_headers.items())
             + "Connection: close\r\n\r\n"
         ).encode("ascii")
-        self.assert_safe_error(self.raw_request(raw), 401, "authentication_error")
+        self.assert_safe_error(
+            self.raw_request(bad_raw), 401, "authentication_error"
+        )
+
+        good_headers = self.auth("GET", target)
+        good_raw = (
+            f"GET {target} HTTP/1.1\r\n"
+            f"Host: 127.0.0.1\r\n"
+            + "".join(f"{name}: {value}\r\n" for name, value in good_headers.items())
+            + "Connection: close\r\n\r\n"
+        ).encode("ascii")
+        status, _, envelope = self.raw_request(good_raw)
+        self.assertEqual(status, 200)
+        self.assertEqual(envelope["result"], {"route": "get_device"})
 
     def test_unknown_device_only_after_authentication(self):
         target = "/v1/devices/not-configured"
@@ -492,15 +554,27 @@ class TestHttpApi(unittest.TestCase):
         self.assert_safe_error(self.request("GET", missing, headers=self.auth("GET", missing)), 404, "protocol_error")
         self.assert_safe_error(self.request("OPTIONS", missing, headers=self.auth("OPTIONS", missing)), 405, "protocol_error")
 
-    def test_duplicate_operation_keys_and_whitespace_hex_rejected(self):
+    def test_duplicate_operation_keys_and_invalid_hex_rejected(self):
         target = "/v1/operations"
+        valid_prefix = (
+            b'{"request_id":"one","operation_type":"write_and_verify",'
+            b'"device_id":"reader-1","payload_hex":"'
+            + b"AA" * 24
+            + b'","payload_version":1'
+        )
         bodies = [
             b'{"request_id":"one","request_id":"two","operation_type":"write_and_verify","device_id":"reader-1","payload_hex":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","payload_version":1}',
+            valid_prefix + b',"device_id":"reader-2"}',
             json.dumps({
                 "request_id": "request-2", "operation_type": "write_and_verify",
                 "device_id": "reader-1", "payload_hex": "AA" * 23 + "  ",
                 "payload_version": 1,
             }, separators=(",", ":")).encode(),
+            json.dumps({
+                "request_id": "request-3", "operation_type": "write_and_verify",
+                "device_id": "reader-1", "payload_hex": "AA" * 23 + "ＡＡ",
+                "payload_version": 1,
+            }, separators=(",", ":"), ensure_ascii=False).encode(),
         ]
         for body in bodies:
             headers = self.auth("POST", target, body)
@@ -509,29 +583,29 @@ class TestHttpApi(unittest.TestCase):
                 self.request("POST", target, body, headers), 400, "protocol_error"
             )
 
-    def test_service_adapter_error_is_sanitized(self):
-        class UnsafeErrorService(FakeService):
-            def get_device(self, device_id):
-                del device_id
-                from xq_rfid_adapter.domain import AdapterError, AdapterErrorCode
-                raise AdapterError(
-                    AdapterErrorCode.CONNECTION_ERROR,
-                    "password raw-frame /private/path",
-                    device_code="raw-device-code",
-                )
+    def test_every_service_adapter_error_is_sanitized(self):
+        from xq_rfid_adapter.domain import AdapterError, AdapterErrorCode
 
-        old_service = self.server.RequestHandlerClass
-        del old_service
-        original = self.service
-        self.service = original
-        # The running handler closes over original; change its bound method only.
-        original.get_device = UnsafeErrorService().get_device
         target = "/v1/devices/reader-1"
-        _, _, envelope = self.request("GET", target, headers=self.auth("GET", target))
-        serialized = json.dumps(envelope)
-        self.assertNotIn("password", serialized)
-        self.assertNotIn("private", serialized)
-        self.assertNotIn("raw-device-code", serialized)
+        unsafe = "password raw-frame /private/path"
+        for code in AdapterErrorCode:
+            with self.subTest(code=code):
+                def raise_error(device_id, error_code=code):
+                    del device_id
+                    raise AdapterError(
+                        error_code,
+                        unsafe,
+                        device_code="raw-device-code",
+                    )
+
+                self.service.get_device = raise_error
+                _, _, envelope = self.request(
+                    "GET", target, headers=self.auth("GET", target)
+                )
+                serialized = json.dumps(envelope)
+                self.assertNotIn(unsafe, serialized)
+                self.assertNotIn("raw-device-code", serialized)
+                self.assertIsNone(envelope["error"]["device_code"])
 
     def test_exception_text_and_sensitive_values_never_echo(self):
         secret_text = "DO-NOT-LEAK-secret-signature-payload-path"
