@@ -18,6 +18,7 @@ from unittest import mock
 from xq_rfid_adapter.api import (
     MAX_BODY_BYTES,
     MAX_CONCURRENT_REQUESTS,
+    MAX_SERVICE_WORKERS,
     ReplayGuard,
     authenticate_request,
     canonical_request,
@@ -382,6 +383,10 @@ class FakeService:
                     "supports_user_write": True,
                 },
                 "antenna_count": 1,
+                "firmware_version": "1.2.3-build_4",
+                "hardware_version": "HW-2",
+                "module_version": None,
+                "region": "CN",
             }
         if name == "submit_operation":
             return {
@@ -550,7 +555,10 @@ class TestHttpApi(unittest.TestCase):
         ]
         expected_keys = {
             "test_connection": {"status"},
-            "get_device": {"status", "capabilities", "antenna_count"},
+            "get_device": {
+                "status", "capabilities", "antenna_count", "firmware_version",
+                "hardware_version", "module_version", "region",
+            },
             "submit_operation": {
                 "state", "request_id", "operation_type", "payload_version",
             },
@@ -669,10 +677,13 @@ class TestHttpApi(unittest.TestCase):
 
     def test_route_specific_results_reject_adversarial_nominal_fields(self):
         target = "/v1/devices/reader-1"
+        base = self.service._return("get_device", "reader-1")
         unsafe_values = [
-            {"firmware_version": "/private/secret"},
-            {"device_code": "raw-frame-password"},
-            {"capabilities": {"supports_epc": True, "secret": "leak"}},
+            dict(base, firmware_version="/private/secret"),
+            dict(base, hardware_version="bad\ncontrol"),
+            dict(base, region="x" * 65),
+            dict(base, device_code="raw-frame-password"),
+            dict(base, capabilities={"supports_epc": True, "secret": "leak"}),
             {"state": "not-a-valid-state"},
         ]
         for result in unsafe_values:
@@ -687,6 +698,31 @@ class TestHttpApi(unittest.TestCase):
                 self.assertNotIn("raw-frame", serialized)
                 self.assertNotIn("leak", serialized)
                 self.assertEqual(envelope["error"]["code"], "device_error")
+
+    def test_operation_result_contract_accepts_exact_documented_states(self):
+        target = "/v1/operations/request-1"
+        states = (
+            "queued", "claimed", "inventorying", "writing", "verifying",
+            "succeeded", "failed_retryable", "failed_manual", "cancelled",
+        )
+        for state in states:
+            with self.subTest(state=state):
+                result = self.service._return("get_operation", "request-1")
+                result["state"] = state
+                self.service.get_operation = lambda request_id, value=result: value
+                status, _, envelope = self.request(
+                    "GET", target, headers=self.auth("GET", target)
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(envelope["result"]["state"], state)
+        invalid = self.service._return("get_operation", "request-1")
+        invalid["state"] = "failed"
+        self.service.get_operation = lambda request_id: invalid
+        status, _, envelope = self.request(
+            "GET", target, headers=self.auth("GET", target)
+        )
+        self.assertEqual(status, 500)
+        self.assertEqual(envelope["error"]["code"], "device_error")
 
     def test_operation_result_contracts_reject_mismatched_or_unsafe_values(self):
         target = "/v1/operations"
@@ -719,6 +755,7 @@ class TestHttpApi(unittest.TestCase):
             dict(valid, request_id="other"),
             dict(valid, masked_epc="/private/secret"),
             dict(valid, masked_epc="A" * 24),
+            dict(valid, masked_epc="A" * 23 + "*"),
             dict(valid, identity_hash="not-a-hash"),
             dict(valid, verification_ok=1),
             dict(valid, device_code="raw-device-code"),
@@ -775,6 +812,58 @@ class TestHttpApi(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertEqual(headers["Content-Type"], "application/json")
                 self.assertFalse(envelope["ok"])
+
+    def test_stalled_service_calls_fail_closed_without_unbounded_growth(self):
+        release = threading.Event()
+        entered = threading.Event()
+        calls = 0
+        lock = threading.Lock()
+
+        def stall(device_id):
+            nonlocal calls
+            del device_id
+            with lock:
+                calls += 1
+                if calls == MAX_SERVICE_WORKERS:
+                    entered.set()
+            release.wait(5)
+            return {"status": "connected"}
+
+        self.service.test_connection = stall
+        results = []
+        threads = []
+        target = "/v1/devices/reader-1/test-connection"
+        body = b"{}"
+        try:
+            for _ in range(MAX_SERVICE_WORKERS):
+                headers = self.auth("POST", target, body)
+                headers.update({"Content-Type": "application/json", "Content-Length": "2"})
+                thread = threading.Thread(
+                    target=lambda h=headers: results.append(
+                        self.request("POST", target, body, h)[0]
+                    )
+                )
+                thread.start()
+                threads.append(thread)
+            self.assertTrue(entered.wait(2))
+            deadline = time.monotonic() + 2.5
+            while len(results) < MAX_SERVICE_WORKERS and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(sorted(results), [504] * MAX_SERVICE_WORKERS)
+            before = len(threading.enumerate())
+            for _ in range(MAX_SERVICE_WORKERS * 3):
+                headers = self.auth("POST", target, body)
+                headers.update({"Content-Type": "application/json", "Content-Length": "2"})
+                response = self.request("POST", target, body, headers)
+                self.assertIn(response[0], (503, 504))
+            after = len(threading.enumerate())
+            self.assertLessEqual(after, before + MAX_CONCURRENT_REQUESTS)
+            with lock:
+                self.assertEqual(calls, MAX_SERVICE_WORKERS)
+        finally:
+            release.set()
+            for thread in threads:
+                thread.join(3)
 
     def test_disconnect_releases_concurrency_permit(self):
         import socket

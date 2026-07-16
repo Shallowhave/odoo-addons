@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import hmac
 import json
+import queue
 import re
 import sqlite3
 import threading
@@ -24,7 +26,9 @@ from .domain import (
 
 MAX_BODY_BYTES = 64 * 1024
 MAX_CONCURRENT_REQUESTS = 4
+MAX_SERVICE_WORKERS = 4
 REQUEST_TIMEOUT_SECONDS = 1.0
+SERVICE_TIMEOUT_SECONDS = 1.0
 MAX_NONCE_LENGTH = 256
 MAX_IDENTIFIER_LENGTH = 128
 DEFAULT_MAX_SKEW_SECONDS = 300
@@ -43,7 +47,11 @@ _CONNECTION_STATES = frozenset({"connected", "disconnected"})
 _CAPABILITY_KEYS = frozenset({
     "supports_epc", "supports_tid", "supports_user_read", "supports_user_write",
 })
-_DEVICE_RESULT_KEYS = frozenset({"status", "capabilities", "antenna_count"})
+_DEVICE_RESULT_KEYS = frozenset({
+    "status", "capabilities", "antenna_count", "firmware_version",
+    "hardware_version", "module_version", "region",
+})
+_SAFE_METADATA_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._+ -]{0,63}\Z")
 _SUBMITTED_OPERATION_RESULT_KEYS = frozenset({
     "state", "request_id", "operation_type", "payload_version",
 })
@@ -316,10 +324,19 @@ def _serialize_device_result(value: object) -> dict:
         raise _invalid_service_result()
     if result["status"] not in _CONNECTION_STATES:
         raise _invalid_service_result()
+    metadata = {}
+    for key in ("firmware_version", "hardware_version", "module_version", "region"):
+        item = result[key]
+        if item is not None and (
+            not isinstance(item, str) or not _SAFE_METADATA_RE.fullmatch(item)
+        ):
+            raise _invalid_service_result()
+        metadata[key] = item
     return {
         "status": result["status"],
         "capabilities": {key: capabilities[key] for key in sorted(_CAPABILITY_KEYS)},
         "antenna_count": antenna_count,
+        **metadata,
     }
 
 
@@ -365,7 +382,7 @@ def _serialize_operation_result(
         if item is not None and (
             not isinstance(item, str)
             or not _MASKED_IDENTIFIER_RE.fullmatch(item)
-            or "*" not in item
+            or item.count("*") < max(4, len(item) // 2)
         ):
             raise _invalid_service_result()
         safe[key] = item
@@ -390,6 +407,8 @@ def make_handler(
     replay_guard: ReplayGuard,
     devices: frozenset[str],
     clock: Callable[[], int | float],
+    service_executor: _BoundedServiceExecutor,
+    service_slots: threading.BoundedSemaphore,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "xq-rfid-adapter"
@@ -481,6 +500,23 @@ def make_handler(
             except (UnicodeError, ValueError) as error:
                 raise _HttpError(400, AdapterErrorCode.PROTOCOL_ERROR) from error
 
+        def _call_service(self, operation: Callable, *args: object) -> object:
+            if not service_slots.acquire(blocking=False):
+                raise _HttpError(503, AdapterErrorCode.DEVICE_ERROR)
+            try:
+                future = service_executor.submit(operation, *args)
+            except BaseException:
+                service_slots.release()
+                raise
+            future.add_done_callback(lambda completed: service_slots.release())
+            try:
+                return future.result(timeout=SERVICE_TIMEOUT_SECONDS)
+            except concurrent.futures.TimeoutError as error:
+                service_executor.mark_unhealthy()
+                raise _HttpError(504, AdapterErrorCode.TIMEOUT) from error
+            except _ServiceUnavailable as error:
+                raise _HttpError(503, AdapterErrorCode.DEVICE_ERROR) from error
+
         def _handle(self, method: str) -> None:
             try:
                 request_target = self._raw_request_target()
@@ -532,18 +568,18 @@ def make_handler(
                     if self._json_object(body):
                         raise _HttpError(400, AdapterErrorCode.PROTOCOL_ERROR)
                     self._require_device(device_id)
-                    return service.test_connection(device_id), None, _serialize_connection_result
+                    return self._call_service(service.test_connection, device_id), None, _serialize_connection_result
                 if method != "GET":
                     raise _HttpError(405, AdapterErrorCode.PROTOCOL_ERROR)
                 device_id = _decode_identifier(suffix)
                 self._require_device(device_id)
-                return service.get_device(device_id), None, _serialize_device_result
+                return self._call_service(service.get_device, device_id), None, _serialize_device_result
             if path == "/v1/operations":
                 if method != "POST":
                     raise _HttpError(405, AdapterErrorCode.PROTOCOL_ERROR)
                 request = _validate_operation(self._json_object(body), devices)
                 return (
-                    service.submit_operation(request),
+                    self._call_service(service.submit_operation, request),
                     request["request_id"],
                     _serialize_submitted_operation_result,
                 )
@@ -551,7 +587,7 @@ def make_handler(
                 if method != "GET":
                     raise _HttpError(405, AdapterErrorCode.PROTOCOL_ERROR)
                 request_id = _decode_identifier(path[len("/v1/operations/"):])
-                return service.get_operation(request_id), request_id, _serialize_operation_result
+                return self._call_service(service.get_operation, request_id), request_id, _serialize_operation_result
             raise _HttpError(404, AdapterErrorCode.PROTOCOL_ERROR)
 
         def _require_device(self, device_id: str) -> None:
@@ -578,6 +614,10 @@ def make_handler(
     return Handler
 
 
+class _ServiceUnavailable(Exception):
+    pass
+
+
 class _HttpError(Exception):
     def __init__(self, status: int, code: AdapterErrorCode) -> None:
         self.status = status
@@ -585,11 +625,80 @@ class _HttpError(Exception):
         super().__init__(status)
 
 
+class _BoundedServiceExecutor:
+    """Fixed daemon workers that fail closed after an unkillable timeout."""
+
+    def __init__(self, workers: int) -> None:
+        self._work: queue.Queue[tuple[concurrent.futures.Future, Callable, tuple] | None] = queue.Queue(workers)
+        self._lock = threading.Lock()
+        self._healthy = True
+        self._threads = []
+        for index in range(workers):
+            thread = threading.Thread(
+                target=self._worker,
+                name=f"rfid-service-{index}",
+                daemon=True,
+            )
+            thread.start()
+            self._threads.append(thread)
+
+    def submit(self, operation: Callable, *args: object) -> concurrent.futures.Future:
+        with self._lock:
+            if not self._healthy:
+                raise _ServiceUnavailable()
+            future = concurrent.futures.Future()
+            try:
+                self._work.put_nowait((future, operation, args))
+            except queue.Full as error:
+                raise _ServiceUnavailable() from error
+            return future
+
+    def mark_unhealthy(self) -> None:
+        with self._lock:
+            self._healthy = False
+
+    def shutdown(self) -> None:
+        with self._lock:
+            self._healthy = False
+        while True:
+            try:
+                item = self._work.get_nowait()
+            except queue.Empty:
+                break
+            if item is not None:
+                item[0].cancel()
+        for _ in self._threads:
+            try:
+                self._work.put_nowait(None)
+            except queue.Full:
+                break
+
+    def _worker(self) -> None:
+        while True:
+            item = self._work.get()
+            if item is None:
+                return
+            future, operation, args = item
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(operation(*args))
+            except BaseException as error:
+                future.set_exception(error)
+
+
 class AdapterHttpServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, *args, replay_guard: ReplayGuard, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        replay_guard: ReplayGuard,
+        service_executor: _BoundedServiceExecutor,
+        **kwargs,
+    ) -> None:
         self.replay_guard = replay_guard
+        self.service_executor = service_executor
         self._request_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
         super().__init__(*args, **kwargs)
 
@@ -640,6 +749,10 @@ class AdapterHttpServer(ThreadingHTTPServer):
         try:
             super().server_close()
         finally:
+            executor = self.service_executor
+            if executor is not None:
+                self.service_executor = None
+                executor.shutdown()
             guard = self.replay_guard
             if guard is not None:
                 self.replay_guard = None
@@ -656,9 +769,25 @@ def create_server(
     clock: Callable[[], int | float] = time.time,
 ) -> AdapterHttpServer:
     replay_guard = ReplayGuard(sqlite_path)
-    handler = make_handler(service, secret, replay_guard, devices, clock)
+    service_executor = _BoundedServiceExecutor(MAX_SERVICE_WORKERS)
+    service_slots = threading.BoundedSemaphore(MAX_SERVICE_WORKERS)
+    handler = make_handler(
+        service,
+        secret,
+        replay_guard,
+        devices,
+        clock,
+        service_executor,
+        service_slots,
+    )
     try:
-        return AdapterHttpServer(address, handler, replay_guard=replay_guard)
+        return AdapterHttpServer(
+            address,
+            handler,
+            replay_guard=replay_guard,
+            service_executor=service_executor,
+        )
     except BaseException:
+        service_executor.shutdown()
         replay_guard.close()
         raise
