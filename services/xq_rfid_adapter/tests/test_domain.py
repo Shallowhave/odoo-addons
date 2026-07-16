@@ -95,6 +95,24 @@ class TestAdapterError(unittest.TestCase):
 
         self.assertEqual(error.to_dict(), expected)
 
+    def test_private_serialized_state_is_read_only_through_normal_api(self):
+        error = AdapterError(AdapterErrorCode.NO_TAG, "no tag")
+        expected = error.to_dict()
+
+        with self.assertRaises(AttributeError):
+            error._state = (
+                AdapterErrorCode.DEVICE_ERROR,
+                "raw frame: secret",
+                "raw-secret",
+                True,
+            )
+        with self.assertRaises(AttributeError):
+            del error._state
+
+        self.assertEqual(error.to_dict(), expected)
+        error.add_note("safe diagnostic")
+        self.assertEqual(error.__notes__, ["safe diagnostic"])
+
     def test_serialization_ignores_unrelated_attached_state(self):
         error = AdapterError(AdapterErrorCode.NO_TAG, "no tag")
         error.raw_frame = b"secret"

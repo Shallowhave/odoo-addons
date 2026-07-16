@@ -49,7 +49,9 @@ class AdapterError(Exception):
     """An adapter failure with fixed, validated public serialization."""
 
     __slots__ = ("_state",)
-    _SERIALIZED_FIELDS = frozenset({"code", "message", "device_code", "retryable"})
+    _SERIALIZED_FIELDS = frozenset(
+        {"_state", "code", "message", "device_code", "retryable"}
+    )
 
     def __init__(
         self,
