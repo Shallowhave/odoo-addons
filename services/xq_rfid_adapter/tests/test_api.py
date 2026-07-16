@@ -400,7 +400,7 @@ class FakeService:
             "request_id": args[0],
             "operation_type": "write_and_verify",
             "payload_version": 1,
-            "masked_epc": "AA**************BB",
+            "masked_epc": "AABB********CCDD",
             "masked_tid": None,
             "identity_hash": "a" * 64,
             "verification_ok": True,
@@ -756,6 +756,9 @@ class TestHttpApi(unittest.TestCase):
             dict(valid, masked_epc="/private/secret"),
             dict(valid, masked_epc="A" * 24),
             dict(valid, masked_epc="A" * 23 + "*"),
+            dict(valid, masked_epc="AABB*******CCDD"),
+            dict(valid, masked_epc="AABB*********CCDD"),
+            dict(valid, masked_epc="ＡＡＢＢ********ＣＣＤＤ"),
             dict(valid, identity_hash="not-a-hash"),
             dict(valid, verification_ok=1),
             dict(valid, device_code="raw-device-code"),
@@ -1005,6 +1008,67 @@ class TestCli(unittest.TestCase):
             combined = result.stdout + result.stderr
             self.assertNotIn("Traceback", combined)
             self.assertNotIn(str(root), combined)
+
+    def test_process_exits_with_permanently_hung_service_worker(self):
+        script = r'''
+import hashlib
+import http.client
+import tempfile
+import threading
+from pathlib import Path
+from xq_rfid_adapter.api import create_server, sign_request
+
+class HungService:
+    def test_connection(self, device_id):
+        threading.Event().wait()
+    def get_device(self, device_id):
+        threading.Event().wait()
+    def submit_operation(self, request):
+        threading.Event().wait()
+    def get_operation(self, request_id):
+        threading.Event().wait()
+
+with tempfile.TemporaryDirectory() as directory:
+    secret = b"z" * 32
+    server = create_server(
+        ("127.0.0.1", 0), HungService(), secret,
+        Path(directory) / "replay.sqlite3", frozenset({"reader-1"}),
+        clock=lambda: 1700000000,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    target = "/v1/devices/reader-1/test-connection"
+    body = b"{}"
+    timestamp = "1700000000"
+    nonce = hashlib.sha256(b"hung-call").hexdigest()
+    signature = sign_request(secret, "POST", target, timestamp, nonce, body)
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+    connection.request("POST", target, body, {
+        "Content-Type": "application/json",
+        "Content-Length": "2",
+        "X-RFID-Timestamp": timestamp,
+        "X-RFID-Nonce": nonce,
+        "X-RFID-Signature": signature,
+    })
+    response = connection.getresponse()
+    assert response.status == 504, response.status
+    response.read()
+    connection.close()
+    server.shutdown()
+    server.server_close()
+    thread.join(2)
+    assert not thread.is_alive()
+'''
+        started = time.monotonic()
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=6,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(time.monotonic() - started, 5)
 
     def test_serve_sqlite_startup_error_is_safe(self):
         from xq_rfid_adapter import __main__ as cli

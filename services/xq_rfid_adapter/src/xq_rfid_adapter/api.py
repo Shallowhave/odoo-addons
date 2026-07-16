@@ -59,7 +59,7 @@ _OPERATION_RESULT_KEYS = frozenset({
     "state", "request_id", "operation_type", "payload_version",
     "masked_epc", "masked_tid", "identity_hash", "verification_ok", "retryable",
 })
-_MASKED_IDENTIFIER_RE = re.compile(r"\A[0-9A-Fa-f*]{1,128}\Z")
+_MASKED_IDENTIFIER_RE = re.compile(r"\A[0-9A-Fa-f]{4}\*{8}[0-9A-Fa-f]{4}\Z")
 _IDENTITY_HASH_RE = re.compile(r"\A[0-9A-Fa-f]{64}\Z")
 _SAFE_MESSAGES = {
     AdapterErrorCode.AUTHENTICATION_ERROR: "authentication failed",
@@ -380,9 +380,7 @@ def _serialize_operation_result(
     for key in ("masked_epc", "masked_tid"):
         item = result[key]
         if item is not None and (
-            not isinstance(item, str)
-            or not _MASKED_IDENTIFIER_RE.fullmatch(item)
-            or item.count("*") < max(4, len(item) // 2)
+            not isinstance(item, str) or not _MASKED_IDENTIFIER_RE.fullmatch(item)
         ):
             raise _invalid_service_result()
         safe[key] = item
