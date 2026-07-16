@@ -2,7 +2,12 @@
 
 from typing import Protocol, runtime_checkable
 
-from xq_rfid_adapter.domain import MemoryBank, TagObservation, TagTarget
+from xq_rfid_adapter.domain import (
+    MemoryBank,
+    TagObservation,
+    TagTarget,
+    WriteMemoryBank,
+)
 
 
 @runtime_checkable
@@ -30,7 +35,7 @@ class Driver(Protocol):
     def write_memory(
         self,
         target: TagTarget,
-        bank: MemoryBank,
+        bank: WriteMemoryBank,
         word_offset: int,
         payload: bytes,
     ) -> dict: ...

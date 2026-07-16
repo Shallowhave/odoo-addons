@@ -7,6 +7,7 @@ from .domain import (
     MemoryBank,
     TagObservation,
     TagTarget,
+    WriteMemoryBank,
     error_envelope,
     success_envelope,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "MemoryBank",
     "TagObservation",
     "TagTarget",
+    "WriteMemoryBank",
     "error_envelope",
     "success_envelope",
 ]

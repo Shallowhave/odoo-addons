@@ -5,7 +5,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, fields
 from enum import Enum
-from typing import NotRequired, TypedDict
+from types import MappingProxyType
+from typing import TypedDict
 
 
 class AdapterErrorCode(str, Enum):
@@ -46,9 +47,9 @@ class ResultEnvelope(TypedDict):
 
 
 class AdapterError(Exception):
-    """An adapter failure containing only explicitly safe public fields."""
+    """An immutable adapter failure containing only safe public fields."""
 
-    __slots__ = ("code", "message", "device_code", "retryable")
+    __slots__ = ("_state",)
 
     def __init__(
         self,
@@ -66,11 +67,42 @@ class AdapterError(Exception):
         if retryable is not None and type(retryable) is not bool:
             raise TypeError("retryable must be a bool or None")
 
+        resolved_retryable = (
+            code in _RETRYABLE_BY_DEFAULT if retryable is None else retryable
+        )
         super().__init__(message)
-        self.code = code
-        self.message = message
-        self.device_code = device_code
-        self.retryable = code in _RETRYABLE_BY_DEFAULT if retryable is None else retryable
+        object.__setattr__(
+            self,
+            "_state",
+            (code, message, device_code, resolved_retryable),
+        )
+
+    def __getattribute__(self, name: str):
+        if name == "__dict__":
+            return MappingProxyType({})
+        return super().__getattribute__(name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("AdapterError is immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("AdapterError is immutable")
+
+    @property
+    def code(self) -> AdapterErrorCode:
+        return self._state[0]
+
+    @property
+    def message(self) -> str:
+        return self._state[1]
+
+    @property
+    def device_code(self) -> str | None:
+        return self._state[2]
+
+    @property
+    def retryable(self) -> bool:
+        return self._state[3]
 
     def to_dict(self) -> ErrorPayload:
         """Serialize the fixed public error representation."""
@@ -84,10 +116,16 @@ class AdapterError(Exception):
 
 
 class MemoryBank(str, Enum):
-    """Memory banks available through the first-phase driver boundary."""
+    """Memory banks available through the first-phase read boundary."""
 
     EPC = "epc"
     TID = "tid"
+    USER = "user"
+
+
+class WriteMemoryBank(str, Enum):
+    """Memory banks accepted by the first-phase write boundary."""
+
     USER = "user"
 
 

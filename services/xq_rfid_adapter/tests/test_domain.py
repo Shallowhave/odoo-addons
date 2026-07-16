@@ -1,6 +1,9 @@
+import inspect
 import math
 import unittest
 from dataclasses import FrozenInstanceError
+from types import MappingProxyType
+from typing import get_type_hints
 
 from xq_rfid_adapter.domain import (
     AdapterError,
@@ -8,6 +11,7 @@ from xq_rfid_adapter.domain import (
     DeviceCapabilities,
     MemoryBank,
     TagObservation,
+    WriteMemoryBank,
     TagTarget,
     error_envelope,
     success_envelope,
@@ -75,6 +79,52 @@ class TestAdapterError(unittest.TestCase):
         with self.assertRaises(TypeError):
             AdapterError(AdapterErrorCode.NO_TAG, "no tag", retryable=1)  # type: ignore[arg-type]
 
+    def test_error_public_state_is_read_only_after_construction(self):
+        error = AdapterError(AdapterErrorCode.NO_TAG, "no tag", device_code="0x12")
+        expected = error.to_dict()
+
+        for name, value in {
+            "code": AdapterErrorCode.DEVICE_ERROR,
+            "message": "raw frame: secret",
+            "device_code": "raw-secret",
+            "retryable": True,
+            "args": ("raw frame: secret",),
+            "raw_frame": b"secret",
+            "traceback": "secret",
+        }.items():
+            with self.subTest(name=name), self.assertRaises((AttributeError, TypeError)):
+                setattr(error, name, value)
+
+        self.assertEqual(error.to_dict(), expected)
+
+    def test_error_instance_dictionary_cannot_mutate_or_attach_state(self):
+        error = AdapterError(AdapterErrorCode.NO_TAG, "no tag")
+
+        self.assertIsInstance(error.__dict__, MappingProxyType)
+        with self.assertRaises(TypeError):
+            error.__dict__["raw_frame"] = b"secret"
+        with self.assertRaises((AttributeError, TypeError)):
+            error.__dict__ = {"raw_frame": b"secret"}
+
+        self.assertEqual(
+            error.to_dict(),
+            {
+                "code": "no_tag",
+                "message": "no tag",
+                "device_code": None,
+                "retryable": False,
+            },
+        )
+
+    def test_error_remains_raiseable_and_catchable(self):
+        error = AdapterError(AdapterErrorCode.TIMEOUT, "timed out")
+
+        with self.assertRaises(AdapterError) as caught:
+            raise error
+
+        self.assertIs(caught.exception, error)
+        self.assertEqual(str(error), "timed out")
+
 
 class TestTagValues(unittest.TestCase):
     def test_target_normalizes_hex_case(self):
@@ -129,6 +179,13 @@ class TestMemoryAndCapabilities(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             MemoryBank("reserved")
+
+    def test_write_memory_bank_allows_only_user_bank(self):
+        self.assertEqual([bank.value for bank in WriteMemoryBank], ["user"])
+        self.assertIs(WriteMemoryBank("user"), WriteMemoryBank.USER)
+        for bank in ["epc", "tid", "reserved"]:
+            with self.subTest(bank=bank), self.assertRaises(ValueError):
+                WriteMemoryBank(bank)
 
     def test_capabilities_are_explicit_immutable_booleans(self):
         capabilities = DeviceCapabilities(
@@ -193,6 +250,62 @@ class TestResultEnvelope(unittest.TestCase):
 
 
 class TestDriverProtocol(unittest.TestCase):
+    def test_method_signatures_and_type_hints_are_exact(self):
+        expected = {
+            "test_connection": (
+                ["self"],
+                {},
+                dict,
+            ),
+            "get_device_info": (
+                ["self"],
+                {},
+                dict,
+            ),
+            "inventory": (
+                ["self", "duration_ms", "include_tid"],
+                {"duration_ms": int, "include_tid": bool},
+                list[TagObservation],
+            ),
+            "read_memory": (
+                ["self", "target", "bank", "word_offset", "word_count"],
+                {
+                    "target": TagTarget,
+                    "bank": MemoryBank,
+                    "word_offset": int,
+                    "word_count": int,
+                },
+                bytes,
+            ),
+            "write_memory": (
+                ["self", "target", "bank", "word_offset", "payload"],
+                {
+                    "target": TagTarget,
+                    "bank": WriteMemoryBank,
+                    "word_offset": int,
+                    "payload": bytes,
+                },
+                dict,
+            ),
+            "close": (
+                ["self"],
+                {},
+                type(None),
+            ),
+        }
+
+        for method_name, (parameter_names, parameter_hints, return_hint) in expected.items():
+            with self.subTest(method=method_name):
+                method = getattr(Driver, method_name)
+                signature = inspect.signature(method)
+                hints = get_type_hints(method)
+                self.assertEqual(list(signature.parameters), parameter_names)
+                self.assertEqual(
+                    {name: hints[name] for name in parameter_names if name != "self"},
+                    parameter_hints,
+                )
+                self.assertEqual(hints["return"], return_hint)
+
     def test_fake_driver_structurally_conforms_at_runtime(self):
         class FakeDriver:
             def test_connection(self) -> dict:
@@ -216,7 +329,7 @@ class TestDriverProtocol(unittest.TestCase):
             def write_memory(
                 self,
                 target: TagTarget,
-                bank: MemoryBank,
+                bank: WriteMemoryBank,
                 word_offset: int,
                 payload: bytes,
             ) -> dict:
