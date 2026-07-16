@@ -10,7 +10,7 @@
 ##############################################################################
 
 from odoo import _, api, fields, models
-from odoo.exceptions import UserError
+from odoo.exceptions import AccessError, UserError
 
 
 def _validate_device_type(device_type):
@@ -126,15 +126,28 @@ class RfidDeviceConfig(models.Model):
     read_count = fields.Integer(string="读取次数", default=0, readonly=True)
     notes = fields.Text(string="备注")
 
+    @api.model
+    def _validate_allowed_company(self, company_id):
+        if not company_id:
+            return
+        company = self.env["res.company"].browse(company_id).exists()
+        if not company or company not in self.env.companies:
+            raise AccessError(_("无权将 RFID 设备分配到该公司。"))
+
     @api.model_create_multi
     def create(self, vals_list):
         default_device_type = self.env.context.get("default_device_type")
+        default_company_id = self.env.context.get("default_company_id")
         for vals in vals_list:
             _validate_device_type(vals.get("device_type", default_device_type))
+            self._validate_allowed_company(
+                vals.get("company_id", default_company_id or self.env.company.id)
+            )
         return super().create(vals_list)
 
     def write(self, vals):
         _validate_device_type(vals.get("device_type"))
+        self._validate_allowed_company(vals.get("company_id"))
         return super().write(vals)
 
     @api.depends("device_type")

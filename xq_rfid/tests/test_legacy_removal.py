@@ -392,6 +392,33 @@ class TestLegacyDisabledRestrictions(unittest.TestCase):
         self.assertIn('_validate_device_type(vals.get("device_type"))', source)
         self.assertLess(source.index("_validate_device_type"), source.index("super().write"))
 
+    def test_create_validates_requested_company_before_super(self):
+        source = self._method_source("create")
+        self.assertIn("self._validate_allowed_company(", source)
+        self.assertIn("default_company_id", source)
+        self.assertLess(
+            source.index("_validate_allowed_company"),
+            source.index("super().create"),
+        )
+
+    def test_write_validates_requested_company_before_super(self):
+        source = self._method_source("write")
+        self.assertIn(
+            'self._validate_allowed_company(vals.get("company_id"))',
+            source,
+        )
+        self.assertLess(
+            source.index("_validate_allowed_company"),
+            source.index("super().write"),
+        )
+
+    def test_company_validator_uses_allowed_context_and_access_error(self):
+        source = self._method_source("_validate_allowed_company")
+        self.assertIn('self.env["res.company"].browse(company_id).exists()', source)
+        self.assertIn("company not in self.env.companies", source)
+        self.assertIn("AccessError", source)
+        self.assertNotIn("sudo", source)
+
 
 if __name__ == "__main__":
     unittest.main()
