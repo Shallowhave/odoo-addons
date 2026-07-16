@@ -8,7 +8,10 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from unittest import mock
 
+from xq_rfid_adapter.domain import AdapterErrorCode
 from xq_rfid_adapter.store import OperationStore, SCHEMA_VERSION, StoreError
 
 
@@ -30,15 +33,15 @@ def sample_request(request_id="r1", **changes):
 
 def safe_error(code="connection_error"):
     messages = {
-        "connection_error": "device connection failed",
-        "write_uncertain": "write outcome is uncertain",
-        "verification_failed": "write verification failed",
+        AdapterErrorCode.CONNECTION_ERROR.value: "device connection failed",
+        AdapterErrorCode.WRITE_UNCERTAIN.value: "write outcome is uncertain",
+        AdapterErrorCode.VERIFICATION_FAILED.value: "write verification failed",
     }
     return {
         "code": code,
         "message": messages[code],
         "device_code": None,
-        "retryable": code in {"connection_error", "write_uncertain"},
+        "retryable": code == AdapterErrorCode.CONNECTION_ERROR.value,
     }
 
 
@@ -214,6 +217,23 @@ class TestSchemaAndSafety(StoreCase):
                 )],
                 ["device_id"],
             )
+            recovery = index_rows["operations_recovery_idx"]
+            self.assertEqual(recovery[2], 0)
+            self.assertEqual(recovery[4], 1)
+            self.assertEqual(
+                [row[2] for row in connection.execute(
+                    "PRAGMA index_info(operations_recovery_idx)"
+                )],
+                ["lease_until", "created_at", "id"],
+            )
+            recovery_sql = connection.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='index' AND name='operations_recovery_idx'"
+            ).fetchone()[0]
+            self.assertIn(
+                "WHERE state IN ('claimed','inventorying','writing','verifying')",
+                recovery_sql,
+            )
         finally:
             connection.close()
 
@@ -232,6 +252,11 @@ class TestSchemaAndSafety(StoreCase):
             "index_order": (
                 "DROP INDEX operations_claim_idx",
                 "CREATE INDEX operations_claim_idx ON operations(state,device_id,created_at,id)",
+            ),
+            "old_recovery_index": (
+                "DROP INDEX operations_recovery_idx",
+                "CREATE INDEX operations_recovery_idx "
+                "ON operations(state,lease_until,created_at,id)",
             ),
         }
         pristine = self.path + ".pristine"
@@ -377,7 +402,7 @@ class TestSchemaAndSafety(StoreCase):
     def test_tampered_terminal_history_and_lease_rows_fail_closed(self):
         self.store.create_or_get(sample_request(), now=1)
         self.store.claim_next("reader-1", "worker-a", 10, now=2)
-        self.store.transition("r1", "claimed", "cancelled", now=3)
+        self.store.transition("r1", "worker-a", "claimed", "cancelled", now=3)
         connection = sqlite3.connect(self.path)
         connection.execute("PRAGMA ignore_check_constraints=ON")
         connection.execute(
@@ -402,6 +427,41 @@ class TestSchemaAndSafety(StoreCase):
         self.assertEqual(caught.exception.code, "store_unavailable")
         self.assertNotIn(secret_path, str(caught.exception))
         self.assertNotIn("private-name", repr(caught.exception))
+
+    def test_persistent_store_rejects_memory_database(self):
+        for path in (":memory:", Path(":memory:")):
+            with self.subTest(path=path):
+                with self.assertRaises(StoreError) as caught:
+                    OperationStore(path)
+                self.assertEqual(caught.exception.code, "invalid_argument")
+
+    def test_initialize_requires_wal_pragma_result(self):
+        real_connect = sqlite3.connect
+
+        class NonWalConnection(sqlite3.Connection):
+            def execute(self, sql, parameters=()):
+                if "journal_mode" in sql.lower() and "wal" in sql.lower():
+                    return super().execute("PRAGMA journal_mode")
+                return super().execute(sql, parameters)
+
+        self.store.close()
+        connection = real_connect(self.path)
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.close()
+        with mock.patch(
+            "xq_rfid_adapter.store.sqlite3.connect",
+            side_effect=lambda *args, **kwargs: real_connect(
+                *args, factory=NonWalConnection, **kwargs
+            ),
+        ):
+            with self.assertRaises(StoreError) as caught:
+                OperationStore(self.path)
+        self.assertEqual(caught.exception.code, "store_unavailable")
+        connection = real_connect(self.path)
+        try:
+            self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+        finally:
+            connection.close()
 
     def test_safe_output_omits_payload_hash_secret_and_raw_identity(self):
         operation = self.store.create_or_get(sample_request())
@@ -520,12 +580,13 @@ class TestTransitions(StoreCase):
         self.store.claim_next("reader-1", "worker-a", 30, now=11)
 
     def test_all_allowed_paths_and_timestamps(self):
-        inventorying = self.store.transition("r1", "claimed", "inventorying", now=12)
+        inventorying = self.store.transition("r1", "worker-a", "claimed", "inventorying", now=12)
         self.assertEqual(inventorying["updated_at"], 12)
-        writing = self.store.transition("r1", "inventorying", "writing", now=13)
-        verifying = self.store.transition("r1", "writing", "verifying", now=14)
+        writing = self.store.transition("r1", "worker-a", "inventorying", "writing", now=13)
+        verifying = self.store.transition("r1", "worker-a", "writing", "verifying", now=14)
         succeeded = self.store.transition(
-            "r1", "verifying", "succeeded", result=safe_result(), now=15
+            "r1", "worker-a", "verifying", "succeeded",
+            result=safe_result(), now=15
         )
         self.assertEqual(writing["state"], "writing")
         self.assertEqual(verifying["state"], "verifying")
@@ -540,15 +601,18 @@ class TestTransitions(StoreCase):
         queued = self.store.create_or_get(sample_request("queued-direct"), now=12)
         self.assertEqual(queued["state"], "queued")
         with self.assertRaises(StoreError) as caught:
-            self.store.transition("queued-direct", "queued", "claimed", now=13)
+            self.store.transition(
+                "queued-direct", "worker-a", "queued", "claimed", now=13
+            )
         self.assertEqual(caught.exception.code, "illegal_transition")
         self.assertEqual(self.store.get("queued-direct")["state"], "queued")
 
     def test_direct_success_from_writing_is_allowed(self):
-        self.store.transition("r1", "claimed", "inventorying", now=12)
-        self.store.transition("r1", "inventorying", "writing", now=13)
+        self.store.transition("r1", "worker-a", "claimed", "inventorying", now=12)
+        self.store.transition("r1", "worker-a", "inventorying", "writing", now=13)
         result = self.store.transition(
-            "r1", "writing", "succeeded", result=safe_result(), now=14
+            "r1", "worker-a", "writing", "succeeded",
+            result=safe_result(), now=14
         )
         self.assertEqual(result["state"], "succeeded")
 
@@ -562,9 +626,10 @@ class TestTransitions(StoreCase):
                 )
                 self.store.claim_next(device_id, "worker-a", 30, now=21)
                 if expected == "inventorying":
-                    self.store.transition(request_id, "claimed", "inventorying", now=22)
+                    self.store.transition(request_id, "worker-a", "claimed", "inventorying", now=22)
                 failed = self.store.transition(
-                    request_id, expected, "failed_retryable", error=safe_error(), now=23
+                    request_id, "worker-a", expected, "failed_retryable",
+                    error=safe_error(), now=23
                 )
                 self.assertEqual(failed["state"], "failed_retryable")
         request_id = "r-cancel"
@@ -572,7 +637,7 @@ class TestTransitions(StoreCase):
             sample_request(request_id, device_id="reader-cancel"), now=30
         )
         self.store.claim_next("reader-cancel", "worker-a", 30, now=31)
-        cancelled = self.store.transition(request_id, "claimed", "cancelled", now=32)
+        cancelled = self.store.transition(request_id, "worker-a", "claimed", "cancelled", now=32)
         self.assertEqual(cancelled["state"], "cancelled")
 
     def test_illegal_stale_backward_skipped_and_terminal_transitions_do_not_mutate(self):
@@ -588,23 +653,25 @@ class TestTransitions(StoreCase):
             for expected, new in attempts:
                 with self.subTest(expected=expected, new=new):
                     with self.assertRaises(StoreError) as caught:
-                        other.transition("r1", expected, new, now=20)
+                        other.transition("r1", "worker-a", expected, new, now=20)
                     self.assertIn(caught.exception.code, {"stale_state", "illegal_transition"})
                     self.assertEqual(self.store.get("r1"), before)
-            self.store.transition("r1", "claimed", "cancelled", now=21)
+            self.store.transition("r1", "worker-a", "claimed", "cancelled", now=21)
             terminal = self.store.get("r1")
             with self.assertRaises(StoreError):
-                other.transition("r1", "cancelled", "queued", now=22)
+                other.transition("r1", "worker-a", "cancelled", "queued", now=22)
             self.assertEqual(self.store.get("r1"), terminal)
         finally:
             other.close()
 
     def test_not_found_is_distinct_from_stale(self):
         with self.assertRaises(StoreError) as caught:
-            self.store.transition("missing", "claimed", "inventorying", now=12)
+            self.store.transition(
+                "missing", "worker-a", "claimed", "inventorying", now=12
+            )
         self.assertEqual(caught.exception.code, "not_found")
         with self.assertRaises(StoreError) as caught:
-            self.store.transition("r1", "inventorying", "writing", now=12)
+            self.store.transition("r1", "worker-a", "inventorying", "writing", now=12)
         self.assertEqual(caught.exception.code, "stale_state")
 
     def test_result_and_error_schemas_are_state_specific_and_safe(self):
@@ -617,7 +684,7 @@ class TestTransitions(StoreCase):
         for result in bad_results:
             with self.subTest(result=result):
                 with self.assertRaises(StoreError):
-                    self.store.transition("r1", "claimed", "inventorying", result=result, now=12)
+                    self.store.transition("r1", "worker-a", "claimed", "inventorying", result=result, now=12)
         bad_errors = [
             "exception text",
             {"code": "anything", "message": "traceback secret", "device_code": None, "retryable": True},
@@ -627,7 +694,7 @@ class TestTransitions(StoreCase):
         for error in bad_errors:
             with self.subTest(error=error):
                 with self.assertRaises(StoreError):
-                    self.store.transition("r1", "claimed", "failed_retryable", error=error, now=12)
+                    self.store.transition("r1", "worker-a", "claimed", "failed_retryable", error=error, now=12)
         self.assertEqual(self.store.get("r1")["state"], "claimed")
 
     def test_transition_requires_matching_active_device_lease(self):
@@ -636,26 +703,86 @@ class TestTransitions(StoreCase):
         connection.commit()
         connection.close()
         with self.assertRaises(StoreError) as caught:
-            self.store.transition("r1", "claimed", "inventorying", now=12)
+            self.store.transition("r1", "worker-a", "claimed", "inventorying", now=12)
         self.assertEqual(caught.exception.code, "store_unavailable")
         self.assertEqual(self.store.get("r1")["state"], "claimed")
 
-    def test_transition_timestamp_cannot_regress(self):
-        self.store.transition("r1", "claimed", "inventorying", now=15)
+    def test_transition_requires_current_unexpired_owner(self):
+        before = self.store.get("r1")
         with self.assertRaises(StoreError) as caught:
-            self.store.transition("r1", "inventorying", "writing", now=12)
+            self.store.transition(
+                "r1", "worker-b", "claimed", "inventorying", now=12
+            )
+        self.assertEqual(caught.exception.code, "lease_conflict")
+        self.assertEqual(self.store.get("r1"), before)
+
+        boundary = self.store.transition(
+            "r1", "worker-a", "claimed", "inventorying", now=41
+        )
+        self.assertEqual(boundary["state"], "inventorying")
+
+        self.store.create_or_get(
+            sample_request("expired", device_id="reader-expired"), now=10
+        )
+        self.store.claim_next("reader-expired", "worker-a", 30, now=11)
+        before = self.store.get("expired")
+        with self.assertRaises(StoreError) as caught:
+            self.store.transition(
+                "expired", "worker-a", "claimed", "inventorying", now=42
+            )
+        self.assertEqual(caught.exception.code, "lease_conflict")
+        self.assertEqual(self.store.get("expired"), before)
+
+    def test_transition_rejects_invalid_owner_without_mutation(self):
+        before = self.store.get("r1")
+        for owner in (None, True, "", "bad owner", "x" * 129):
+            with self.subTest(owner=owner):
+                with self.assertRaises(StoreError) as caught:
+                    self.store.transition(
+                        "r1", owner, "claimed", "inventorying", now=12
+                    )
+                self.assertEqual(caught.exception.code, "invalid_argument")
+                self.assertEqual(self.store.get("r1"), before)
+
+    def test_two_stores_racing_transition_have_one_winner(self):
+        stores = [OperationStore(self.path), OperationStore(self.path)]
+        barrier = threading.Barrier(2)
+
+        def transition(store):
+            barrier.wait()
+            try:
+                return store.transition(
+                    "r1", "worker-a", "claimed", "inventorying", now=12
+                )["state"]
+            except StoreError as error:
+                return error.code
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                outcomes = list(executor.map(transition, stores))
+            self.assertEqual(sorted(outcomes), ["inventorying", "stale_state"])
+        finally:
+            for store in stores:
+                store.close()
+
+    def test_transition_timestamp_cannot_regress(self):
+        self.store.transition("r1", "worker-a", "claimed", "inventorying", now=15)
+        with self.assertRaises(StoreError) as caught:
+            self.store.transition("r1", "worker-a", "inventorying", "writing", now=12)
         self.assertEqual(caught.exception.code, "invalid_argument")
         self.assertEqual(self.store.get("r1")["updated_at"], 15)
 
     def test_repeated_completion_does_not_change_timestamp_or_result(self):
-        self.store.transition("r1", "claimed", "inventorying", now=12)
-        self.store.transition("r1", "inventorying", "writing", now=13)
+        self.store.transition("r1", "worker-a", "claimed", "inventorying", now=12)
+        self.store.transition("r1", "worker-a", "inventorying", "writing", now=13)
         completed = self.store.transition(
-            "r1", "writing", "succeeded", result=safe_result(), now=14
+            "r1", "worker-a", "writing", "succeeded",
+            result=safe_result(), now=14
         )
         with self.assertRaises(StoreError):
             self.store.transition(
-                "r1", "writing", "succeeded", result=safe_result(), now=99
+                "r1", "worker-a", "writing", "succeeded",
+                result=safe_result(), now=99
             )
         self.assertEqual(self.store.get("r1"), completed)
 
@@ -759,7 +886,9 @@ class TestClaimsAndLeases(StoreCase):
         self.assertEqual(old["error"]["code"], "connection_error")
         self.assertIsNone(old["claim_owner"])
         with self.assertRaises(StoreError):
-            self.store.transition("old", "claimed", "inventorying", now=13)
+            self.store.transition(
+                "old", "worker-a", "claimed", "inventorying", now=13
+            )
 
     def test_lease_mutations_reject_missing_malformed_or_expired_claim_leases(self):
         scenarios = {
@@ -789,7 +918,9 @@ class TestClaimsAndLeases(StoreCase):
     def test_lease_renewal_rejects_time_before_active_history(self):
         self.store.create_or_get(sample_request("old"), now=1)
         self.store.claim_next("reader-1", "worker-a", 30, now=10)
-        self.store.transition("old", "claimed", "inventorying", now=20)
+        self.store.transition(
+            "old", "worker-a", "claimed", "inventorying", now=20
+        )
         for call in (
             lambda: self.store.renew_lease("reader-1", "worker-a", 5, now=15),
             lambda: self.store.acquire_lease("reader-1", "worker-a", 5, now=15),
@@ -957,11 +1088,11 @@ class TestRecovery(StoreCase):
         )
         self.store.claim_next(device_id, "worker-a", 1, now=claimed_at)
         if state != "claimed":
-            self.store.transition(request_id, "claimed", "inventorying", now=claimed_at)
+            self.store.transition(request_id, "worker-a", "claimed", "inventorying", now=claimed_at)
         if state in {"writing", "verifying"}:
-            self.store.transition(request_id, "inventorying", "writing", now=claimed_at)
+            self.store.transition(request_id, "worker-a", "inventorying", "writing", now=claimed_at)
         if state == "verifying":
-            self.store.transition(request_id, "writing", "verifying", now=claimed_at)
+            self.store.transition(request_id, "worker-a", "writing", "verifying", now=claimed_at)
 
     def test_recovery_codes_depend_on_write_boundary(self):
         for index, state in enumerate(("claimed", "inventorying", "writing", "verifying")):
@@ -971,9 +1102,14 @@ class TestRecovery(StoreCase):
         recovered = self.store.recover_expired_claims(now=100)
         self.assertEqual([item["request_id"] for item in recovered], ["r-0", "r-1", "r-2", "r-3"])
         for item in recovered:
-            expected = "connection_error" if item["request_id"] in {"r-0", "r-1"} else "write_uncertain"
+            pre_write = item["request_id"] in {"r-0", "r-1"}
+            expected = (
+                AdapterErrorCode.CONNECTION_ERROR.value
+                if pre_write else AdapterErrorCode.WRITE_UNCERTAIN.value
+            )
             self.assertEqual(item["state"], "failed_retryable")
             self.assertEqual(item["error"]["code"], expected)
+            self.assertIs(item["error"]["retryable"], pre_write)
             self.assertIsNone(item["claim_owner"])
             self.assertIsNone(item["lease_until"])
 
@@ -1032,7 +1168,11 @@ class TestRecovery(StoreCase):
                 outcomes = list(executor.map(recover, stores))
             recovered = [item for batch in outcomes for item in batch]
             self.assertEqual([item["request_id"] for item in recovered], ["restart"])
-            self.assertEqual(stores[0].get("restart")["error"]["code"], "write_uncertain")
+            error = stores[0].get("restart")["error"]
+            self.assertEqual(
+                error["code"], AdapterErrorCode.WRITE_UNCERTAIN.value
+            )
+            self.assertIs(error["retryable"], False)
         finally:
             for store in stores:
                 store.close()
@@ -1080,6 +1220,7 @@ class TestResourcesAndContention(StoreCase):
             ).fetchall()
             self.assertIn("operations_claim_idx", repr(claim))
             self.assertIn("operations_recovery_idx", repr(recovery))
+            self.assertNotIn("TEMP B-TREE", repr(recovery).upper())
         finally:
             connection.close()
 

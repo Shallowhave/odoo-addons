@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from .domain import AdapterErrorCode
+
 
 SCHEMA_VERSION = 1
 _DEFAULT_BUSY_TIMEOUT_MS = 1000
@@ -55,17 +57,17 @@ _ALLOWED_TRANSITIONS = {
 _RESULT_KEYS = frozenset({"identity_hash", "verification_ok"})
 _ERROR_KEYS = frozenset({"code", "message", "device_code", "retryable"})
 _SAFE_ERRORS = {
-    "connection_error": ("device connection failed", True),
-    "timeout": ("device operation timed out", True),
-    "protocol_error": ("invalid request", False),
-    "device_error": ("internal device error", False),
-    "no_tag": ("no tag was found", False),
-    "multiple_tags": ("multiple tags were found", False),
-    "target_changed": ("tag target changed", False),
-    "unsupported_memory": ("memory operation is unsupported", False),
-    "capacity_exceeded": ("request body is too large", False),
-    "write_uncertain": ("write outcome is uncertain", True),
-    "verification_failed": ("write verification failed", False),
+    AdapterErrorCode.CONNECTION_ERROR: ("device connection failed", True),
+    AdapterErrorCode.TIMEOUT: ("device operation timed out", True),
+    AdapterErrorCode.PROTOCOL_ERROR: ("invalid request", False),
+    AdapterErrorCode.DEVICE_ERROR: ("internal device error", False),
+    AdapterErrorCode.NO_TAG: ("no tag was found", False),
+    AdapterErrorCode.MULTIPLE_TAGS: ("multiple tags were found", False),
+    AdapterErrorCode.TARGET_CHANGED: ("tag target changed", False),
+    AdapterErrorCode.UNSUPPORTED_MEMORY: ("memory operation is unsupported", False),
+    AdapterErrorCode.CAPACITY_EXCEEDED: ("request body is too large", False),
+    AdapterErrorCode.WRITE_UNCERTAIN: ("write outcome is uncertain", False),
+    AdapterErrorCode.VERIFICATION_FAILED: ("write verification failed", False),
 }
 _ACTIVE_STATE_SQL = "'claimed','inventorying','writing','verifying'"
 _SCHEMA_STATEMENTS = (
@@ -149,7 +151,8 @@ _SCHEMA_STATEMENTS = (
     """CREATE INDEX operations_claim_idx
         ON operations(device_id, state, created_at, id)""",
     """CREATE INDEX operations_recovery_idx
-        ON operations(state, lease_until, created_at, id)""",
+        ON operations(lease_until, created_at, id)
+        WHERE state IN ('claimed','inventorying','writing','verifying')""",
     """CREATE UNIQUE INDEX operations_one_active_device_idx
         ON operations(device_id)
         WHERE state IN ('claimed','inventorying','writing','verifying')""",
@@ -199,7 +202,12 @@ class OperationStore:
     """SQLite store using one configured connection per public method."""
 
     def __init__(self, path: str | Path, *, busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS) -> None:
-        if isinstance(path, bool) or not isinstance(path, (str, Path)) or not str(path):
+        if (
+            isinstance(path, bool)
+            or not isinstance(path, (str, Path))
+            or not str(path)
+            or str(path) == ":memory:"
+        ):
             raise StoreError("invalid_argument")
         if (
             type(busy_timeout_ms) is not int
@@ -289,6 +297,7 @@ class OperationStore:
     def transition(
         self,
         request_id: object,
+        owner_id: object,
         expected_state: object,
         new_state: object,
         result: object = None,
@@ -296,6 +305,7 @@ class OperationStore:
         now: int | float | None = None,
     ) -> dict:
         request_id = _identifier(request_id, "invalid_argument")
+        owner_id = _identifier(owner_id, "invalid_argument")
         if expected_state not in _STATES or new_state not in _STATES:
             raise StoreError("illegal_transition")
         if expected_state == "queued" or new_state == "claimed":
@@ -306,6 +316,17 @@ class OperationStore:
         result_value = _validate_result(result, new_state)
         error_value = _validate_error(error, new_state)
         terminal = new_state in _TERMINAL_STATES
+        authority_sql = """
+            AND claim_owner = ? AND lease_until >= ?
+            AND EXISTS (
+                SELECT 1 FROM device_leases
+                WHERE device_leases.device_id = operations.device_id
+                  AND device_leases.owner_id = operations.claim_owner
+                  AND device_leases.owner_id = ?
+                  AND device_leases.lease_until = operations.lease_until
+                  AND device_leases.lease_until >= ?
+            )
+        """
         try:
             with self._transaction() as connection:
                 self._validate_active_device_invariant(connection)
@@ -333,6 +354,9 @@ class OperationStore:
                     or current["lease_until"] != public_lease["lease_until"]
                 ):
                     raise StoreError("store_unavailable")
+                if current["claim_owner"] != owner_id or current["lease_until"] < timestamp:
+                    raise StoreError("lease_conflict")
+                authority = (owner_id, timestamp, owner_id, timestamp)
                 if terminal:
                     cursor = connection.execute(
                         """
@@ -341,7 +365,7 @@ class OperationStore:
                             result_json = ?, error_json = ?, claim_owner = NULL,
                             lease_until = NULL
                         WHERE request_id = ? AND state = ?
-                        """,
+                        """ + authority_sql,
                         (
                             new_state,
                             timestamp,
@@ -350,6 +374,7 @@ class OperationStore:
                             _json_dump(error_value),
                             request_id,
                             expected_state,
+                            *authority,
                         ),
                     )
                 else:
@@ -357,11 +382,17 @@ class OperationStore:
                         """
                         UPDATE operations SET state = ?, updated_at = ?
                         WHERE request_id = ? AND state = ?
-                        """,
-                        (new_state, timestamp, request_id, expected_state),
+                        """ + authority_sql,
+                        (
+                            new_state,
+                            timestamp,
+                            request_id,
+                            expected_state,
+                            *authority,
+                        ),
                     )
                 if cursor.rowcount != 1:
-                    raise StoreError("stale_state")
+                    raise StoreError("store_unavailable")
                 row = connection.execute(
                     "SELECT * FROM operations WHERE request_id = ?", (request_id,)
                 ).fetchone()
@@ -616,9 +647,9 @@ class OperationStore:
                 ).fetchall()
                 for candidate in candidates:
                     error_code = (
-                        "write_uncertain"
+                        AdapterErrorCode.WRITE_UNCERTAIN
                         if candidate["state"] in {"writing", "verifying"}
-                        else "connection_error"
+                        else AdapterErrorCode.CONNECTION_ERROR
                     )
                     cursor = connection.execute(
                         """
@@ -732,8 +763,8 @@ class OperationStore:
             (
                 now,
                 now,
-                _json_dump(_fixed_error("write_uncertain")),
-                _json_dump(_fixed_error("connection_error")),
+                _json_dump(_fixed_error(AdapterErrorCode.WRITE_UNCERTAIN)),
+                _json_dump(_fixed_error(AdapterErrorCode.CONNECTION_ERROR)),
                 device_id,
                 owner_id,
                 now,
@@ -785,6 +816,10 @@ class OperationStore:
     def _initialize(self) -> None:
         try:
             with self._connection() as connection:
+                databases = connection.execute("PRAGMA database_list").fetchall()
+                main = [row for row in databases if row[1] == "main"]
+                if len(main) != 1 or not isinstance(main[0][2], str) or not main[0][2]:
+                    raise StoreError("store_unavailable")
                 version = int(connection.execute("PRAGMA user_version").fetchone()[0])
                 if version > SCHEMA_VERSION or version not in {0, SCHEMA_VERSION}:
                     raise StoreError("store_schema")
@@ -807,7 +842,9 @@ class OperationStore:
                 except BaseException:
                     connection.rollback()
                     raise
-                connection.execute("PRAGMA journal_mode = WAL")
+                journal = connection.execute("PRAGMA journal_mode = WAL").fetchone()
+                if journal is None or len(journal) < 1 or journal[0] != "wal":
+                    raise StoreError("store_unavailable")
         except StoreError:
             raise
         except sqlite3.Error as error:
@@ -892,7 +929,11 @@ class OperationStore:
                 raise StoreError("store_schema")
         expected_indexes = {
             "operations_claim_idx": (False, False, ["device_id", "state", "created_at", "id"]),
-            "operations_recovery_idx": (False, False, ["state", "lease_until", "created_at", "id"]),
+            "operations_recovery_idx": (
+                False,
+                True,
+                ["lease_until", "created_at", "id"],
+            ),
             "operations_one_active_device_idx": (True, True, ["device_id"]),
             "device_leases_expiry_idx": (False, False, ["lease_until", "device_id"]),
         }
@@ -1059,10 +1100,12 @@ def _validate_result(value: object, state: str) -> dict | None:
     return {"identity_hash": identity_hash, "verification_ok": True}
 
 
-def _fixed_error(code: str, device_code: str | None = None) -> dict:
+def _fixed_error(
+    code: AdapterErrorCode, device_code: str | None = None
+) -> dict:
     message, retryable = _SAFE_ERRORS[code]
     return {
-        "code": code,
+        "code": code.value,
         "message": message,
         "device_code": device_code,
         "retryable": retryable,
@@ -1076,7 +1119,10 @@ def _validate_error(value: object, state: str) -> dict | None:
         return None
     if not isinstance(value, dict) or set(value) != _ERROR_KEYS:
         raise StoreError("invalid_error")
-    code = value["code"]
+    try:
+        code = AdapterErrorCode(value["code"])
+    except (TypeError, ValueError):
+        raise StoreError("invalid_error") from None
     if code not in _SAFE_ERRORS:
         raise StoreError("invalid_error")
     message, expected_retryable = _SAFE_ERRORS[code]
@@ -1084,7 +1130,11 @@ def _validate_error(value: object, state: str) -> dict | None:
         raise StoreError("invalid_error")
     if value["retryable"] is not expected_retryable:
         raise StoreError("invalid_error")
-    if (state == "failed_retryable") is not expected_retryable:
+    write_uncertain = code is AdapterErrorCode.WRITE_UNCERTAIN
+    if state == "failed_retryable":
+        if not expected_retryable and not write_uncertain:
+            raise StoreError("invalid_error")
+    elif expected_retryable or write_uncertain:
         raise StoreError("invalid_error")
     device_code = value["device_code"]
     if device_code is not None and (
