@@ -52,15 +52,20 @@ _DEVICE_RESULT_KEYS = frozenset({
     "hardware_version", "module_version", "region",
 })
 _SAFE_METADATA_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._+ -]{0,63}\Z")
+_IDENTITY_LIKE_METADATA_RE = re.compile(r"\A[0-9A-Fa-f]{8,64}\Z")
+_REGION_CODES = frozenset({"CN", "EU", "JP", "US"})
 _SUBMITTED_OPERATION_RESULT_KEYS = frozenset({
     "state", "request_id", "operation_type", "payload_version",
 })
 _OPERATION_RESULT_KEYS = frozenset({
     "state", "request_id", "operation_type", "payload_version",
-    "masked_epc", "masked_tid", "identity_hash", "verification_ok", "retryable",
+    "epc_identity", "tid_identity", "identity_hash", "verification_ok", "retryable",
 })
-_MASKED_IDENTIFIER_RE = re.compile(r"\A[0-9A-Fa-f]{4}\*{8}[0-9A-Fa-f]{4}\Z")
-_IDENTITY_HASH_RE = re.compile(r"\A[0-9A-Fa-f]{64}\Z")
+_IDENTITY_DESCRIPTOR_KEYS = frozenset({"nibble_length", "suffix"})
+_IDENTITY_SUFFIX_RE = re.compile(r"\A[0-9A-Fa-f]{2,4}\Z")
+_IDENTITY_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
+_MIN_IDENTITY_NIBBLES = 8
+_MAX_IDENTITY_NIBBLES = 512
 _SAFE_MESSAGES = {
     AdapterErrorCode.AUTHENTICATION_ERROR: "authentication failed",
     AdapterErrorCode.CONFIGURATION_ERROR: "resource is not configured",
@@ -325,13 +330,19 @@ def _serialize_device_result(value: object) -> dict:
     if result["status"] not in _CONNECTION_STATES:
         raise _invalid_service_result()
     metadata = {}
-    for key in ("firmware_version", "hardware_version", "module_version", "region"):
+    for key in ("firmware_version", "hardware_version", "module_version"):
         item = result[key]
         if item is not None and (
-            not isinstance(item, str) or not _SAFE_METADATA_RE.fullmatch(item)
+            not isinstance(item, str)
+            or not _SAFE_METADATA_RE.fullmatch(item)
+            or _IDENTITY_LIKE_METADATA_RE.fullmatch(item)
         ):
             raise _invalid_service_result()
         metadata[key] = item
+    region = result["region"]
+    if region is not None and region not in _REGION_CODES:
+        raise _invalid_service_result()
+    metadata["region"] = region
     return {
         "status": result["status"],
         "capabilities": {key: capabilities[key] for key in sorted(_CAPABILITY_KEYS)},
@@ -370,6 +381,28 @@ def _serialize_submitted_operation_result(
     return safe
 
 
+def _mask_identity(value: object) -> str | None:
+    if value is None:
+        return None
+    descriptor = _require_exact_dict(value, _IDENTITY_DESCRIPTOR_KEYS)
+    nibble_length = descriptor["nibble_length"]
+    if (
+        type(nibble_length) is not int
+        or not _MIN_IDENTITY_NIBBLES <= nibble_length <= _MAX_IDENTITY_NIBBLES
+        or nibble_length % 2
+    ):
+        raise _invalid_service_result()
+    visible_nibbles = min(4, nibble_length // 4)
+    suffix = descriptor["suffix"]
+    if (
+        not isinstance(suffix, str)
+        or len(suffix) != visible_nibbles
+        or not _IDENTITY_SUFFIX_RE.fullmatch(suffix)
+    ):
+        raise _invalid_service_result()
+    return "*" * (nibble_length - visible_nibbles) + suffix.upper()
+
+
 def _serialize_operation_result(
     value: object, expected_request_id: str | None = None
 ) -> dict:
@@ -377,13 +410,8 @@ def _serialize_operation_result(
     safe = _operation_common(result)
     if expected_request_id is not None and safe["request_id"] != expected_request_id:
         raise _invalid_service_result()
-    for key in ("masked_epc", "masked_tid"):
-        item = result[key]
-        if item is not None and (
-            not isinstance(item, str) or not _MASKED_IDENTIFIER_RE.fullmatch(item)
-        ):
-            raise _invalid_service_result()
-        safe[key] = item
+    safe["masked_epc"] = _mask_identity(result["epc_identity"])
+    safe["masked_tid"] = _mask_identity(result["tid_identity"])
     identity_hash = result["identity_hash"]
     if identity_hash is not None and (
         not isinstance(identity_hash, str) or not _IDENTITY_HASH_RE.fullmatch(identity_hash)
@@ -616,6 +644,10 @@ class _ServiceUnavailable(Exception):
     pass
 
 
+class _SafeServiceFailure(Exception):
+    """Fixed sentinel for every service-originated throwable."""
+
+
 class _HttpError(Exception):
     def __init__(self, status: int, code: AdapterErrorCode) -> None:
         self.status = status
@@ -681,8 +713,8 @@ class _BoundedServiceExecutor:
                 continue
             try:
                 future.set_result(operation(*args))
-            except BaseException as error:
-                future.set_exception(error)
+            except BaseException:
+                future.set_exception(_SafeServiceFailure())
 
 
 class AdapterHttpServer(ThreadingHTTPServer):

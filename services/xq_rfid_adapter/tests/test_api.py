@@ -400,9 +400,9 @@ class FakeService:
             "request_id": args[0],
             "operation_type": "write_and_verify",
             "payload_version": 1,
-            "masked_epc": "AABB********CCDD",
-            "masked_tid": None,
-            "identity_hash": "a" * 64,
+            "epc_identity": {"nibble_length": 24, "suffix": "ccdd"},
+            "tid_identity": None,
+            "identity_hash": "sha256:" + "a" * 64,
             "verification_ok": True,
             "retryable": False,
         }
@@ -680,8 +680,14 @@ class TestHttpApi(unittest.TestCase):
         base = self.service._return("get_device", "reader-1")
         unsafe_values = [
             dict(base, firmware_version="/private/secret"),
+            dict(base, firmware_version="https://device.invalid/version"),
+            dict(base, firmware_version="secret=rawvalue"),
+            dict(base, firmware_version="A" * 32),
+            dict(base, firmware_version="E2003412"),
             dict(base, hardware_version="bad\ncontrol"),
+            dict(base, hardware_version="C:\\private\\device"),
             dict(base, region="x" * 65),
+            dict(base, region="ZZ"),
             dict(base, device_code="raw-frame-password"),
             dict(base, capabilities={"supports_epc": True, "secret": "leak"}),
             {"state": "not-a-valid-state"},
@@ -724,6 +730,29 @@ class TestHttpApi(unittest.TestCase):
         self.assertEqual(status, 500)
         self.assertEqual(envelope["error"]["code"], "device_error")
 
+    def test_identity_descriptors_derive_suffix_only_masks(self):
+        target = "/v1/operations/request-1"
+        cases = (
+            (8, "cd", "******CD"),
+            (10, "34", "********34"),
+            (24, "cdef", "********************CDEF"),
+            (64, "beef", "*" * 60 + "BEEF"),
+        )
+        for length, suffix, expected in cases:
+            with self.subTest(length=length):
+                result = self.service._return("get_operation", "request-1")
+                result["epc_identity"] = {
+                    "nibble_length": length,
+                    "suffix": suffix,
+                }
+                self.service.get_operation = lambda request_id, value=result: value
+                status, _, envelope = self.request(
+                    "GET", target, headers=self.auth("GET", target)
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(envelope["result"]["masked_epc"], expected)
+                self.assertNotIn("epc_identity", envelope["result"])
+
     def test_operation_result_contracts_reject_mismatched_or_unsafe_values(self):
         target = "/v1/operations"
         body = json.dumps({
@@ -753,12 +782,17 @@ class TestHttpApi(unittest.TestCase):
         valid = self.service._return("get_operation", "request-1")
         unsafe_lookups = (
             dict(valid, request_id="other"),
-            dict(valid, masked_epc="/private/secret"),
-            dict(valid, masked_epc="A" * 24),
-            dict(valid, masked_epc="A" * 23 + "*"),
-            dict(valid, masked_epc="AABB*******CCDD"),
-            dict(valid, masked_epc="AABB*********CCDD"),
-            dict(valid, masked_epc="ＡＡＢＢ********ＣＣＤＤ"),
+            dict(valid, masked_epc="AABB********CCDD"),
+            dict(valid, epc_identity={"nibble_length": 6, "suffix": "ABCD"}),
+            dict(valid, epc_identity={"nibble_length": 9, "suffix": "ABCD"}),
+            dict(valid, epc_identity={"nibble_length": 24, "suffix": "ABC"}),
+            dict(valid, epc_identity={"nibble_length": 24, "suffix": "ＡＢＣＤ"}),
+            dict(valid, epc_identity={"nibble_length": 24, "suffix": "AB\nD"}),
+            dict(valid, epc_identity={"nibble_length": 8, "suffix": "ABCDEF12"}),
+            dict(valid, epc_identity={"nibble_length": 24, "suffix": "ABCD", "prefix": "FFFF"}),
+            dict(valid, identity_hash="a" * 64),
+            dict(valid, identity_hash="sha256:" + "A" * 64),
+            dict(valid, identity_hash="md5:" + "a" * 64),
             dict(valid, identity_hash="not-a-hash"),
             dict(valid, verification_ok=1),
             dict(valid, device_code="raw-device-code"),
@@ -774,6 +808,24 @@ class TestHttpApi(unittest.TestCase):
                 serialized = json.dumps(envelope)
                 self.assertNotIn("private", serialized)
                 self.assertNotIn("raw-device-code", serialized)
+
+    def test_service_base_exceptions_are_fixed_safe_errors(self):
+        target = "/v1/devices/reader-1"
+        for raised in (SystemExit("secret/path"), KeyboardInterrupt("secret/path")):
+            with self.subTest(exception=type(raised).__name__):
+                def fail(device_id, error=raised):
+                    del device_id
+                    raise error
+
+                self.service.get_device = fail
+                status, _, envelope = self.request(
+                    "GET", target, headers=self.auth("GET", target)
+                )
+                self.assertEqual(status, 500)
+                serialized = json.dumps(envelope)
+                self.assertNotIn("secret", serialized)
+                self.assertNotIn("path", serialized)
+                self.assertEqual(envelope["error"]["code"], "device_error")
 
     def test_arbitrary_extension_method_returns_safe_405(self):
         target = "/v1/devices/reader-1"
@@ -1051,13 +1103,15 @@ with tempfile.TemporaryDirectory() as directory:
         "X-RFID-Signature": signature,
     })
     response = connection.getresponse()
-    assert response.status == 504, response.status
+    if response.status != 504:
+        raise RuntimeError("unexpected status")
     response.read()
     connection.close()
     server.shutdown()
     server.server_close()
     thread.join(2)
-    assert not thread.is_alive()
+    if thread.is_alive():
+        raise RuntimeError("server did not stop")
 '''
         started = time.monotonic()
         result = subprocess.run(
