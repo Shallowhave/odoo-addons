@@ -1,8 +1,9 @@
+import copy
 import inspect
 import math
+import pickle
 import unittest
 from dataclasses import FrozenInstanceError
-from types import MappingProxyType
 from typing import get_type_hints
 
 from xq_rfid_adapter.domain import (
@@ -79,7 +80,7 @@ class TestAdapterError(unittest.TestCase):
         with self.assertRaises(TypeError):
             AdapterError(AdapterErrorCode.NO_TAG, "no tag", retryable=1)  # type: ignore[arg-type]
 
-    def test_error_public_state_is_read_only_after_construction(self):
+    def test_serialized_fields_are_read_only_through_normal_api(self):
         error = AdapterError(AdapterErrorCode.NO_TAG, "no tag", device_code="0x12")
         expected = error.to_dict()
 
@@ -88,23 +89,16 @@ class TestAdapterError(unittest.TestCase):
             "message": "raw frame: secret",
             "device_code": "raw-secret",
             "retryable": True,
-            "args": ("raw frame: secret",),
-            "raw_frame": b"secret",
-            "traceback": "secret",
         }.items():
-            with self.subTest(name=name), self.assertRaises((AttributeError, TypeError)):
+            with self.subTest(name=name), self.assertRaises(AttributeError):
                 setattr(error, name, value)
 
         self.assertEqual(error.to_dict(), expected)
 
-    def test_error_instance_dictionary_cannot_mutate_or_attach_state(self):
+    def test_serialization_ignores_unrelated_attached_state(self):
         error = AdapterError(AdapterErrorCode.NO_TAG, "no tag")
-
-        self.assertIsInstance(error.__dict__, MappingProxyType)
-        with self.assertRaises(TypeError):
-            error.__dict__["raw_frame"] = b"secret"
-        with self.assertRaises((AttributeError, TypeError)):
-            error.__dict__ = {"raw_frame": b"secret"}
+        error.raw_frame = b"secret"
+        error.native_memory = {"password": "secret"}
 
         self.assertEqual(
             error.to_dict(),
@@ -119,11 +113,55 @@ class TestAdapterError(unittest.TestCase):
     def test_error_remains_raiseable_and_catchable(self):
         error = AdapterError(AdapterErrorCode.TIMEOUT, "timed out")
 
-        with self.assertRaises(AdapterError) as caught:
+        try:
             raise error
+        except AdapterError as caught:
+            self.assertIs(caught, error)
+            self.assertEqual(str(error), "timed out")
+            self.assertIsNotNone(error.__traceback__)
+            self.assertIs(error.with_traceback(None), error)
+            self.assertIsNone(error.__traceback__)
 
-        self.assertIs(caught.exception, error)
-        self.assertEqual(str(error), "timed out")
+    def test_error_supports_notes_and_exception_chaining(self):
+        error = AdapterError(AdapterErrorCode.DEVICE_ERROR, "device failed")
+        error.add_note("safe diagnostic")
+
+        try:
+            try:
+                raise ValueError("cause")
+            except ValueError as cause:
+                raise error from cause
+        except AdapterError as caught:
+            self.assertEqual(caught.__notes__, ["safe diagnostic"])
+            self.assertIsInstance(caught.__cause__, ValueError)
+            self.assertIsInstance(caught.__context__, ValueError)
+
+    def test_error_pickle_round_trip_reconstructs_safe_state(self):
+        error = AdapterError(
+            AdapterErrorCode.DEVICE_ERROR,
+            "device failed",
+            device_code="0x12",
+            retryable=True,
+        )
+        restored = pickle.loads(pickle.dumps(error))
+
+        self.assertIsInstance(restored, AdapterError)
+        self.assertEqual(restored.to_dict(), error.to_dict())
+        self.assertEqual(str(restored), "device failed")
+
+    def test_error_copy_and_deepcopy_reconstruct_safe_state(self):
+        error = AdapterError(
+            AdapterErrorCode.NO_TAG,
+            "no tag",
+            device_code="0x12",
+        )
+        error.raw_frame = b"secret"
+
+        for clone in [copy.copy(error), copy.deepcopy(error)]:
+            with self.subTest(clone=clone):
+                self.assertIsNot(clone, error)
+                self.assertEqual(clone.to_dict(), error.to_dict())
+                self.assertFalse(hasattr(clone, "raw_frame"))
 
 
 class TestTagValues(unittest.TestCase):
@@ -251,60 +289,68 @@ class TestResultEnvelope(unittest.TestCase):
 
 class TestDriverProtocol(unittest.TestCase):
     def test_method_signatures_and_type_hints_are_exact(self):
+        parameter = inspect.Parameter
+        positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
+        empty = inspect.Signature.empty
+
+        def signature(*parameters, returns):
+            return inspect.Signature(parameters, return_annotation=returns)
+
         expected = {
-            "test_connection": (
-                ["self"],
-                {},
-                dict,
+            "test_connection": signature(
+                parameter("self", positional),
+                returns=dict,
             ),
-            "get_device_info": (
-                ["self"],
-                {},
-                dict,
+            "get_device_info": signature(
+                parameter("self", positional),
+                returns=dict,
             ),
-            "inventory": (
-                ["self", "duration_ms", "include_tid"],
-                {"duration_ms": int, "include_tid": bool},
-                list[TagObservation],
+            "inventory": signature(
+                parameter("self", positional),
+                parameter("duration_ms", positional, annotation=int),
+                parameter("include_tid", positional, annotation=bool),
+                returns=list[TagObservation],
             ),
-            "read_memory": (
-                ["self", "target", "bank", "word_offset", "word_count"],
-                {
-                    "target": TagTarget,
-                    "bank": MemoryBank,
-                    "word_offset": int,
-                    "word_count": int,
-                },
-                bytes,
+            "read_memory": signature(
+                parameter("self", positional),
+                parameter("target", positional, annotation=TagTarget),
+                parameter("bank", positional, annotation=MemoryBank),
+                parameter("word_offset", positional, annotation=int),
+                parameter("word_count", positional, annotation=int),
+                returns=bytes,
             ),
-            "write_memory": (
-                ["self", "target", "bank", "word_offset", "payload"],
-                {
-                    "target": TagTarget,
-                    "bank": WriteMemoryBank,
-                    "word_offset": int,
-                    "payload": bytes,
-                },
-                dict,
+            "write_memory": signature(
+                parameter("self", positional),
+                parameter("target", positional, annotation=TagTarget),
+                parameter("bank", positional, annotation=WriteMemoryBank),
+                parameter("word_offset", positional, annotation=int),
+                parameter("payload", positional, annotation=bytes),
+                returns=dict,
             ),
-            "close": (
-                ["self"],
-                {},
-                type(None),
+            "close": signature(
+                parameter("self", positional),
+                returns=None,
             ),
         }
 
-        for method_name, (parameter_names, parameter_hints, return_hint) in expected.items():
+        for method_name, expected_signature in expected.items():
             with self.subTest(method=method_name):
                 method = getattr(Driver, method_name)
-                signature = inspect.signature(method)
-                hints = get_type_hints(method)
-                self.assertEqual(list(signature.parameters), parameter_names)
-                self.assertEqual(
-                    {name: hints[name] for name in parameter_names if name != "self"},
-                    parameter_hints,
+                actual_signature = inspect.signature(method)
+                self.assertEqual(actual_signature, expected_signature)
+                self.assertTrue(
+                    all(
+                        item.kind is positional and item.default is empty
+                        for item in actual_signature.parameters.values()
+                    )
                 )
-                self.assertEqual(hints["return"], return_hint)
+                hints = get_type_hints(method)
+                for name, item in expected_signature.parameters.items():
+                    if item.annotation is not empty:
+                        self.assertEqual(hints[name], item.annotation)
+                expected_return = expected_signature.return_annotation
+                resolved_return = type(None) if expected_return is None else expected_return
+                self.assertEqual(hints["return"], resolved_return)
 
     def test_fake_driver_structurally_conforms_at_runtime(self):
         class FakeDriver:

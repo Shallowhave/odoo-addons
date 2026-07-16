@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, fields
 from enum import Enum
-from types import MappingProxyType
 from typing import TypedDict
 
 
@@ -47,9 +46,10 @@ class ResultEnvelope(TypedDict):
 
 
 class AdapterError(Exception):
-    """An immutable adapter failure containing only safe public fields."""
+    """An adapter failure with fixed, validated public serialization."""
 
     __slots__ = ("_state",)
+    _SERIALIZED_FIELDS = frozenset({"code", "message", "device_code", "retryable"})
 
     def __init__(
         self,
@@ -77,16 +77,15 @@ class AdapterError(Exception):
             (code, message, device_code, resolved_retryable),
         )
 
-    def __getattribute__(self, name: str):
-        if name == "__dict__":
-            return MappingProxyType({})
-        return super().__getattribute__(name)
-
     def __setattr__(self, name: str, value: object) -> None:
-        raise AttributeError("AdapterError is immutable")
+        if name in self._SERIALIZED_FIELDS:
+            raise AttributeError(f"{name} is read-only")
+        super().__setattr__(name, value)
 
     def __delattr__(self, name: str) -> None:
-        raise AttributeError("AdapterError is immutable")
+        if name in self._SERIALIZED_FIELDS:
+            raise AttributeError(f"{name} is read-only")
+        super().__delattr__(name)
 
     @property
     def code(self) -> AdapterErrorCode:
@@ -104,8 +103,16 @@ class AdapterError(Exception):
     def retryable(self) -> bool:
         return self._state[3]
 
+    def __reduce__(self):
+        """Reconstruct only the validated state for pickle and copy operations."""
+
+        return (
+            _restore_adapter_error,
+            (self.code, self.message, self.device_code, self.retryable),
+        )
+
     def to_dict(self) -> ErrorPayload:
-        """Serialize the fixed public error representation."""
+        """Serialize only the fixed safe adapter error fields."""
 
         return {
             "code": self.code.value,
@@ -113,6 +120,20 @@ class AdapterError(Exception):
             "device_code": self.device_code,
             "retryable": self.retryable,
         }
+
+
+def _restore_adapter_error(
+    code: AdapterErrorCode,
+    message: str,
+    device_code: str | None,
+    retryable: bool,
+) -> AdapterError:
+    return AdapterError(
+        code,
+        message,
+        device_code=device_code,
+        retryable=retryable,
+    )
 
 
 class MemoryBank(str, Enum):
