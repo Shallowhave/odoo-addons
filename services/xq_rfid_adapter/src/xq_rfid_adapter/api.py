@@ -23,6 +23,8 @@ from .domain import (
 
 
 MAX_BODY_BYTES = 64 * 1024
+MAX_CONCURRENT_REQUESTS = 4
+REQUEST_TIMEOUT_SECONDS = 1.0
 MAX_NONCE_LENGTH = 256
 MAX_IDENTIFIER_LENGTH = 128
 DEFAULT_MAX_SKEW_SECONDS = 300
@@ -33,13 +35,24 @@ _PAYLOAD_RE = re.compile(r"\A[0-9A-Fa-f]{48}\Z")
 _OPERATION_KEYS = frozenset(
     {"request_id", "operation_type", "device_id", "payload_hex", "payload_version"}
 )
-_SAFE_RESULT_KEYS = frozenset({
-    "route", "state", "status", "request_id", "device_id", "operation_type",
-    "payload_version", "capabilities", "firmware_version", "hardware_version",
-    "module_version", "antenna_count", "region", "supports_epc", "supports_tid",
-    "supports_user_read", "supports_user_write", "masked_epc", "masked_tid",
-    "identity_hash", "device_code", "safe_error", "verification_ok", "retryable",
+_OPERATION_STATES = frozenset({
+    "queued", "claimed", "inventorying", "writing", "verifying", "succeeded",
+    "failed_retryable", "failed_manual", "cancelled",
 })
+_CONNECTION_STATES = frozenset({"connected", "disconnected"})
+_CAPABILITY_KEYS = frozenset({
+    "supports_epc", "supports_tid", "supports_user_read", "supports_user_write",
+})
+_DEVICE_RESULT_KEYS = frozenset({"status", "capabilities", "antenna_count"})
+_SUBMITTED_OPERATION_RESULT_KEYS = frozenset({
+    "state", "request_id", "operation_type", "payload_version",
+})
+_OPERATION_RESULT_KEYS = frozenset({
+    "state", "request_id", "operation_type", "payload_version",
+    "masked_epc", "masked_tid", "identity_hash", "verification_ok", "retryable",
+})
+_MASKED_IDENTIFIER_RE = re.compile(r"\A[0-9A-Fa-f*]{1,128}\Z")
+_IDENTITY_HASH_RE = re.compile(r"\A[0-9A-Fa-f]{64}\Z")
 _SAFE_MESSAGES = {
     AdapterErrorCode.AUTHENTICATION_ERROR: "authentication failed",
     AdapterErrorCode.CONFIGURATION_ERROR: "resource is not configured",
@@ -273,26 +286,101 @@ def _validate_operation(value: object, devices: frozenset[str]) -> dict:
     }
 
 
-def _safe_result_value(value: object) -> object:
-    if value is None or type(value) in {str, int, bool}:
-        return value
-    if isinstance(value, list):
-        return [_safe_result_value(item) for item in value]
-    if isinstance(value, dict) and set(value).issubset(_SAFE_RESULT_KEYS):
-        return {key: _safe_result_value(item) for key, item in value.items()}
-    raise AdapterError(
+def _invalid_service_result() -> AdapterError:
+    return AdapterError(
         AdapterErrorCode.DEVICE_ERROR,
         _SAFE_MESSAGES[AdapterErrorCode.DEVICE_ERROR],
     )
 
 
-def _safe_result(result: object) -> dict:
-    safe = _safe_result_value(result)
-    if not isinstance(safe, dict):
-        raise AdapterError(
-            AdapterErrorCode.DEVICE_ERROR,
-            _SAFE_MESSAGES[AdapterErrorCode.DEVICE_ERROR],
-        )
+def _require_exact_dict(value: object, keys: frozenset[str]) -> dict:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise _invalid_service_result()
+    return value
+
+
+def _serialize_connection_result(value: object) -> dict:
+    result = _require_exact_dict(value, frozenset({"status"}))
+    if result["status"] not in _CONNECTION_STATES:
+        raise _invalid_service_result()
+    return {"status": result["status"]}
+
+
+def _serialize_device_result(value: object) -> dict:
+    result = _require_exact_dict(value, _DEVICE_RESULT_KEYS)
+    capabilities = _require_exact_dict(result["capabilities"], _CAPABILITY_KEYS)
+    if any(type(capabilities[key]) is not bool for key in _CAPABILITY_KEYS):
+        raise _invalid_service_result()
+    antenna_count = result["antenna_count"]
+    if type(antenna_count) is not int or not 1 <= antenna_count <= 256:
+        raise _invalid_service_result()
+    if result["status"] not in _CONNECTION_STATES:
+        raise _invalid_service_result()
+    return {
+        "status": result["status"],
+        "capabilities": {key: capabilities[key] for key in sorted(_CAPABILITY_KEYS)},
+        "antenna_count": antenna_count,
+    }
+
+
+def _operation_common(result: dict) -> dict:
+    request_id = result["request_id"]
+    if not isinstance(request_id, str) or not _IDENTIFIER_RE.fullmatch(request_id):
+        raise _invalid_service_result()
+    if result["state"] not in _OPERATION_STATES:
+        raise _invalid_service_result()
+    if result["operation_type"] != "write_and_verify":
+        raise _invalid_service_result()
+    payload_version = result["payload_version"]
+    if type(payload_version) is not int or not 1 <= payload_version <= 255:
+        raise _invalid_service_result()
+    return {
+        "state": result["state"],
+        "request_id": request_id,
+        "operation_type": result["operation_type"],
+        "payload_version": payload_version,
+    }
+
+
+def _serialize_submitted_operation_result(
+    value: object, expected_request_id: str | None = None
+) -> dict:
+    safe = _operation_common(
+        _require_exact_dict(value, _SUBMITTED_OPERATION_RESULT_KEYS)
+    )
+    if expected_request_id is not None and safe["request_id"] != expected_request_id:
+        raise _invalid_service_result()
+    return safe
+
+
+def _serialize_operation_result(
+    value: object, expected_request_id: str | None = None
+) -> dict:
+    result = _require_exact_dict(value, _OPERATION_RESULT_KEYS)
+    safe = _operation_common(result)
+    if expected_request_id is not None and safe["request_id"] != expected_request_id:
+        raise _invalid_service_result()
+    for key in ("masked_epc", "masked_tid"):
+        item = result[key]
+        if item is not None and (
+            not isinstance(item, str)
+            or not _MASKED_IDENTIFIER_RE.fullmatch(item)
+            or "*" not in item
+        ):
+            raise _invalid_service_result()
+        safe[key] = item
+    identity_hash = result["identity_hash"]
+    if identity_hash is not None and (
+        not isinstance(identity_hash, str) or not _IDENTITY_HASH_RE.fullmatch(identity_hash)
+    ):
+        raise _invalid_service_result()
+    if type(result["verification_ok"]) is not bool or type(result["retryable"]) is not bool:
+        raise _invalid_service_result()
+    safe.update({
+        "identity_hash": identity_hash,
+        "verification_ok": result["verification_ok"],
+        "retryable": result["retryable"],
+    })
     return safe
 
 
@@ -332,6 +420,11 @@ def make_handler(
         do_HEAD = do_DELETE
         do_TRACE = do_DELETE
         do_CONNECT = do_DELETE
+
+        def __getattr__(self, name: str):
+            if name.startswith("do_") and re.fullmatch(r"[A-Za-z0-9!#$%&'*+.^_`|~-]+", name[3:]):
+                return lambda: self._handle(self.command)
+            raise AttributeError(name)
 
         def _read_body(self, method: str) -> bytes:
             transfer_encodings = self.headers.get_all("Transfer-Encoding", [])
@@ -396,14 +489,26 @@ def make_handler(
                     secret, self.headers, method, request_target, body, replay_guard,
                     now=clock(),
                 )
-                result, request_id = self._route(method, self.path, body)
+                result, request_id, serializer = self._route(method, self.path, body)
+                if serializer in {
+                    _serialize_submitted_operation_result,
+                    _serialize_operation_result,
+                }:
+                    safe_result = serializer(result, request_id)
+                else:
+                    safe_result = serializer(result)
                 self._send_json(
-                    200, success_envelope(_safe_result(result), request_id=request_id)
+                    200, success_envelope(safe_result, request_id=request_id)
                 )
             except _HttpError as error:
                 self._send_adapter_error(error.status, error.adapter_error)
             except AdapterError as error:
-                status = 401 if error.code is AdapterErrorCode.AUTHENTICATION_ERROR else 400
+                if error.code is AdapterErrorCode.AUTHENTICATION_ERROR:
+                    status = 401
+                elif error.code is AdapterErrorCode.DEVICE_ERROR:
+                    status = 500
+                else:
+                    status = 400
                 self._send_adapter_error(status, error)
             except Exception:
                 self._send_adapter_error(
@@ -413,7 +518,7 @@ def make_handler(
 
         def _route(
             self, method: str, normalized_target: str, body: bytes
-        ) -> tuple[dict, str | None]:
+        ) -> tuple[dict, str | None, Callable[[object], dict]]:
             if method not in {"GET", "POST"}:
                 raise _HttpError(405, AdapterErrorCode.PROTOCOL_ERROR)
             path = normalized_target.split("?", 1)[0]
@@ -427,22 +532,26 @@ def make_handler(
                     if self._json_object(body):
                         raise _HttpError(400, AdapterErrorCode.PROTOCOL_ERROR)
                     self._require_device(device_id)
-                    return service.test_connection(device_id), None
+                    return service.test_connection(device_id), None, _serialize_connection_result
                 if method != "GET":
                     raise _HttpError(405, AdapterErrorCode.PROTOCOL_ERROR)
                 device_id = _decode_identifier(suffix)
                 self._require_device(device_id)
-                return service.get_device(device_id), None
+                return service.get_device(device_id), None, _serialize_device_result
             if path == "/v1/operations":
                 if method != "POST":
                     raise _HttpError(405, AdapterErrorCode.PROTOCOL_ERROR)
                 request = _validate_operation(self._json_object(body), devices)
-                return service.submit_operation(request), request["request_id"]
+                return (
+                    service.submit_operation(request),
+                    request["request_id"],
+                    _serialize_submitted_operation_result,
+                )
             if path.startswith("/v1/operations/"):
                 if method != "GET":
                     raise _HttpError(405, AdapterErrorCode.PROTOCOL_ERROR)
                 request_id = _decode_identifier(path[len("/v1/operations/"):])
-                return service.get_operation(request_id), request_id
+                return service.get_operation(request_id), request_id, _serialize_operation_result
             raise _HttpError(404, AdapterErrorCode.PROTOCOL_ERROR)
 
         def _require_device(self, device_id: str) -> None:
@@ -481,7 +590,51 @@ class AdapterHttpServer(ThreadingHTTPServer):
 
     def __init__(self, *args, replay_guard: ReplayGuard, **kwargs) -> None:
         self.replay_guard = replay_guard
+        self._request_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
         super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address) -> None:
+        request.settimeout(REQUEST_TIMEOUT_SECONDS)
+        if not self._request_slots.acquire(blocking=False):
+            try:
+                payload = json.dumps(
+                    error_envelope(
+                        AdapterError(
+                            AdapterErrorCode.DEVICE_ERROR,
+                            _SAFE_MESSAGES[AdapterErrorCode.DEVICE_ERROR],
+                            retryable=True,
+                        )
+                    ),
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                response = (
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Cache-Control: no-store\r\n"
+                    b"Connection: close\r\n"
+                    + f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
+                    + payload
+                )
+                request.sendall(response)
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
+
+    def handle_error(self, request, client_address) -> None:
+        del request, client_address
 
     def server_close(self) -> None:
         try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import ssl
 import sys
 from pathlib import Path
@@ -51,24 +52,28 @@ def main(argv: list[str] | None = None) -> int:
         print("configuration is valid")
         return 0
 
-    server = create_server(
-        (config.bind.host, config.bind.port),
-        _UnavailableService(),
-        secret,
-        config.sqlite_path,
-        frozenset(config.devices),
-    )
-    if config.tls is not None:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.load_cert_chain(config.tls.cert_file, config.tls.key_file)
-        server.socket = context.wrap_socket(server.socket, server_side=True)
+    server = None
     try:
+        server = create_server(
+            (config.bind.host, config.bind.port),
+            _UnavailableService(),
+            secret,
+            config.sqlite_path,
+            frozenset(config.devices),
+        )
+        if config.tls is not None:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.load_cert_chain(config.tls.cert_file, config.tls.key_file)
+            server.socket = context.wrap_socket(server.socket, server_side=True)
         server.serve_forever()
+    except (OSError, sqlite3.Error, ssl.SSLError):
+        parser.exit(2, "configuration error: server configuration is invalid\n")
     except KeyboardInterrupt:
         return 0
     finally:
-        server.server_close()
+        if server is not None:
+            server.server_close()
     return 0
 
 

@@ -17,6 +17,7 @@ from unittest import mock
 
 from xq_rfid_adapter.api import (
     MAX_BODY_BYTES,
+    MAX_CONCURRENT_REQUESTS,
     ReplayGuard,
     authenticate_request,
     canonical_request,
@@ -332,6 +333,23 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(TypeError):
             config.devices["other"] = config.devices["reader-1"]
 
+    def test_missing_config_and_invalid_tls_files_are_safe(self):
+        with self.assertRaises(ConfigError) as raised:
+            load_config(self.root / "private-missing-config.json")
+        self.assertNotIn(str(self.root), str(raised.exception))
+
+        value = dict(self.base)
+        value["devices"] = {}
+        value["production"] = True
+        value["tls"] = {
+            "cert_file": str(self.root / "missing-cert.pem"),
+            "key_file": str(self.root / "missing-key.pem"),
+        }
+        self.write(value)
+        with self.assertRaises(ConfigError) as raised:
+            load_config(self.config_path)
+        self.assertNotIn(str(self.root), str(raised.exception))
+
     def test_example_config_is_safe_and_parses(self):
         example = Path(__file__).parents[1] / "src/xq_rfid_adapter/examples/config.example.json"
         text = example.read_text(encoding="utf-8")
@@ -352,7 +370,37 @@ class FakeService:
         self.calls.append((name, *args))
         if self.raise_text:
             raise RuntimeError(self.raise_text)
-        return {"route": name}
+        if name == "test_connection":
+            return {"status": "connected"}
+        if name == "get_device":
+            return {
+                "status": "connected",
+                "capabilities": {
+                    "supports_epc": True,
+                    "supports_tid": True,
+                    "supports_user_read": True,
+                    "supports_user_write": True,
+                },
+                "antenna_count": 1,
+            }
+        if name == "submit_operation":
+            return {
+                "state": "queued",
+                "request_id": args[0]["request_id"],
+                "operation_type": args[0]["operation_type"],
+                "payload_version": args[0]["payload_version"],
+            }
+        return {
+            "state": "succeeded",
+            "request_id": args[0],
+            "operation_type": "write_and_verify",
+            "payload_version": 1,
+            "masked_epc": "AA**************BB",
+            "masked_tid": None,
+            "identity_hash": "a" * 64,
+            "verification_ok": True,
+            "retryable": False,
+        }
 
     def test_connection(self, device_id):
         return self._return("test_connection", device_id)
@@ -480,7 +528,7 @@ class TestHttpApi(unittest.TestCase):
         ).encode("ascii")
         status, _, envelope = self.raw_request(good_raw)
         self.assertEqual(status, 200)
-        self.assertEqual(envelope["result"], {"route": "get_device"})
+        self.assertEqual(envelope["result"]["status"], "connected")
 
     def test_unknown_device_only_after_authentication(self):
         target = "/v1/devices/not-configured"
@@ -500,6 +548,18 @@ class TestHttpApi(unittest.TestCase):
             }, separators=(",", ":")).encode(), "submit_operation"),
             ("GET", "/v1/operations/request-1", b"", "get_operation"),
         ]
+        expected_keys = {
+            "test_connection": {"status"},
+            "get_device": {"status", "capabilities", "antenna_count"},
+            "submit_operation": {
+                "state", "request_id", "operation_type", "payload_version",
+            },
+            "get_operation": {
+                "state", "request_id", "operation_type", "payload_version",
+                "masked_epc", "masked_tid", "identity_hash", "verification_ok",
+                "retryable",
+            },
+        }
         for method, target, body, expected in cases:
             headers = self.auth(method, target, body)
             if method == "POST":
@@ -508,7 +568,7 @@ class TestHttpApi(unittest.TestCase):
             status, _, envelope = self.request(method, target, body, headers)
             self.assertEqual(status, 200)
             self.assertTrue(envelope["ok"])
-            self.assertEqual(envelope["result"], {"route": expected})
+            self.assertEqual(set(envelope["result"]), expected_keys[expected])
         self.assertEqual(self.service.calls[0], ("test_connection", "reader-1"))
         self.assertEqual(self.service.calls[1], ("get_device", "reader-1"))
         self.assertEqual(self.service.calls[2][0], "submit_operation")
@@ -607,6 +667,170 @@ class TestHttpApi(unittest.TestCase):
                 self.assertNotIn("raw-device-code", serialized)
                 self.assertIsNone(envelope["error"]["device_code"])
 
+    def test_route_specific_results_reject_adversarial_nominal_fields(self):
+        target = "/v1/devices/reader-1"
+        unsafe_values = [
+            {"firmware_version": "/private/secret"},
+            {"device_code": "raw-frame-password"},
+            {"capabilities": {"supports_epc": True, "secret": "leak"}},
+            {"state": "not-a-valid-state"},
+        ]
+        for result in unsafe_values:
+            with self.subTest(result=result):
+                self.service.get_device = lambda device_id, value=result: value
+                status, _, envelope = self.request(
+                    "GET", target, headers=self.auth("GET", target)
+                )
+                self.assertEqual(status, 500)
+                serialized = json.dumps(envelope)
+                self.assertNotIn("private", serialized)
+                self.assertNotIn("raw-frame", serialized)
+                self.assertNotIn("leak", serialized)
+                self.assertEqual(envelope["error"]["code"], "device_error")
+
+    def test_operation_result_contracts_reject_mismatched_or_unsafe_values(self):
+        target = "/v1/operations"
+        body = json.dumps({
+            "request_id": "request-1",
+            "operation_type": "write_and_verify",
+            "device_id": "reader-1",
+            "payload_hex": "AA" * 24,
+            "payload_version": 1,
+        }, separators=(",", ":")).encode()
+        unsafe_submissions = (
+            {"state": "unknown", "request_id": "request-1", "operation_type": "write_and_verify", "payload_version": 1},
+            {"state": "queued", "request_id": "other", "operation_type": "write_and_verify", "payload_version": 1},
+            {"state": "queued", "request_id": "request-1", "operation_type": "/private/secret", "payload_version": 1},
+            {"state": "queued", "request_id": "request-1", "operation_type": "write_and_verify", "payload_version": True},
+        )
+        for result in unsafe_submissions:
+            with self.subTest(result=result):
+                self.service.submit_operation = lambda request, value=result: value
+                headers = self.auth("POST", target, body)
+                headers.update({"Content-Type": "application/json", "Content-Length": str(len(body))})
+                status, _, envelope = self.request("POST", target, body, headers)
+                self.assertEqual(status, 500)
+                self.assertEqual(envelope["error"]["code"], "device_error")
+                self.assertNotIn("private", json.dumps(envelope))
+
+        lookup = "/v1/operations/request-1"
+        valid = self.service._return("get_operation", "request-1")
+        unsafe_lookups = (
+            dict(valid, request_id="other"),
+            dict(valid, masked_epc="/private/secret"),
+            dict(valid, masked_epc="A" * 24),
+            dict(valid, identity_hash="not-a-hash"),
+            dict(valid, verification_ok=1),
+            dict(valid, device_code="raw-device-code"),
+        )
+        for result in unsafe_lookups:
+            with self.subTest(result=result):
+                self.service.get_operation = lambda request_id, value=result: value
+                status, _, envelope = self.request(
+                    "GET", lookup, headers=self.auth("GET", lookup)
+                )
+                self.assertEqual(status, 500)
+                self.assertEqual(envelope["error"]["code"], "device_error")
+                serialized = json.dumps(envelope)
+                self.assertNotIn("private", serialized)
+                self.assertNotIn("raw-device-code", serialized)
+
+    def test_arbitrary_extension_method_returns_safe_405(self):
+        target = "/v1/devices/reader-1"
+        headers = self.auth("BREW", target)
+        raw = (
+            f"BREW {target} HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            + "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+            + "Connection: close\r\n\r\n"
+        ).encode("ascii")
+        self.assert_safe_error(self.raw_request(raw), 405, "protocol_error")
+
+    def test_non_origin_request_targets_return_safe_json(self):
+        forms = (
+            b"http://example.invalid/v1/devices/reader-1",
+            b"example.invalid:443",
+            b"*",
+            b"/v1/device\x80",
+        )
+        for target in forms:
+            with self.subTest(target=target):
+                raw = (
+                    b"GET " + target + b" HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    b"Connection: close\r\n\r\n"
+                )
+                status, headers, envelope = self.raw_request(raw)
+                self.assertIn(status, (400, 401, 404, 405))
+                self.assertEqual(headers["Content-Type"], "application/json")
+                self.assertFalse(envelope["ok"])
+
+    def test_request_target_whitespace_and_controls_return_safe_json(self):
+        malformed = (
+            b"GET /v1/devices/reader-1 extra HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            b"GET /v1/devices/reader-1\tbad HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            b"GET /v1/devices/reader-1\x01 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        for raw in malformed:
+            with self.subTest(raw=raw):
+                status, headers, envelope = self.raw_request(raw)
+                self.assertEqual(status, 400)
+                self.assertEqual(headers["Content-Type"], "application/json")
+                self.assertFalse(envelope["ok"])
+
+    def test_disconnect_releases_concurrency_permit(self):
+        import socket
+
+        connection = socket.create_connection(
+            ("127.0.0.1", self.server.server_port), timeout=3
+        )
+        connection.sendall(b"GET /v1/devices/reader-1 HTTP/1.1\r\n")
+        connection.close()
+        time.sleep(0.1)
+        target = "/v1/devices/reader-1"
+        status, _, _ = self.request("GET", target, headers=self.auth("GET", target))
+        self.assertNotEqual(status, 503)
+
+    def test_stalled_bodies_are_capped_and_expire(self):
+        import socket
+
+        sockets = []
+        target = "/v1/operations"
+        try:
+            for index in range(MAX_CONCURRENT_REQUESTS):
+                body = b"{}"
+                headers = self.auth("POST", target, body, nonce=f"{index:032x}")
+                request = (
+                    f"POST {target} HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    "Content-Type: application/json\r\nContent-Length: 2\r\n"
+                    + "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+                    + "\r\n"
+                ).encode("ascii")
+                connection = socket.create_connection(
+                    ("127.0.0.1", self.server.server_port), timeout=3
+                )
+                connection.sendall(request)
+                sockets.append(connection)
+            overloaded = socket.create_connection(
+                ("127.0.0.1", self.server.server_port), timeout=3
+            )
+            overloaded.sendall(
+                b"GET /v1/devices/reader-1 HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            )
+            response = http.client.HTTPResponse(overloaded)
+            response.begin()
+            envelope = json.loads(response.read())
+            self.assertEqual(response.status, 503)
+            self.assertEqual(envelope["error"]["code"], "device_error")
+            overloaded.close()
+
+            time.sleep(1.2)
+            response = self.request(
+                "GET", target, headers=self.auth("GET", target)
+            )
+            self.assertNotEqual(response[0], 503)
+        finally:
+            for connection in sockets:
+                connection.close()
+
     def test_exception_text_and_sensitive_values_never_echo(self):
         secret_text = "DO-NOT-LEAK-secret-signature-payload-path"
         self.service.raise_text = secret_text
@@ -618,12 +842,103 @@ class TestHttpApi(unittest.TestCase):
 
 
 class TestCli(unittest.TestCase):
+    def test_help_calls_no_config_secret_sqlite_or_bind_entry_points(self):
+        from xq_rfid_adapter import __main__ as cli
+
+        forbidden = (
+            mock.patch.object(cli, "load_config", side_effect=AssertionError("config")),
+            mock.patch.object(cli, "load_secret", side_effect=AssertionError("secret")),
+            mock.patch.object(cli, "create_server", side_effect=AssertionError("server")),
+            mock.patch("xq_rfid_adapter.api.sqlite3.connect", side_effect=AssertionError("sqlite")),
+        )
+        with contextlib.ExitStack() as stack:
+            for patcher in forbidden:
+                stack.enter_context(patcher)
+            with self.assertRaises(SystemExit) as raised:
+                cli.main(["--help"])
+        self.assertEqual(raised.exception.code, 0)
+
     def test_help_exposes_required_options_without_side_effects(self):
         command = [sys.executable, "-m", "xq_rfid_adapter", "--help"]
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         for text in ("serve", "--config", "--check-config"):
             self.assertIn(text, result.stdout)
+
+    def test_check_config_errors_are_safe_and_validate_tls_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secret = root / "secret"
+            secret.write_bytes(b"q" * 32)
+            env = dict(os.environ, RFID_ADAPTER_SECRET_FILE=str(secret))
+            missing = root / "private-missing-config.json"
+            result = subprocess.run(
+                [sys.executable, "-m", "xq_rfid_adapter", "--config", str(missing), "--check-config"],
+                env=env, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+            combined = result.stdout + result.stderr
+            self.assertNotIn("Traceback", combined)
+            self.assertNotIn(str(root), combined)
+
+            config = root / "config.json"
+            config.write_text(json.dumps({
+                "bind": {"host": "127.0.0.1", "port": 0},
+                "sqlite_path": str(root / "adapter.sqlite3"),
+                "production": True,
+                "tls": {
+                    "cert_file": str(root / "private-missing-cert.pem"),
+                    "key_file": str(root / "private-missing-key.pem"),
+                },
+                "devices": {},
+            }), encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, "-m", "xq_rfid_adapter", "--config", str(config), "--check-config"],
+                env=env, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+            combined = result.stdout + result.stderr
+            self.assertNotIn("Traceback", combined)
+            self.assertNotIn(str(root), combined)
+
+            cert = root / "private-cert.pem"
+            key = root / "private-key.pem"
+            cert.write_text("not a certificate", encoding="ascii")
+            key.write_text("not a key", encoding="ascii")
+            value = json.loads(config.read_text(encoding="utf-8"))
+            value["tls"] = {"cert_file": str(cert), "key_file": str(key)}
+            config.write_text(json.dumps(value), encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, "-m", "xq_rfid_adapter", "--config", str(config), "--check-config"],
+                env=env, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+            combined = result.stdout + result.stderr
+            self.assertNotIn("Traceback", combined)
+            self.assertNotIn(str(root), combined)
+
+    def test_serve_sqlite_startup_error_is_safe(self):
+        from xq_rfid_adapter import __main__ as cli
+
+        config = mock.Mock()
+        config.bind.host = "127.0.0.1"
+        config.bind.port = 0
+        config.sqlite_path = Path("/private/missing/adapter.sqlite3")
+        config.devices = {}
+        config.tls = None
+        with (
+            mock.patch.object(cli, "load_config", return_value=config),
+            mock.patch.object(cli, "load_secret", return_value=b"q" * 32),
+            mock.patch.object(
+                cli, "create_server", side_effect=sqlite3.OperationalError("/private/path")
+            ),
+            self.assertRaises(SystemExit) as raised,
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            cli.main(["serve", "--config", "ignored.json"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertNotIn("/private", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_check_config_does_not_create_database_or_bind(self):
         with tempfile.TemporaryDirectory() as directory:

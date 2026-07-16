@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import ssl
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -87,8 +88,10 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
 
 
 def load_config(path: str | os.PathLike[str]) -> AdapterConfig:
-    config_file = Path(path).expanduser().resolve(strict=True)
     try:
+        config_file = Path(path).expanduser().resolve(strict=True)
+        if not config_file.is_file():
+            raise OSError("not a regular file")
         raw = json.loads(
             config_file.read_text(encoding="utf-8"),
             object_pairs_hook=_reject_duplicate_keys,
@@ -126,10 +129,21 @@ def load_config(path: str | os.PathLike[str]) -> AdapterConfig:
         _exact_keys(tls_object, _TLS_KEYS, "tls")
         if set(tls_object) != _TLS_KEYS:
             raise ConfigError("tls is missing required keys")
-        tls = TlsConfig(
-            cert_file=_resolve_config_path(config_file, tls_object["cert_file"], "tls cert_file"),
-            key_file=_resolve_config_path(config_file, tls_object["key_file"], "tls key_file"),
+        cert_file = _resolve_config_path(
+            config_file, tls_object["cert_file"], "tls cert_file"
         )
+        key_file = _resolve_config_path(
+            config_file, tls_object["key_file"], "tls key_file"
+        )
+        if not cert_file.is_file() or not key_file.is_file():
+            raise ConfigError("TLS certificate or key file is unreadable")
+        try:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.load_cert_chain(cert_file, key_file)
+        except (OSError, ssl.SSLError) as error:
+            raise ConfigError("TLS certificate or key file is invalid") from error
+        tls = TlsConfig(cert_file=cert_file, key_file=key_file)
     if not address.is_loopback and tls is None:
         raise ConfigError("plaintext TCP bind must use loopback")
 
