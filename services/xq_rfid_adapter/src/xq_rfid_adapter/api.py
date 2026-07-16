@@ -51,8 +51,9 @@ _DEVICE_RESULT_KEYS = frozenset({
     "status", "capabilities", "antenna_count", "firmware_version",
     "hardware_version", "module_version", "region",
 })
-_SAFE_METADATA_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._+ -]{0,63}\Z")
-_IDENTITY_LIKE_METADATA_RE = re.compile(r"\A[0-9A-Fa-f]{8,64}\Z")
+_VERSION_KEYS = frozenset({"major", "minor", "patch"})
+_VERSION_KEYS_WITH_BUILD = frozenset({"major", "minor", "patch", "build"})
+_MAX_VERSION_COMPONENT = 65535
 _REGION_CODES = frozenset({"CN", "EU", "JP", "US"})
 _SUBMITTED_OPERATION_RESULT_KEYS = frozenset({
     "state", "request_id", "operation_type", "payload_version",
@@ -319,6 +320,26 @@ def _serialize_connection_result(value: object) -> dict:
     return {"status": result["status"]}
 
 
+def _serialize_version(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) not in {
+        _VERSION_KEYS,
+        _VERSION_KEYS_WITH_BUILD,
+    }:
+        raise _invalid_service_result()
+    components = ("major", "minor", "patch")
+    if "build" in value:
+        components += ("build",)
+    if any(
+        type(value[key]) is not int
+        or not 0 <= value[key] <= _MAX_VERSION_COMPONENT
+        for key in components
+    ):
+        raise _invalid_service_result()
+    return ".".join(str(value[key]) for key in components)
+
+
 def _serialize_device_result(value: object) -> dict:
     result = _require_exact_dict(value, _DEVICE_RESULT_KEYS)
     capabilities = _require_exact_dict(result["capabilities"], _CAPABILITY_KEYS)
@@ -329,16 +350,10 @@ def _serialize_device_result(value: object) -> dict:
         raise _invalid_service_result()
     if result["status"] not in _CONNECTION_STATES:
         raise _invalid_service_result()
-    metadata = {}
-    for key in ("firmware_version", "hardware_version", "module_version"):
-        item = result[key]
-        if item is not None and (
-            not isinstance(item, str)
-            or not _SAFE_METADATA_RE.fullmatch(item)
-            or _IDENTITY_LIKE_METADATA_RE.fullmatch(item)
-        ):
-            raise _invalid_service_result()
-        metadata[key] = item
+    metadata = {
+        key: _serialize_version(result[key])
+        for key in ("firmware_version", "hardware_version", "module_version")
+    }
     region = result["region"]
     if region is not None and region not in _REGION_CODES:
         raise _invalid_service_result()

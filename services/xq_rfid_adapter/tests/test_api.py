@@ -383,9 +383,11 @@ class FakeService:
                     "supports_user_write": True,
                 },
                 "antenna_count": 1,
-                "firmware_version": "1.2.3-build_4",
-                "hardware_version": "HW-2",
-                "module_version": "M1.2-build_3",
+                "firmware_version": {"major": 1, "minor": 2, "patch": 3},
+                "hardware_version": {"major": 0, "minor": 0, "patch": 2},
+                "module_version": {
+                    "major": 1, "minor": 2, "patch": 3, "build": 4,
+                },
                 "region": "CN",
             }
         if name == "submit_operation":
@@ -577,6 +579,10 @@ class TestHttpApi(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertTrue(envelope["ok"])
             self.assertEqual(set(envelope["result"]), expected_keys[expected])
+            if expected == "get_device":
+                self.assertEqual(envelope["result"]["firmware_version"], "1.2.3")
+                self.assertEqual(envelope["result"]["hardware_version"], "0.0.2")
+                self.assertEqual(envelope["result"]["module_version"], "1.2.3.4")
         self.assertEqual(self.service.calls[0], ("test_connection", "reader-1"))
         self.assertEqual(self.service.calls[1], ("get_device", "reader-1"))
         self.assertEqual(self.service.calls[2][0], "submit_operation")
@@ -675,30 +681,75 @@ class TestHttpApi(unittest.TestCase):
                 self.assertNotIn("raw-device-code", serialized)
                 self.assertIsNone(envelope["error"]["device_code"])
 
+    def test_structured_versions_accept_bounds_and_optional_build(self):
+        target = "/v1/devices/reader-1"
+        base = self.service._return("get_device", "reader-1")
+        cases = (
+            ({"major": 0, "minor": 0, "patch": 0}, "0.0.0"),
+            (
+                {"major": 65535, "minor": 65535, "patch": 65535},
+                "65535.65535.65535",
+            ),
+            (
+                {"major": 0, "minor": 1, "patch": 2, "build": 0},
+                "0.1.2.0",
+            ),
+            (
+                {
+                    "major": 65535,
+                    "minor": 65535,
+                    "patch": 65535,
+                    "build": 65535,
+                },
+                "65535.65535.65535.65535",
+            ),
+            (None, None),
+        )
+        for field in ("firmware_version", "hardware_version", "module_version"):
+            for descriptor, expected in cases:
+                with self.subTest(field=field, descriptor=descriptor):
+                    result = dict(base, **{field: descriptor})
+                    self.service.get_device = lambda device_id, value=result: value
+                    status, _, envelope = self.request(
+                        "GET", target, headers=self.auth("GET", target)
+                    )
+                    self.assertEqual(status, 200)
+                    self.assertEqual(envelope["result"][field], expected)
+
     def test_route_specific_results_reject_adversarial_nominal_fields(self):
         target = "/v1/devices/reader-1"
         base = self.service._return("get_device", "reader-1")
         unsafe_values = [
-            dict(base, firmware_version="/private/secret"),
-            dict(base, firmware_version="https://device.invalid/version"),
-            dict(base, firmware_version="secret=rawvalue"),
-            dict(base, hardware_version="bad\ncontrol"),
-            dict(base, hardware_version="C:\\private\\device"),
             dict(base, region="x" * 65),
             dict(base, region="ZZ"),
             dict(base, device_code="raw-frame-password"),
             dict(base, capabilities={"supports_epc": True, "secret": "leak"}),
             {"state": "not-a-valid-state"},
         ]
+        invalid_versions = (
+            "1.2.3",
+            "1.2.3-build_4",
+            "DO-NOT-LEAK-private-path",
+            "EPC-E2003412",
+            "SECRET-TOKEN-ABC123",
+            {},
+            {"major": 1, "minor": 2},
+            {"major": 1, "minor": 2, "patch": 3, "label": "secret"},
+            {"major": 1, "minor": 2, "patch": 3, "build": 4, "extra": {}},
+            {"major": True, "minor": 2, "patch": 3},
+            {"major": 1, "minor": False, "patch": 3},
+            {"major": 1, "minor": 2, "patch": True},
+            {"major": 1, "minor": 2, "patch": 3, "build": False},
+            {"major": -1, "minor": 2, "patch": 3},
+            {"major": 1, "minor": 65536, "patch": 3},
+            {"major": 1, "minor": 2, "patch": "3"},
+            {"major": 1, "minor": 2, "patch": 3, "build": -1},
+            {"major": 1, "minor": 2, "patch": 3, "build": 65536},
+            {"major": 1, "minor": 2, "patch": {"value": 3}},
+        )
         for key in ("firmware_version", "hardware_version", "module_version"):
-            for identity in (
-                "E2003412",
-                "A1B2C3D4E5F6",
-                "A" * 16,
-                "B" * 24,
-                "C" * 64,
-            ):
-                unsafe_values.append(dict(base, **{key: identity}))
+            for version in invalid_versions:
+                unsafe_values.append(dict(base, **{key: version}))
         for result in unsafe_values:
             with self.subTest(result=result):
                 self.service.get_device = lambda device_id, value=result: value
