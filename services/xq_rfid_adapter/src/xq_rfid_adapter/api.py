@@ -531,6 +531,9 @@ def make_handler(
                 raise _HttpError(503, AdapterErrorCode.DEVICE_ERROR)
             try:
                 future = service_executor.submit(operation, *args)
+            except _ServiceUnavailable as error:
+                service_slots.release()
+                raise _HttpError(503, AdapterErrorCode.DEVICE_ERROR) from error
             except BaseException:
                 service_slots.release()
                 raise
@@ -540,8 +543,6 @@ def make_handler(
             except concurrent.futures.TimeoutError as error:
                 service_executor.mark_unhealthy()
                 raise _HttpError(504, AdapterErrorCode.TIMEOUT) from error
-            except _ServiceUnavailable as error:
-                raise _HttpError(503, AdapterErrorCode.DEVICE_ERROR) from error
 
         def _handle(self, method: str) -> None:
             try:

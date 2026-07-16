@@ -385,7 +385,7 @@ class FakeService:
                 "antenna_count": 1,
                 "firmware_version": "1.2.3-build_4",
                 "hardware_version": "HW-2",
-                "module_version": None,
+                "module_version": "M1.2-build_3",
                 "region": "CN",
             }
         if name == "submit_operation":
@@ -682,8 +682,6 @@ class TestHttpApi(unittest.TestCase):
             dict(base, firmware_version="/private/secret"),
             dict(base, firmware_version="https://device.invalid/version"),
             dict(base, firmware_version="secret=rawvalue"),
-            dict(base, firmware_version="A" * 32),
-            dict(base, firmware_version="E2003412"),
             dict(base, hardware_version="bad\ncontrol"),
             dict(base, hardware_version="C:\\private\\device"),
             dict(base, region="x" * 65),
@@ -692,6 +690,15 @@ class TestHttpApi(unittest.TestCase):
             dict(base, capabilities={"supports_epc": True, "secret": "leak"}),
             {"state": "not-a-valid-state"},
         ]
+        for key in ("firmware_version", "hardware_version", "module_version"):
+            for identity in (
+                "E2003412",
+                "A1B2C3D4E5F6",
+                "A" * 16,
+                "B" * 24,
+                "C" * 64,
+            ):
+                unsafe_values.append(dict(base, **{key: identity}))
         for result in unsafe_values:
             with self.subTest(result=result):
                 self.service.get_device = lambda device_id, value=result: value
@@ -827,6 +834,101 @@ class TestHttpApi(unittest.TestCase):
                 self.assertNotIn("path", serialized)
                 self.assertEqual(envelope["error"]["code"], "device_error")
 
+    def test_service_timeout_error_is_safe_without_poisoning_executor(self):
+        target = "/v1/devices/reader-1"
+        calls = []
+
+        def fail_once(device_id):
+            calls.append(device_id)
+            raise TimeoutError("secret/path")
+
+        self.service.get_device = fail_once
+        status, _, envelope = self.request(
+            "GET", target, headers=self.auth("GET", target)
+        )
+        self.assertEqual(status, 500)
+        self.assertEqual(envelope["error"]["code"], "device_error")
+        self.assertNotIn("secret", json.dumps(envelope))
+
+        def succeed(device_id):
+            calls.append(device_id)
+            return self.service._return("get_device", device_id)
+
+        self.service.get_device = succeed
+        status, _, envelope = self.request(
+            "GET", target, headers=self.auth("GET", target)
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(envelope["ok"])
+        self.assertEqual(calls, ["reader-1", "reader-1"])
+
+    def test_wait_deadline_stays_504_if_future_completes_after_timeout(self):
+        target = "/v1/devices/reader-1"
+
+        class CompletedAfterDeadline:
+            def add_done_callback(self, callback):
+                self.callback = callback
+
+            def result(self, timeout=None):
+                if timeout is not None:
+                    raise TimeoutError()
+                return self.service_result
+
+            def done(self):
+                return True
+
+        future = CompletedAfterDeadline()
+        future.service_result = self.service._return("get_device", "reader-1")
+        with (
+            mock.patch.object(
+                self.server.service_executor,
+                "submit",
+                return_value=future,
+            ),
+            mock.patch.object(
+                self.server.service_executor,
+                "mark_unhealthy",
+                wraps=self.server.service_executor.mark_unhealthy,
+            ) as unhealthy,
+        ):
+            status, _, envelope = self.request(
+                "GET", target, headers=self.auth("GET", target)
+            )
+        self.assertEqual(status, 504)
+        self.assertEqual(envelope["error"]["code"], "timeout")
+        unhealthy.assert_called_once_with()
+
+    def test_submit_rejection_is_safe_503_without_invoking_service(self):
+        from xq_rfid_adapter import api
+
+        target = "/v1/devices/reader-1"
+        calls = []
+
+        def invoked(device_id):
+            calls.append(device_id)
+            return self.service._return("get_device", device_id)
+
+        self.service.get_device = invoked
+        with mock.patch.object(
+            self.server.service_executor,
+            "submit",
+            side_effect=api._ServiceUnavailable(),
+        ):
+            status, _, envelope = self.request(
+                "GET", target, headers=self.auth("GET", target)
+            )
+        self.assertEqual(status, 503)
+        self.assertEqual(envelope["error"]["code"], "device_error")
+        self.assertEqual(calls, [])
+
+        self.server.service_executor.mark_unhealthy()
+        status, _, envelope = self.request(
+            "GET", target, headers=self.auth("GET", target)
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(envelope["error"]["code"], "device_error")
+        self.assertEqual(calls, [])
+
     def test_arbitrary_extension_method_returns_safe_405(self):
         target = "/v1/devices/reader-1"
         headers = self.auth("BREW", target)
@@ -910,7 +1012,8 @@ class TestHttpApi(unittest.TestCase):
                 headers = self.auth("POST", target, body)
                 headers.update({"Content-Type": "application/json", "Content-Length": "2"})
                 response = self.request("POST", target, body, headers)
-                self.assertIn(response[0], (503, 504))
+                self.assertEqual(response[0], 503)
+                self.assertEqual(response[2]["error"]["code"], "device_error")
             after = len(threading.enumerate())
             self.assertLessEqual(after, before + MAX_CONCURRENT_REQUESTS)
             with lock:
