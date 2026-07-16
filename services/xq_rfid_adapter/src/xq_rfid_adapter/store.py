@@ -451,14 +451,21 @@ class OperationStore:
                     ).fetchone()
                     if recovered not in {0, 1} or remaining is not None:
                         raise StoreError("store_unavailable")
-                if not self._upsert_lease(
+                effective_lease_until = self._upsert_lease(
                     connection, device_id, owner_id, timestamp, lease_until
-                ):
+                )
+                if effective_lease_until is None:
                     raise StoreError("lease_conflict")
                 self._renew_active_operations(
-                    connection, device_id, owner_id, lease_until, timestamp
+                    connection,
+                    device_id,
+                    owner_id,
+                    effective_lease_until,
+                    timestamp,
                 )
-                return _lease_dict(device_id, owner_id, lease_until)
+                return _lease_dict(
+                    device_id, owner_id, effective_lease_until
+                )
         except StoreError:
             raise
         except sqlite3.Error as error:
@@ -493,19 +500,33 @@ class OperationStore:
                         raise StoreError("store_unavailable")
                     if timestamp < active["updated_at"]:
                         raise StoreError("invalid_argument")
+                effective_lease_until = max(
+                    lease["lease_until"], lease_until
+                )
                 cursor = connection.execute(
                     """
                     UPDATE device_leases SET lease_until = ?
                     WHERE device_id = ? AND owner_id = ? AND lease_until >= ?
                     """,
-                    (lease_until, device_id, owner_id, timestamp),
+                    (
+                        effective_lease_until,
+                        device_id,
+                        owner_id,
+                        timestamp,
+                    ),
                 )
                 if cursor.rowcount != 1:
                     raise StoreError("lease_conflict")
                 self._renew_active_operations(
-                    connection, device_id, owner_id, lease_until, timestamp
+                    connection,
+                    device_id,
+                    owner_id,
+                    effective_lease_until,
+                    timestamp,
                 )
-                return _lease_dict(device_id, owner_id, lease_until)
+                return _lease_dict(
+                    device_id, owner_id, effective_lease_until
+                )
         except StoreError:
             raise
         except sqlite3.Error as error:
@@ -603,9 +624,10 @@ class OperationStore:
                 ).fetchone()
                 if candidate is None:
                     return None
-                if not self._upsert_lease(
+                effective_lease_until = self._upsert_lease(
                     connection, device_id, owner_id, timestamp, lease_until
-                ):
+                )
+                if effective_lease_until is None:
                     raise StoreError("lease_conflict")
                 cursor = connection.execute(
                     """
@@ -614,7 +636,13 @@ class OperationStore:
                         claimed_at = ?, updated_at = ?, attempts = attempts + 1
                     WHERE id = ? AND state = 'queued'
                     """,
-                    (owner_id, lease_until, timestamp, timestamp, candidate["id"]),
+                    (
+                        owner_id,
+                        effective_lease_until,
+                        timestamp,
+                        timestamp,
+                        candidate["id"],
+                    ),
                 )
                 if cursor.rowcount != 1:
                     raise StoreError("stale_state")
@@ -798,20 +826,27 @@ class OperationStore:
         owner_id: str,
         now: int,
         lease_until: int,
-    ) -> bool:
-        cursor = connection.execute(
+    ) -> int | None:
+        row = connection.execute(
             """
             INSERT INTO device_leases(device_id, owner_id, lease_until)
             VALUES (?, ?, ?)
             ON CONFLICT(device_id) DO UPDATE SET
                 owner_id = excluded.owner_id,
-                lease_until = excluded.lease_until
+                lease_until = CASE
+                    WHEN device_leases.owner_id = excluded.owner_id
+                    THEN MAX(device_leases.lease_until, excluded.lease_until)
+                    ELSE excluded.lease_until
+                END
             WHERE device_leases.owner_id = excluded.owner_id
                OR device_leases.lease_until < ?
+            RETURNING lease_until
             """,
             (device_id, owner_id, lease_until, now),
-        )
-        return cursor.rowcount == 1
+        ).fetchone()
+        if row is None or type(row[0]) is not int:
+            return None
+        return row[0]
 
     def _initialize(self) -> None:
         try:

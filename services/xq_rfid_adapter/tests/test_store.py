@@ -830,12 +830,44 @@ class TestClaimsAndLeases(StoreCase):
         with self.assertRaises(StoreError):
             self.store.renew_lease("reader-1", "worker-a", 2, now=13)
 
-    def test_same_owner_acquire_renewal_updates_active_operation(self):
+    def test_same_owner_idle_acquire_never_shortens_valid_lease(self):
+        self.store.acquire_lease("reader-1", "worker-a", 30, now=10)
+        acquired = self.store.acquire_lease("reader-1", "worker-a", 5, now=11)
+        self.assertEqual(acquired["lease_until"], 40)
+        self.assertEqual(self.store.get_lease("reader-1"), acquired)
+        boundary = self.store.acquire_lease(
+            "reader-1", "worker-a", 1, now=40
+        )
+        self.assertEqual(boundary["lease_until"], 41)
+        self.assertEqual(self.store.get_lease("reader-1"), boundary)
+
+    def test_same_owner_idle_renew_never_shortens_valid_lease(self):
+        self.store.acquire_lease("reader-1", "worker-a", 30, now=10)
+        renewed = self.store.renew_lease("reader-1", "worker-a", 5, now=11)
+        self.assertEqual(renewed["lease_until"], 40)
+        self.assertEqual(self.store.get_lease("reader-1"), renewed)
+
+    def test_same_owner_active_acquire_never_shortens_valid_lease(self):
         self.store.create_or_get(sample_request(), now=1)
-        self.store.claim_next("reader-1", "worker-a", 1, now=10)
-        renewed = self.store.acquire_lease("reader-1", "worker-a", 10, now=11)
-        self.assertEqual(self.store.get("r1")["lease_until"], renewed["lease_until"])
-        self.assertEqual(self.store.recover_expired_claims(now=12), [])
+        claimed = self.store.claim_next("reader-1", "worker-a", 30, now=10)
+        acquired = self.store.acquire_lease("reader-1", "worker-a", 5, now=11)
+        operation = self.store.get("r1")
+        self.assertEqual(acquired["lease_until"], 40)
+        self.assertEqual(self.store.get_lease("reader-1"), acquired)
+        self.assertEqual(operation["lease_until"], 40)
+        self.assertEqual(operation["updated_at"], 11)
+        self.assertEqual(claimed["updated_at"], 10)
+
+    def test_same_owner_active_renew_never_shortens_valid_lease(self):
+        self.store.create_or_get(sample_request(), now=1)
+        claimed = self.store.claim_next("reader-1", "worker-a", 30, now=10)
+        renewed = self.store.renew_lease("reader-1", "worker-a", 5, now=11)
+        operation = self.store.get("r1")
+        self.assertEqual(renewed["lease_until"], 40)
+        self.assertEqual(self.store.get_lease("reader-1"), renewed)
+        self.assertEqual(operation["lease_until"], 40)
+        self.assertEqual(operation["updated_at"], 11)
+        self.assertEqual(claimed["updated_at"], 10)
 
     def test_second_claim_same_owner_leaves_queue_and_lease_unchanged(self):
         self.store.create_or_get(sample_request("r1"), now=1)
