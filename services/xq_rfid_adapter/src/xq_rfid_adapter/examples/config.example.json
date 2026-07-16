@@ -1,0 +1,10 @@
+{
+  "bind": {
+    "host": "127.0.0.1",
+    "port": 8042
+  },
+  "sqlite_path": "/var/lib/xq-rfid-adapter/adapter.sqlite3",
+  "production": true,
+  "tls": null,
+  "devices": {}
+}
