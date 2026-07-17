@@ -362,6 +362,69 @@ class ServiceCase(unittest.TestCase):
         finally:
             resumed.close()
 
+    def test_uncertain_recovery_missing_capability_remains_resumable_without_driver_call(self):
+        for missing in ("epc", "user_read", "user_write"):
+            with self.subTest(missing=missing):
+                request_id = f"recover-missing-{missing}"
+                store = OperationStore(
+                    os.path.join(self.tempdir.name, f"recover-missing-{missing}.sqlite3")
+                )
+                initial_driver = FakeDriver(
+                    capabilities=capabilities(),
+                    inventory_snapshots=[
+                        [TagObservation(self.target)], [TagObservation(self.target)]
+                    ],
+                    user_memory={self.target: b"\x00" * 24},
+                    scripted_errors={
+                        "read_memory": [
+                            None,
+                            AdapterError(AdapterErrorCode.TIMEOUT, "unsafe timeout"),
+                        ]
+                    },
+                    write_modes=["no_apply_then_timeout"],
+                )
+                initial = RfidService(
+                    store,
+                    {"reader-1": initial_driver},
+                    owner_id="worker-a",
+                    capabilities={"reader-1": capabilities()},
+                )
+                try:
+                    initial.submit_operation(request(request_id))
+                    first = initial.process_operation("reader-1")
+                    self.assertEqual(first["state"], "failed_retryable")
+                    self.assertEqual(first["error"]["code"], "write_uncertain")
+                finally:
+                    initial.close()
+
+                recovery_driver = FakeDriver(
+                    capabilities=capabilities(),
+                    inventory_snapshots=[
+                        [TagObservation(self.target)], [TagObservation(self.target)]
+                    ],
+                    user_memory={self.target: b"\x00" * 24},
+                )
+                recovery = RfidService(
+                    store,
+                    {"reader-1": recovery_driver},
+                    owner_id="worker-a",
+                    capabilities={
+                        "reader-1": capabilities(**{missing: False})
+                    },
+                )
+                try:
+                    result = recovery.recover_uncertain(request_id)
+
+                    self.assertEqual(result["state"], "failed_retryable")
+                    self.assertEqual(result["error"]["code"], "write_uncertain")
+                    self.assertEqual(recovery_driver.call_records, [])
+                    self.assertIn(
+                        request_id, store.uncertain_request_ids("reader-1")
+                    )
+                finally:
+                    recovery.close()
+                    store.close()
+
     def test_rewrite_reconfirmation_unprovable_errors_remain_discoverably_uncertain(self):
         for index, code in enumerate((
             AdapterErrorCode.TIMEOUT,

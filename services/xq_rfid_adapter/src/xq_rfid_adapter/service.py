@@ -185,6 +185,16 @@ class RfidService:
         except KeyError:
             raise _error(AdapterErrorCode.CONFIGURATION_ERROR) from None
 
+    def _required_write_capability(self, device_id: str) -> DeviceCapabilities:
+        capability = self._capability(device_id)
+        if not (
+            capability.epc_read
+            and capability.user_read
+            and capability.user_write
+        ):
+            raise _error(AdapterErrorCode.UNSUPPORTED_MEMORY)
+        return capability
+
     def test_connection(self, device_id: str) -> dict:
         return self._driver(device_id).test_connection()
 
@@ -367,13 +377,7 @@ class RfidService:
         )
         try:
             driver = self._driver(device_id)
-            capability = self._capability(work["device_id"])
-            if not (
-                capability.epc_read
-                and capability.user_read
-                and capability.user_write
-            ):
-                raise _error(AdapterErrorCode.UNSUPPORTED_MEMORY)
+            capability = self._required_write_capability(work["device_id"])
             include_tid = capability.tid_read
             target = self._inventory(device_id, driver, _FULL_INVENTORY_MS, include_tid)
             before = self._read(device_id, driver, target)
@@ -492,7 +496,10 @@ class RfidService:
             request_id, self._owner_id, self._lease_seconds,
         )
         driver = self._driver(work["device_id"])
-        include_tid = self._capability(work["device_id"]).tid_read
+        try:
+            include_tid = self._required_write_capability(work["device_id"]).tid_read
+        except AdapterError as error:
+            return self._fail(work, "verifying", error, uncertain=True)
         try:
             target = self._inventory(
                 work["device_id"], driver, _FULL_INVENTORY_MS, include_tid

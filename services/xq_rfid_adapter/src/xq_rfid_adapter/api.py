@@ -23,6 +23,7 @@ from .domain import (
     error_envelope,
     success_envelope,
 )
+from .store import StoreError
 
 
 MAX_BODY_BYTES = 64 * 1024
@@ -643,6 +644,10 @@ def make_handler(
             except concurrent.futures.TimeoutError as error:
                 service_executor.mark_unhealthy()
                 raise _HttpError(504, AdapterErrorCode.TIMEOUT) from error
+            except _SafeServiceNotFound as error:
+                raise _HttpError(
+                    404, AdapterErrorCode.CONFIGURATION_ERROR
+                ) from error
 
         def _handle(self, method: str) -> None:
             try:
@@ -746,7 +751,11 @@ class _ServiceUnavailable(Exception):
 
 
 class _SafeServiceFailure(Exception):
-    """Fixed sentinel for every service-originated throwable."""
+    """Fixed sentinel for every untrusted service-originated throwable."""
+
+
+class _SafeServiceNotFound(Exception):
+    """Fixed sentinel for a trusted missing-store-record failure."""
 
 
 class _HttpError(Exception):
@@ -814,6 +823,19 @@ class _BoundedServiceExecutor:
                 continue
             try:
                 future.set_result(operation(*args))
+            except AdapterError as error:
+                future.set_exception(
+                    AdapterError(
+                        error.code,
+                        _SAFE_MESSAGES[error.code],
+                        retryable=error.retryable,
+                    )
+                )
+            except StoreError as error:
+                if error.code == "not_found":
+                    future.set_exception(_SafeServiceNotFound())
+                else:
+                    future.set_exception(_SafeServiceFailure())
             except BaseException:
                 future.set_exception(_SafeServiceFailure())
 

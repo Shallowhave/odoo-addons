@@ -37,7 +37,7 @@ from xq_rfid_adapter.domain import (
 )
 from xq_rfid_adapter.drivers.fake import FakeDriver
 from xq_rfid_adapter.queue import DeviceQueue
-from xq_rfid_adapter.store import OperationStore
+from xq_rfid_adapter.store import OperationStore, StoreError
 
 
 VECTOR_ONE = {
@@ -522,6 +522,16 @@ class TestRealQueueApiIntegration(unittest.TestCase):
             "payload_version": 1,
         }
 
+    def test_missing_operation_returns_safe_not_found(self):
+        status, envelope = self.request("GET", "/v1/operations/missing")
+
+        self.assertEqual(status, 404)
+        self.assertFalse(envelope["ok"])
+        self.assertIsNone(envelope["result"])
+        self.assertEqual(envelope["error"]["code"], "configuration_error")
+        self.assertEqual(envelope["error"]["message"], "resource is not configured")
+        self.assertIsNone(envelope["error"]["device_code"])
+
     def test_semantic_payload_rejection_creates_no_row(self):
         invalid = bytearray.fromhex(valid_payload_hex())
         invalid[0:2] = b"NO"
@@ -851,6 +861,30 @@ class TestHttpApi(unittest.TestCase):
                 self.assertNotIn(unsafe, serialized)
                 self.assertNotIn("raw-device-code", serialized)
                 self.assertIsNone(envelope["error"]["device_code"])
+
+    def test_untrusted_service_exceptions_remain_safe_internal_errors(self):
+        target = "/v1/operations/missing"
+        unsafe = "password raw-frame /private/path"
+        failures = (
+            StoreError("store_unavailable"),
+            RuntimeError(unsafe),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                def raise_failure(request_id, error=failure):
+                    del request_id
+                    raise error
+
+                self.service.get_operation = raise_failure
+                status, _, envelope = self.request(
+                    "GET", target, headers=self.auth("GET", target)
+                )
+                self.assertEqual(status, 500)
+                self.assertEqual(envelope["error"]["code"], "device_error")
+                serialized = json.dumps(envelope)
+                self.assertNotIn(unsafe, serialized)
+                self.assertNotIn("store_unavailable", serialized)
+                self.assertNotIn("private", serialized)
 
     def test_structured_versions_accept_bounds_and_optional_build(self):
         target = "/v1/devices/reader-1"
