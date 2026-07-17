@@ -347,7 +347,7 @@ class RfidService:
             if lease_error:
                 raise lease_error[0]
             if call_error is not None:
-                if isinstance(call_error, (AdapterError, StoreError)):
+                if isinstance(call_error, AdapterError):
                     raise call_error
                 if driver_invoked:
                     raise _UnexpectedDriverError from None

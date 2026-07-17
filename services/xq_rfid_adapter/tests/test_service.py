@@ -464,6 +464,27 @@ class ServiceCase(unittest.TestCase):
         self.assertIsNone(self.store.get_lease("reader-1"))
         service.close()
 
+    def test_driver_store_error_is_treated_as_unexpected_and_safe(self):
+        class UnexpectedInventoryDriver(FakeDriver):
+            def inventory(self, duration_ms, include_tid):
+                raise StoreError("store_unavailable")
+
+        driver = UnexpectedInventoryDriver(capabilities=capabilities())
+        service = RfidService(
+            self.store,
+            {"reader-1": driver},
+            owner_id="worker-a",
+            capabilities={"reader-1": capabilities()},
+        )
+        service.submit_operation(request())
+
+        result = service.process_operation("reader-1")
+
+        self.assertEqual(result["state"], "failed_manual")
+        self.assertEqual(result["error"]["code"], "device_error")
+        self.assertEqual(self.store.get("r1")["state"], "failed_manual")
+        service.close()
+
     def test_unexpected_write_error_is_verified_before_finishing(self):
         class UnexpectedWriteDriver(FakeDriver):
             def write_memory(self, target, bank, word_offset, data):
@@ -493,6 +514,35 @@ class ServiceCase(unittest.TestCase):
         self.assertEqual(self.store.get("r1")["state"], "succeeded")
         self.store.release_lease("reader-1", "worker-a")
         self.assertIsNone(self.store.get_lease("reader-1"))
+        service.close()
+
+    def test_driver_store_error_after_applied_write_is_verified(self):
+        class UnexpectedWriteDriver(FakeDriver):
+            def write_memory(self, target, bank, word_offset, data):
+                super().write_memory(target, bank, word_offset, data)
+                raise StoreError("store_unavailable")
+
+        driver = UnexpectedWriteDriver(
+            capabilities=capabilities(),
+            inventory_snapshots=[
+                [TagObservation(self.target)], [TagObservation(self.target)],
+                [TagObservation(self.target)],
+            ],
+            user_memory={self.target: b"\x00" * 24},
+        )
+        service = RfidService(
+            self.store,
+            {"reader-1": driver},
+            owner_id="worker-a",
+            capabilities={"reader-1": capabilities()},
+        )
+        service.submit_operation(request())
+
+        result = service.process_operation("reader-1")
+
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(self.store.get("r1")["state"], "succeeded")
+        self.assertEqual(driver.call_counts.get("write_memory", 0), 1)
         service.close()
 
     def test_controlled_rewrite_transition_rolls_back_on_close(self):
