@@ -555,6 +555,7 @@ class RfidService:
                 self._mutate_store(
                     self._store.transition,
                     work["request_id"], self._owner_id, "writing", "verifying",
+                    cancellation_event=self._cancellation_event,
                 )
                 try:
                     second = self._read(device_id, driver, target)
@@ -637,6 +638,7 @@ class RfidService:
             self._mutate_store(
                 self._store.begin_controlled_rewrite,
                 request_id, self._owner_id,
+                cancellation_event=self._cancellation_event,
             )
             return self._write_and_verify(work, driver, target, current, initial=False)
         return self._fail(
