@@ -1357,6 +1357,29 @@ class TestTask9RecoveryPrerequisites(StoreCase):
         self.assertIsNone(self.store.claim_next_work("reader-1", "worker-b", 30, now=34))
         self.assertEqual(self.store.get("r1")["state"], "failed_retryable")
 
+    def test_unresolved_uncertain_work_blocks_later_queued_claim(self):
+        self._claim_inventorying("uncertain")
+        self.store.prepare_write(
+            "uncertain", "worker-a", "a" * 64, "b" * 64, now=4
+        )
+        self.store.transition(
+            "uncertain",
+            "worker-a",
+            "writing",
+            "failed_retryable",
+            error=safe_error("write_uncertain"),
+            now=5,
+        )
+        self.store.release_lease("reader-1", "worker-a")
+        self.store.create_or_get(sample_request("later"), now=6)
+
+        self.assertIsNone(
+            self.store.claim_next_work("reader-1", "worker-b", 30, now=7)
+        )
+        self.assertEqual(self.store.get("uncertain")["state"], "failed_retryable")
+        self.assertEqual(self.store.get("later")["state"], "queued")
+        self.assertIsNone(self.store.get_lease("reader-1"))
+
     def test_boundary_deferral_is_private_and_claims_at_inclusive_deadline(self):
         self._claim_inventorying()
         deferred = self.store.defer_boundary(

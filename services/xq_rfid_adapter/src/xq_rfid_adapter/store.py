@@ -633,6 +633,19 @@ class OperationStore:
                     active = None
                 if active is not None:
                     raise StoreError("lease_conflict")
+                uncertain = connection.execute(
+                    """
+                    SELECT 1 FROM operations
+                    WHERE device_id = ? AND state = 'failed_retryable'
+                      AND target_identity_hash IS NOT NULL
+                      AND pre_write_hash IS NOT NULL
+                      AND json_extract(error_json, '$.code') = ?
+                    LIMIT 1
+                    """,
+                    (device_id, AdapterErrorCode.WRITE_UNCERTAIN.value),
+                ).fetchone()
+                if uncertain is not None:
+                    return None
                 candidate = connection.execute(
                     """
                     SELECT id FROM operations

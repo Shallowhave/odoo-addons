@@ -313,12 +313,82 @@ class ServiceCase(unittest.TestCase):
                 service.close()
                 store.close()
 
+    def test_apply_then_timeout_reconfirms_target_before_accepting_readback(self):
+        changed = TagTarget("AABBCCEE", "00112244")
+        self.driver.write_modes = ["apply_then_timeout"]
+        self.driver.inventory_snapshots.append([TagObservation(changed)])
+        self.service.submit_operation(request())
+
+        result = self.service.process_operation("reader-1")
+
+        self.assertEqual(result["state"], "failed_manual")
+        self.assertEqual(result["error"]["code"], "target_changed")
+        self.assertEqual(self.driver.call_counts.get("write_memory", 0), 1)
+        self.assertEqual(self.driver.call_counts.get("read_memory", 0), 1)
+
     def test_apply_then_timeout_succeeds_with_one_write(self):
         self.driver.write_modes = ["apply_then_timeout"]
+        self.driver.inventory_snapshots.append([TagObservation(self.target)])
         self.service.submit_operation(request())
         result = self.service.process_operation("reader-1")
         self.assertEqual(result["state"], "succeeded")
         self.assertEqual(self.driver.call_counts.get("write_memory", 0), 1)
+
+    def test_negative_and_malformed_write_responses_fail_closed(self):
+        class ResponseDriver:
+            def __init__(self, delegate, response):
+                self.delegate = delegate
+                self.response = response
+
+            def test_connection(self):
+                return self.delegate.test_connection()
+
+            def get_device_info(self):
+                return self.delegate.get_device_info()
+
+            def inventory(self, duration_ms, include_tid):
+                return self.delegate.inventory(duration_ms, include_tid)
+
+            def read_memory(self, target, bank, word_offset, word_count):
+                return self.delegate.read_memory(
+                    target, bank, word_offset, word_count
+                )
+
+            def write_memory(self, target, bank, word_offset, data):
+                self.delegate.write_memory(target, bank, word_offset, data)
+                return self.response
+
+            def close(self):
+                self.delegate.close()
+
+        for index, response in enumerate(({"written": False}, {}, None, True)):
+            with self.subTest(response=response):
+                store = OperationStore(
+                    os.path.join(self.tempdir.name, f"write-response-{index}.sqlite3")
+                )
+                delegate = FakeDriver(
+                    capabilities=capabilities(),
+                    inventory_snapshots=[
+                        [TagObservation(self.target)], [TagObservation(self.target)]
+                    ],
+                    user_memory={self.target: b"\x00" * 24},
+                )
+                driver = ResponseDriver(delegate, response)
+                service = RfidService(
+                    store,
+                    {"reader-1": driver},
+                    owner_id="worker-a",
+                    capabilities={"reader-1": capabilities()},
+                )
+                try:
+                    service.submit_operation(request(f"write-response-{index}"))
+                    result = service.process_operation("reader-1")
+                    self.assertEqual(result["state"], "failed_manual")
+                    self.assertEqual(result["error"]["code"], "device_error")
+                    self.assertEqual(delegate.call_counts.get("read_memory", 0), 1)
+                finally:
+                    service.close()
+                    store.close()
 
     def test_no_apply_timeout_allows_exactly_one_controlled_rewrite(self):
         self.driver.write_modes = ["no_apply_then_timeout", "apply_and_return"]

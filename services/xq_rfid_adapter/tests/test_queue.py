@@ -307,32 +307,93 @@ class QueueCase(unittest.TestCase):
         wait_for(lambda: self.store.get("boundary")["state"] == "succeeded", timeout=2.0)
         self.assertEqual(driver.call_counts.get("write_memory", 0), 1)
 
-    def test_restart_uncertain_recovery_is_verify_first_and_bounded_per_tick(self):
+    def test_recovery_store_error_keeps_worker_alive_and_blocks_later_write(self):
         target = TagTarget("AABBCCDD", "00112233")
-        for index in range(2):
-            driver = FakeDriver(
-                capabilities=capabilities(), inventory_snapshots=[[TagObservation(target)]] * 2,
-                user_memory={target: b"\x00" * 24},
-                scripted_errors={"read_memory": [None, AdapterError(AdapterErrorCode.TIMEOUT, "private")]},
-                write_modes=["no_apply_then_timeout"],
-            )
-            service = RfidService(self.store, {"reader-1": driver}, owner_id="setup-owner", capabilities={"reader-1": capabilities()})
-            service.submit_operation(request(f"uncertain-{index}", token=f"000000000000000{index}".encode()))
-            self.assertEqual(service.process_operation("reader-1")["error"]["code"], "write_uncertain")
-            self.store.release_lease("reader-1", "setup-owner")
-            service.close()
-        resumed = FakeDriver(
-            capabilities=capabilities(), inventory_snapshots=[[TagObservation(target)]] * 4,
-            user_memory={target: b"\x00" * 24}, write_modes=["apply_and_return"] * 2,
+        initial_driver = FakeDriver(
+            capabilities=capabilities(),
+            inventory_snapshots=[[TagObservation(target)]] * 2,
+            user_memory={target: b"\x00" * 24},
+            scripted_errors={
+                "read_memory": [
+                    None,
+                    AdapterError(AdapterErrorCode.TIMEOUT, "private"),
+                ]
+            },
+            write_modes=["no_apply_then_timeout"],
         )
-        queue = self.make_queue(
+        initial = RfidService(
+            self.store,
+            {"reader-1": initial_driver},
+            owner_id="setup-owner",
+            capabilities={"reader-1": capabilities()},
+        )
+        initial.submit_operation(request("uncertain"))
+        self.assertEqual(
+            initial.process_operation("reader-1")["error"]["code"],
+            "write_uncertain",
+        )
+        self.store.release_lease("reader-1", "setup-owner")
+        initial.close()
+        self.store.create_or_get(
+            request("later", token=b"0000000000000002")
+        )
+
+        original_uncertain = self.store.uncertain_request_ids
+        self.store.uncertain_request_ids = mock_uncertain = lambda *args, **kwargs: (
+            (_ for _ in ()).throw(StoreError("store_busy"))
+        )
+        driver = FakeDriver(
+            capabilities=capabilities(),
+            inventory_snapshots=[[TagObservation(target)]] * 2,
+            user_memory={target: b"\x00" * 24},
+        )
+        queue = self.make_queue({"reader-1": driver}, poll_interval=0.02)
+        try:
+            time.sleep(0.1)
+            self.assertTrue(queue.worker_threads[0].is_alive())
+            self.assertEqual(driver.call_counts.get("write_memory", 0), 0)
+            self.assertEqual(self.store.get("later")["state"], "queued")
+        finally:
+            self.store.uncertain_request_ids = original_uncertain
+            del mock_uncertain
+
+    def test_restart_uncertain_recovery_is_verify_first(self):
+        target = TagTarget("AABBCCDD", "00112233")
+        driver = FakeDriver(
+            capabilities=capabilities(),
+            inventory_snapshots=[[TagObservation(target)]] * 2,
+            user_memory={target: b"\x00" * 24},
+            scripted_errors={
+                "read_memory": [
+                    None,
+                    AdapterError(AdapterErrorCode.TIMEOUT, "private"),
+                ]
+            },
+            write_modes=["no_apply_then_timeout"],
+        )
+        service = RfidService(
+            self.store,
+            {"reader-1": driver},
+            owner_id="setup-owner",
+            capabilities={"reader-1": capabilities()},
+        )
+        service.submit_operation(request("uncertain"))
+        self.assertEqual(
+            service.process_operation("reader-1")["error"]["code"],
+            "write_uncertain",
+        )
+        self.store.release_lease("reader-1", "setup-owner")
+        service.close()
+        resumed = FakeDriver(
+            capabilities=capabilities(),
+            inventory_snapshots=[[TagObservation(target)]] * 2,
+            user_memory={target: b"\x00" * 24},
+            write_modes=["apply_and_return"],
+        )
+        self.make_queue(
             {"reader-1": resumed}, recovery_batch=1, poll_interval=5.0,
         )
-        wait_for(lambda: any(self.store.get(f"uncertain-{i}")["state"] == "succeeded" for i in range(2)))
-        time.sleep(0.1)
-        states = [self.store.get(f"uncertain-{i}")["state"] for i in range(2)]
-        self.assertEqual(states.count("succeeded"), 1)
-        self.assertEqual(states.count("failed_retryable"), 1)
+        wait_for(lambda: self.store.get("uncertain")["state"] == "succeeded")
         operations = [record["operation"] for record in resumed.call_records]
         self.assertEqual(operations[:2], ["inventory", "read_memory"])
 
@@ -344,6 +405,42 @@ class QueueCase(unittest.TestCase):
         queue = self.make_queue({"reader-1": FakeDriver()}, owner_id=None)
         self.assertRegex(queue.owner_id, r"\Aadapter-[0-9a-f]{32,}\Z")
         self.assertTrue(all(thread.daemon for thread in queue.worker_threads))
+
+    def test_close_deadline_includes_submission_lock_contention(self):
+        driver = FakeDriver(capabilities=capabilities())
+        queue = self.make_queue(
+            {"reader-1": driver}, poll_interval=5.0, shutdown_timeout=0.05
+        )
+        entered = threading.Event()
+        release = threading.Event()
+        original_submit = queue._service.submit_operation
+
+        def blocked_submit(value):
+            entered.set()
+            release.wait(1)
+            return original_submit(value)
+
+        queue._service.submit_operation = blocked_submit
+        submitter = threading.Thread(
+            target=lambda: self._capture_queue_submit(queue, request("blocked"))
+        )
+        submitter.start()
+        self.assertTrue(entered.wait(1))
+
+        started = time.monotonic()
+        queue.close()
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.15)
+        release.set()
+        submitter.join(1)
+
+    @staticmethod
+    def _capture_queue_submit(queue, value):
+        try:
+            queue.submit_operation(value)
+        except BaseException:
+            pass
 
     def test_close_cannot_overtake_an_accepted_submission(self):
         driver = FakeDriver(capabilities=capabilities())

@@ -115,28 +115,30 @@ class _DeviceWorker:
             raise QueueError("diagnostic_failed")
         return item.result
 
-    def _recover_one_tick(self) -> None:
-        request_ids = self.store.uncertain_request_ids(
-            self.device_id, batch_limit=self.recovery_batch
-        )
+    def _recover_one_tick(self) -> bool:
+        try:
+            request_ids = self.store.uncertain_request_ids(
+                self.device_id, batch_limit=self.recovery_batch
+            )
+        except StoreError:
+            return False
         for request_id in request_ids:
             if self.stop_event.is_set():
-                return
+                return False
             try:
                 self.store.acquire_lease(
                     self.device_id, self.owner_id, self.service.lease_seconds
                 )
-            except StoreError as error:
-                if error.code == "lease_conflict":
-                    return
-                return
+            except StoreError:
+                return False
             try:
                 self.service.recover_uncertain(request_id)
             except StoreError:
-                return
+                return False
             except BaseException:
-                return
+                return False
             self._release_idle_lease()
+        return True
 
     def _process_operations(self) -> None:
         for _ in range(self.poll_limit):
@@ -206,8 +208,9 @@ class _DeviceWorker:
                 self.wake_event.clear()
                 if self.stop_event.is_set():
                     break
-                self._recover_one_tick()
-                self._process_operations()
+                recovery_safe = self._recover_one_tick()
+                if recovery_safe:
+                    self._process_operations()
                 self._process_diagnostics()
         finally:
             self._cancel_diagnostics()
@@ -354,15 +357,26 @@ class DeviceQueue:
         )
 
     def close(self) -> None:
-        with self._lock:
-            if self._closed:
+        deadline = time.monotonic() + self._shutdown_timeout
+        remaining = max(0.0, deadline - time.monotonic())
+        acquired = self._lock.acquire(timeout=remaining)
+        try:
+            if acquired:
+                if self._closed:
+                    return
+                self._closed = True
+            elif self._closed:
                 return
-            self._closed = True
+            else:
+                self._closed = True
             workers = tuple(self._workers.values())
-        self._service.close()
+        finally:
+            if acquired:
+                self._lock.release()
+        self._cancellation_event.set()
         for worker in workers:
             worker.stop()
-        deadline = time.monotonic() + self._shutdown_timeout
+        self._service.close(timeout=max(0.0, deadline - time.monotonic()))
         for worker in workers:
             remaining = deadline - time.monotonic()
             if remaining <= 0:

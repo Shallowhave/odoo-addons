@@ -339,6 +339,45 @@ class RfidService:
             raise _error(AdapterErrorCode.CAPACITY_EXCEEDED)
         return bytes(value)
 
+    def _write(
+        self,
+        device_id: str,
+        driver: Driver,
+        target: TagTarget,
+        payload: bytes,
+    ) -> None:
+        result = self._call(
+            device_id,
+            driver.write_memory,
+            target,
+            WriteMemoryBank.USER,
+            _WORD_OFFSET,
+            payload,
+        )
+        if (
+            not isinstance(result, dict)
+            or set(result) != {"written"}
+            or type(result["written"]) is not bool
+            or not result["written"]
+        ):
+            raise _error(AdapterErrorCode.DEVICE_ERROR)
+
+    def _reconfirm_persisted_target(
+        self,
+        work: dict,
+        driver: Driver,
+        intended_hash: str,
+    ) -> TagTarget:
+        confirmed = self._inventory(
+            work["device_id"],
+            driver,
+            _RECONFIRM_INVENTORY_MS,
+            self._capability(work["device_id"]).tid_read,
+        )
+        if identity_hash(confirmed) != intended_hash:
+            raise _error(AdapterErrorCode.TARGET_CHANGED)
+        return confirmed
+
     def _defer_boundary(
         self, work: dict, expected_state: str, error: AdapterError
     ) -> None:
@@ -405,10 +444,7 @@ class RfidService:
         ambiguous = False
         boundary_ambiguous = False
         try:
-            self._call(
-                device_id, driver.write_memory,
-                target, WriteMemoryBank.USER, _WORD_OFFSET, payload,
-            )
+            self._write(device_id, driver, target, payload)
         except AdapterError as error:
             if error.code in _UNPROVABLE_WRITE_CODES:
                 ambiguous = True
@@ -424,7 +460,15 @@ class RfidService:
                 work, "verifying", _error(AdapterErrorCode.WRITE_UNCERTAIN),
                 uncertain=True,
             )
+        internal = None
         try:
+            if ambiguous:
+                internal = self._store.get_work_item(
+                    work["request_id"], self._owner_id
+                )
+                target = self._reconfirm_persisted_target(
+                    work, driver, internal["target_identity_hash"]
+                )
             current = self._read(device_id, driver, target)
         except AdapterError as error:
             return self._fail(
@@ -434,20 +478,14 @@ class RfidService:
         if current == payload:
             return self._succeed(work, target)
         if ambiguous and current == before:
-            internal = self._store.get_work_item(work["request_id"], self._owner_id)
             if (
                 internal["rewrite_count"] == 0
                 and hashlib.sha256(current).hexdigest() == internal["pre_write_hash"]
             ):
                 try:
-                    confirmed = self._inventory(
-                        device_id,
-                        driver,
-                        _RECONFIRM_INVENTORY_MS,
-                        self._capability(device_id).tid_read,
+                    target = self._reconfirm_persisted_target(
+                        work, driver, internal["target_identity_hash"]
                     )
-                    if identity_hash(confirmed) != internal["target_identity_hash"]:
-                        raise _error(AdapterErrorCode.TARGET_CHANGED)
                 except AdapterError as error:
                     return self._fail(
                         work, "verifying", error,
@@ -458,10 +496,7 @@ class RfidService:
                     work["request_id"], self._owner_id,
                 )
                 try:
-                    self._call(
-                        device_id, driver.write_memory,
-                        target, WriteMemoryBank.USER, _WORD_OFFSET, payload,
-                    )
+                    self._write(device_id, driver, target, payload)
                 except AdapterError as error:
                     if error.code not in _UNPROVABLE_WRITE_CODES:
                         return self._fail(work, "writing", error)
@@ -541,11 +576,28 @@ class RfidService:
             work, "verifying", _error(AdapterErrorCode.VERIFICATION_FAILED)
         )
 
-    def close(self) -> None:
+    def close(self, timeout: float | None = None) -> None:
         """Stop active lease heartbeats; the device queue owns driver shutdown."""
-        with self._lock:
+        if (
+            timeout is not None
+            and (
+                isinstance(timeout, bool)
+                or not isinstance(timeout, (int, float))
+                or timeout < 0
+            )
+        ):
+            raise ValueError("timeout is invalid")
+        self._cancellation_event.set()
+        if timeout is None:
+            acquired = self._lock.acquire()
+        else:
+            acquired = self._lock.acquire(timeout=float(timeout))
+        if not acquired:
+            return
+        try:
             self._closed = True
-            self._cancellation_event.set()
             heartbeat_stops = tuple(self._heartbeat_stops)
+        finally:
+            self._lock.release()
         for stopped in heartbeat_stops:
             stopped.set()
