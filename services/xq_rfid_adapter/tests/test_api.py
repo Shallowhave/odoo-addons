@@ -1,3 +1,4 @@
+import binascii
 import contextlib
 import hashlib
 import hmac
@@ -27,6 +28,16 @@ from xq_rfid_adapter.api import (
     verify_signature,
 )
 from xq_rfid_adapter.config import ConfigError, load_config, load_secret
+from xq_rfid_adapter.domain import (
+    AdapterError,
+    AdapterErrorCode,
+    DeviceCapabilities,
+    TagObservation,
+    TagTarget,
+)
+from xq_rfid_adapter.drivers.fake import FakeDriver
+from xq_rfid_adapter.queue import DeviceQueue
+from xq_rfid_adapter.store import OperationStore
 
 
 VECTOR_ONE = {
@@ -49,6 +60,11 @@ VECTOR_TWO = {
     "canonical": b"GET\n/v1/devices/reader%2D1?x=%2f&x=%2F\n1700000300\nFFEEDDCCBBAA99887766554433221100\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "signature": "d6327537a3ee3442a732a1cde5700ed65a13af1b1def9fb2b80f4122f51aae07",
 }
+
+
+def valid_payload_hex(token=b"T" * 16):
+    prefix = b"XQ\x01\x00" + token
+    return (prefix + (binascii.crc32(prefix) & 0xFFFFFFFF).to_bytes(4, "big")).hex().upper()
 
 
 class TestCanonicalization(unittest.TestCase):
@@ -407,6 +423,7 @@ class FakeService:
             "identity_hash": "sha256:" + "a" * 64,
             "verification_ok": True,
             "retryable": False,
+            "error": None,
         }
 
     def test_connection(self, device_id):
@@ -420,6 +437,160 @@ class FakeService:
 
     def get_operation(self, request_id):
         return self._return("get_operation", request_id)
+
+    def close(self):
+        self.calls.append(("close",))
+
+
+class TestRealQueueApiIntegration(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.store = OperationStore(self.root / "operations.sqlite3")
+        self.target = TagTarget("AABBCCDD", "00112233")
+        self.capabilities = DeviceCapabilities(True, False, True, False, True, True)
+        self.driver = FakeDriver(
+            capabilities=self.capabilities,
+            inventory_snapshots=[
+                [TagObservation(self.target)],
+                [TagObservation(self.target)],
+            ],
+            user_memory={self.target: b"\x00" * 24},
+        )
+        self.queue = DeviceQueue(
+            self.store,
+            {"reader-1": self.driver},
+            capabilities={"reader-1": self.capabilities},
+            owner_id="api-integration",
+            poll_interval=60,
+            diagnostic_timeout=1,
+            shutdown_timeout=1,
+        )
+        self.secret = b"i" * 32
+        self.server = create_server(
+            ("127.0.0.1", 0),
+            self.queue,
+            self.secret,
+            self.root / "replay.sqlite3",
+            frozenset({"reader-1"}),
+            clock=lambda: 1700000000,
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(2)
+        self.queue.close()
+        self.store.close()
+        self.temp.cleanup()
+
+    def request(self, method, target, body=b""):
+        timestamp = "1700000000"
+        nonce = hashlib.sha256(
+            (method + target + str(time.monotonic_ns())).encode()
+        ).hexdigest()
+        headers = {
+            "X-RFID-Timestamp": timestamp,
+            "X-RFID-Nonce": nonce,
+            "X-RFID-Signature": sign_request(
+                self.secret, method, target, timestamp, nonce, body
+            ),
+        }
+        if method == "POST":
+            headers.update({
+                "Content-Type": "application/json",
+                "Content-Length": str(len(body)),
+            })
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.server.server_port, timeout=3
+        )
+        connection.request(method, target, body=body, headers=headers)
+        response = connection.getresponse()
+        result = response.status, json.loads(response.read())
+        connection.close()
+        return result
+
+    @staticmethod
+    def operation(request_id, payload_hex=None):
+        return {
+            "request_id": request_id,
+            "operation_type": "write_and_verify",
+            "device_id": "reader-1",
+            "payload_hex": payload_hex or valid_payload_hex(),
+            "payload_version": 1,
+        }
+
+    def test_semantic_payload_rejection_creates_no_row(self):
+        invalid = bytearray.fromhex(valid_payload_hex())
+        invalid[0:2] = b"NO"
+        body = json.dumps(
+            self.operation("bad-payload", invalid.hex()), separators=(",", ":")
+        ).encode()
+        status, envelope = self.request("POST", "/v1/operations", body)
+        self.assertEqual(status, 400)
+        self.assertEqual(envelope["error"]["code"], "protocol_error")
+        self.assertEqual(self.store.count(), 0)
+
+    def test_duplicate_submission_is_idempotent_and_writes_once(self):
+        request = self.operation("duplicate")
+        body = json.dumps(request, separators=(",", ":")).encode()
+        first = self.request("POST", "/v1/operations", body)
+        second = self.request("POST", "/v1/operations", body)
+        self.assertEqual(first[0], 200)
+        self.assertEqual(second[0], 200)
+        self.assertEqual(first[1]["result"]["request_id"], "duplicate")
+        self.assertEqual(second[1]["result"]["request_id"], "duplicate")
+        self.assertEqual(self.store.count(), 1)
+        self.queue.wake("reader-1")
+        deadline = time.monotonic() + 2
+        while self.store.get("duplicate")["state"] != "succeeded" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(self.driver.call_counts.get("write_memory"), 1)
+        status, envelope = self.request("GET", "/v1/operations/duplicate")
+        self.assertEqual(status, 200)
+        result = envelope["result"]
+        self.assertEqual(set(result), {
+            "state", "request_id", "operation_type", "payload_version",
+            "masked_epc", "masked_tid", "identity_hash", "verification_ok",
+            "retryable", "error",
+        })
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["identity_hash"][:7], "sha256:")
+        self.assertTrue(result["verification_ok"])
+        self.assertIsNone(result["error"])
+        self.assertNotIn("payload_hex", result)
+        self.assertNotIn("token", result)
+        self.assertNotIn("owner", result)
+        self.assertNotIn("lease_until", result)
+
+    def test_operation_failure_is_successful_safe_get(self):
+        self.driver.inventory_snapshots.clear()
+        self.driver.inventory_snapshots.append(tuple())
+        body = json.dumps(
+            self.operation("failure"), separators=(",", ":")
+        ).encode()
+        status, _ = self.request("POST", "/v1/operations", body)
+        self.assertEqual(status, 200)
+        self.queue.wake("reader-1")
+        deadline = time.monotonic() + 2
+        while self.store.get("failure")["state"] != "failed_manual" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        status, envelope = self.request("GET", "/v1/operations/failure")
+        self.assertEqual(status, 200)
+        self.assertTrue(envelope["ok"])
+        result = envelope["result"]
+        self.assertEqual(result["state"], "failed_manual")
+        self.assertEqual(result["error"], {
+            "code": "no_tag",
+            "message": "no tag was found",
+            "device_code": None,
+            "retryable": False,
+        })
+        self.assertFalse(result["retryable"])
+        self.assertIsNone(result["identity_hash"])
+        self.assertFalse(result["verification_ok"])
 
 
 class TestHttpApi(unittest.TestCase):
@@ -550,7 +721,7 @@ class TestHttpApi(unittest.TestCase):
             ("GET", "/v1/devices/reader-1", b"", "get_device"),
             ("POST", "/v1/operations", json.dumps({
                 "request_id": "request-1", "operation_type": "write_and_verify",
-                "device_id": "reader-1", "payload_hex": "AA" * 24,
+                "device_id": "reader-1", "payload_hex": valid_payload_hex(),
                 "payload_version": 1,
             }, separators=(",", ":")).encode(), "submit_operation"),
             ("GET", "/v1/operations/request-1", b"", "get_operation"),
@@ -567,7 +738,7 @@ class TestHttpApi(unittest.TestCase):
             "get_operation": {
                 "state", "request_id", "operation_type", "payload_version",
                 "masked_epc", "masked_tid", "identity_hash", "verification_ok",
-                "retryable",
+                "retryable", "error",
             },
         }
         for method, target, body, expected in cases:
@@ -773,6 +944,27 @@ class TestHttpApi(unittest.TestCase):
             with self.subTest(state=state):
                 result = self.service._return("get_operation", "request-1")
                 result["state"] = state
+                if state != "succeeded":
+                    result.update({
+                        "epc_identity": None,
+                        "tid_identity": None,
+                        "identity_hash": None,
+                        "verification_ok": False,
+                        "retryable": state == "failed_retryable",
+                        "error": None,
+                    })
+                if state in {"failed_retryable", "failed_manual"}:
+                    code = "connection_error" if state == "failed_retryable" else "no_tag"
+                    result["error"] = {
+                        "code": code,
+                        "message": (
+                            "device connection failed"
+                            if state == "failed_retryable"
+                            else "no tag was found"
+                        ),
+                        "device_code": None,
+                        "retryable": state == "failed_retryable",
+                    }
                 self.service.get_operation = lambda request_id, value=result: value
                 status, _, envelope = self.request(
                     "GET", target, headers=self.auth("GET", target)
@@ -782,6 +974,53 @@ class TestHttpApi(unittest.TestCase):
         invalid = self.service._return("get_operation", "request-1")
         invalid["state"] = "failed"
         self.service.get_operation = lambda request_id: invalid
+        status, _, envelope = self.request(
+            "GET", target, headers=self.auth("GET", target)
+        )
+        self.assertEqual(status, 500)
+        self.assertEqual(envelope["error"]["code"], "device_error")
+
+    def test_write_uncertain_retryable_state_is_a_200_business_failure(self):
+        target = "/v1/operations/request-1"
+        result = self.service._return("get_operation", "request-1")
+        result.update({
+            "state": "failed_retryable",
+            "epc_identity": None,
+            "tid_identity": None,
+            "identity_hash": None,
+            "verification_ok": False,
+            "retryable": False,
+            "error": {
+                "code": "write_uncertain",
+                "message": "write outcome is uncertain",
+                "device_code": None,
+                "retryable": False,
+            },
+        })
+        self.service.get_operation = lambda request_id: result
+
+        status, _, envelope = self.request(
+            "GET", target, headers=self.auth("GET", target)
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(envelope["ok"])
+        self.assertEqual(envelope["result"]["state"], "failed_retryable")
+        self.assertFalse(envelope["result"]["retryable"])
+        self.assertEqual(envelope["result"]["error"]["code"], "write_uncertain")
+        self.assertFalse(envelope["result"]["error"]["retryable"])
+
+        result["retryable"] = True
+        result["error"]["retryable"] = True
+        status, _, envelope = self.request(
+            "GET", target, headers=self.auth("GET", target)
+        )
+        self.assertEqual(status, 500)
+        self.assertEqual(envelope["error"]["code"], "device_error")
+
+        result["state"] = "failed_manual"
+        result["retryable"] = False
+        result["error"]["retryable"] = False
         status, _, envelope = self.request(
             "GET", target, headers=self.auth("GET", target)
         )
@@ -817,7 +1056,7 @@ class TestHttpApi(unittest.TestCase):
             "request_id": "request-1",
             "operation_type": "write_and_verify",
             "device_id": "reader-1",
-            "payload_hex": "AA" * 24,
+            "payload_hex": valid_payload_hex(),
             "payload_version": 1,
         }, separators=(",", ":")).encode()
         unsafe_submissions = (
@@ -1277,6 +1516,64 @@ with tempfile.TemporaryDirectory() as directory:
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertLess(time.monotonic() - started, 5)
+
+    def test_bootstrap_constructs_real_queue_and_server_then_closes_once(self):
+        from xq_rfid_adapter import __main__ as cli
+
+        config = mock.Mock()
+        config.bind.host = "127.0.0.1"
+        config.bind.port = 0
+        config.sqlite_path = Path("adapter.sqlite3")
+        config.production = False
+        config.devices = {"reader-1": mock.Mock(driver="fake")}
+        config.tls = None
+        events = []
+        store = mock.Mock()
+        driver = mock.Mock()
+        driver.capabilities = DeviceCapabilities(True, False, True, False, True, True)
+        service = mock.Mock()
+        server = mock.Mock()
+        server.serve_forever.side_effect = KeyboardInterrupt
+        service.close.side_effect = lambda: events.append("service")
+        server.server_close.side_effect = lambda: events.append("server")
+        with (
+            mock.patch.object(cli, "load_config", return_value=config),
+            mock.patch.object(cli, "load_secret", return_value=b"q" * 32),
+            mock.patch.object(cli, "OperationStore", return_value=store) as store_type,
+            mock.patch.object(cli, "FakeDriver", return_value=driver) as driver_type,
+            mock.patch.object(cli, "DeviceQueue", return_value=service) as queue_type,
+            mock.patch.object(cli, "create_server", return_value=server),
+        ):
+            self.assertEqual(cli.main(["serve", "--config", "ignored.json"]), 0)
+        store_type.assert_called_once_with(config.sqlite_path)
+        driver_type.assert_called_once()
+        capabilities = queue_type.call_args.kwargs["capabilities"]["reader-1"]
+        self.assertIsInstance(capabilities, DeviceCapabilities)
+        self.assertEqual(events, ["server", "service"])
+        service.close.assert_called_once_with()
+
+    def test_bootstrap_rejects_unknown_and_unavailable_production_drivers_safely(self):
+        from xq_rfid_adapter import __main__ as cli
+
+        for production, driver_name in ((False, "unknown"), (True, "production-reader")):
+            with self.subTest(production=production, driver=driver_name):
+                config = mock.Mock()
+                config.production = production
+                config.devices = {"reader-1": mock.Mock(driver=driver_name)}
+                with (
+                    mock.patch.object(cli, "load_config", return_value=config),
+                    mock.patch.object(cli, "load_secret", return_value=b"q" * 32),
+                    mock.patch.object(cli, "OperationStore") as store_type,
+                    mock.patch.object(cli, "create_server") as create,
+                    self.assertRaises(SystemExit) as raised,
+                    contextlib.redirect_stderr(io.StringIO()) as stderr,
+                ):
+                    cli.main(["serve", "--config", "ignored.json"])
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("configuration error", stderr.getvalue())
+                self.assertNotIn(driver_name, stderr.getvalue())
+                store_type.assert_not_called()
+                create.assert_not_called()
 
     def test_serve_sqlite_startup_error_is_safe(self):
         from xq_rfid_adapter import __main__ as cli

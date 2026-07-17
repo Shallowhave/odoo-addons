@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import binascii
 import concurrent.futures
 import hashlib
 import hmac
@@ -61,7 +62,9 @@ _SUBMITTED_OPERATION_RESULT_KEYS = frozenset({
 _OPERATION_RESULT_KEYS = frozenset({
     "state", "request_id", "operation_type", "payload_version",
     "epc_identity", "tid_identity", "identity_hash", "verification_ok", "retryable",
+    "error",
 })
+_ERROR_RESULT_KEYS = frozenset({"code", "message", "device_code", "retryable"})
 _IDENTITY_DESCRIPTOR_KEYS = frozenset({"nibble_length", "suffix"})
 _IDENTITY_SUFFIX_RE = re.compile(r"\A[0-9A-Fa-f]{2,4}\Z")
 _IDENTITY_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
@@ -89,6 +92,7 @@ class AdapterService(Protocol):
     def get_device(self, device_id: str) -> dict: ...
     def submit_operation(self, request: dict) -> dict: ...
     def get_operation(self, request_id: str) -> dict: ...
+    def close(self) -> None: ...
 
 
 def canonical_request(
@@ -284,8 +288,18 @@ def _validate_operation(value: object, devices: frozenset[str]) -> dict:
         decoded_payload = bytes.fromhex(payload_hex)
     except ValueError as error:
         raise AdapterError(AdapterErrorCode.PROTOCOL_ERROR, _SAFE_MESSAGES[AdapterErrorCode.PROTOCOL_ERROR]) from error
-    if len(decoded_payload) != 24:
-        raise AdapterError(AdapterErrorCode.PROTOCOL_ERROR, _SAFE_MESSAGES[AdapterErrorCode.PROTOCOL_ERROR])
+    if (
+        len(decoded_payload) != 24
+        or decoded_payload[:2] != b"XQ"
+        or decoded_payload[2] != 1
+        or payload_version != decoded_payload[2]
+        or int.from_bytes(decoded_payload[20:24], "big")
+        != (binascii.crc32(decoded_payload[:20]) & 0xFFFFFFFF)
+    ):
+        raise AdapterError(
+            AdapterErrorCode.PROTOCOL_ERROR,
+            _SAFE_MESSAGES[AdapterErrorCode.PROTOCOL_ERROR],
+        )
     if device_id not in devices:
         raise AdapterError(
             AdapterErrorCode.CONFIGURATION_ERROR,
@@ -418,6 +432,37 @@ def _mask_identity(value: object) -> str | None:
     return "*" * (nibble_length - visible_nibbles) + suffix.upper()
 
 
+def _serialize_operation_error(value: object) -> dict | None:
+    if value is None:
+        return None
+    error = _require_exact_dict(value, _ERROR_RESULT_KEYS)
+    try:
+        code = AdapterErrorCode(error["code"])
+    except (TypeError, ValueError):
+        raise _invalid_service_result() from None
+    message = _SAFE_MESSAGES.get(code)
+    if (
+        message is None
+        or error["message"] != message
+        or (
+            error["device_code"] is not None
+            and (
+                not isinstance(error["device_code"], str)
+                or re.fullmatch(r"[A-Za-z0-9._:-]{1,64}", error["device_code"])
+                is None
+            )
+        )
+        or type(error["retryable"]) is not bool
+    ):
+        raise _invalid_service_result()
+    return {
+        "code": code.value,
+        "message": message,
+        "device_code": error["device_code"],
+        "retryable": error["retryable"],
+    }
+
+
 def _serialize_operation_result(
     value: object, expected_request_id: str | None = None
 ) -> dict:
@@ -434,10 +479,50 @@ def _serialize_operation_result(
         raise _invalid_service_result()
     if type(result["verification_ok"]) is not bool or type(result["retryable"]) is not bool:
         raise _invalid_service_result()
+    error = _serialize_operation_error(result["error"])
+    state = safe["state"]
+    if state == "succeeded":
+        if (
+            identity_hash is None
+            or not result["verification_ok"]
+            or result["retryable"]
+            or error is not None
+        ):
+            raise _invalid_service_result()
+    elif state in {"failed_retryable", "failed_manual"}:
+        if (
+            identity_hash is not None
+            or result["verification_ok"]
+            or error is None
+            or result["retryable"] != error["retryable"]
+            or (
+                state == "failed_retryable"
+                and (
+                    result["retryable"]
+                    == (error["code"] == AdapterErrorCode.WRITE_UNCERTAIN.value)
+                )
+            )
+            or (
+                state == "failed_manual"
+                and (
+                    result["retryable"]
+                    or error["code"] == AdapterErrorCode.WRITE_UNCERTAIN.value
+                )
+            )
+        ):
+            raise _invalid_service_result()
+    elif (
+        identity_hash is not None
+        or result["verification_ok"]
+        or result["retryable"]
+        or error is not None
+    ):
+        raise _invalid_service_result()
     safe.update({
         "identity_hash": identity_hash,
         "verification_ok": result["verification_ok"],
         "retryable": result["retryable"],
+        "error": error,
     })
     return safe
 

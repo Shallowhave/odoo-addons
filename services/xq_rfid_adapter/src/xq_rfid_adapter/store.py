@@ -19,6 +19,7 @@ SCHEMA_VERSION = 1
 _DEFAULT_BUSY_TIMEOUT_MS = 1000
 _MAX_BUSY_TIMEOUT_MS = 60_000
 _MAX_LEASE_SECONDS = 86_400
+_MAX_RETRY_DELAY_SECONDS = 86_400
 _MAX_TIMESTAMP = 253_402_300_799
 _DEFAULT_RECOVERY_BATCH = 100
 _MAX_RECOVERY_BATCH = 1000
@@ -51,8 +52,10 @@ _ALLOWED_TRANSITIONS = {
     "inventorying": frozenset(
         {"writing", "failed_retryable", "failed_manual", "cancelled"}
     ),
-    "writing": frozenset({"verifying", "succeeded", "failed_manual"}),
-    "verifying": frozenset({"succeeded", "failed_manual"}),
+    "writing": frozenset(
+        {"verifying", "succeeded", "failed_retryable", "failed_manual"}
+    ),
+    "verifying": frozenset({"succeeded", "failed_retryable", "failed_manual"}),
 }
 _RESULT_KEYS = frozenset({"identity_hash", "verification_ok"})
 _ERROR_KEYS = frozenset({"code", "message", "device_code", "retryable"})
@@ -115,6 +118,20 @@ _SCHEMA_STATEMENTS = (
         )),
         attempts INTEGER NOT NULL DEFAULT 0
             CHECK(typeof(attempts) = 'integer' AND attempts >= 0),
+        target_identity_hash TEXT CHECK(target_identity_hash IS NULL OR (
+            length(target_identity_hash) = 64
+            AND target_identity_hash NOT GLOB '*[^0-9a-f]*'
+        )),
+        pre_write_hash TEXT CHECK(pre_write_hash IS NULL OR (
+            length(pre_write_hash) = 64 AND pre_write_hash NOT GLOB '*[^0-9a-f]*'
+        )),
+        rewrite_count INTEGER NOT NULL DEFAULT 0 CHECK(
+            typeof(rewrite_count) = 'integer' AND rewrite_count IN (0, 1)
+        ),
+        next_attempt_at INTEGER CHECK(next_attempt_at IS NULL OR (
+            typeof(next_attempt_at) = 'integer'
+            AND next_attempt_at BETWEEN 0 AND 253402300799
+        )),
         result_json TEXT,
         error_json TEXT,
         CHECK(
@@ -149,7 +166,7 @@ _SCHEMA_STATEMENTS = (
         value TEXT NOT NULL
     )""",
     """CREATE INDEX operations_claim_idx
-        ON operations(device_id, state, created_at, id)""",
+        ON operations(device_id, state, next_attempt_at, created_at, id)""",
     """CREATE INDEX operations_recovery_idx
         ON operations(lease_until, created_at, id)
         WHERE state IN ('claimed','inventorying','writing','verifying')""",
@@ -183,6 +200,8 @@ _SAFE_STORE_MESSAGES = {
     "invalid_error": "invalid operation error",
     "invalid_argument": "invalid store argument",
     "lease_conflict": "device lease is unavailable",
+    "rewrite_exhausted": "controlled rewrite is not allowed",
+    "not_uncertain": "operation is not resumable",
 }
 
 
@@ -618,9 +637,10 @@ class OperationStore:
                     """
                     SELECT id FROM operations
                     WHERE device_id = ? AND state = 'queued'
-                    ORDER BY created_at, id LIMIT 1
+                      AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                    ORDER BY next_attempt_at, created_at, id LIMIT 1
                     """,
-                    (device_id,),
+                    (device_id, timestamp),
                 ).fetchone()
                 if candidate is None:
                     return None
@@ -633,8 +653,10 @@ class OperationStore:
                     """
                     UPDATE operations
                     SET state = 'claimed', claim_owner = ?, lease_until = ?,
-                        claimed_at = ?, updated_at = ?, attempts = attempts + 1
+                        claimed_at = ?, updated_at = ?, attempts = attempts + 1,
+                        next_attempt_at = NULL
                     WHERE id = ? AND state = 'queued'
+                      AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
                     """,
                     (
                         owner_id,
@@ -642,6 +664,7 @@ class OperationStore:
                         timestamp,
                         timestamp,
                         candidate["id"],
+                        timestamp,
                     ),
                 )
                 if cursor.rowcount != 1:
@@ -650,6 +673,292 @@ class OperationStore:
                     "SELECT * FROM operations WHERE id = ?", (candidate["id"],)
                 ).fetchone()
                 return _public_operation(row)
+        except StoreError:
+            raise
+        except sqlite3.Error as error:
+            raise _translate_sqlite_error(error) from None
+
+    def claim_next_work(
+        self,
+        device_id: object,
+        owner_id: object,
+        lease_seconds: object,
+        now: int | float | None = None,
+    ) -> dict | None:
+        operation = self.claim_next(device_id, owner_id, lease_seconds, now=now)
+        if operation is None:
+            return None
+        return self.get_work_item(operation["request_id"], owner_id, now=now)
+
+    def defer_boundary(
+        self,
+        request_id: object,
+        owner_id: object,
+        expected_state: object,
+        retry_delay: object,
+        now: int | float | None = None,
+    ) -> dict:
+        request_id = _identifier(request_id, "invalid_argument")
+        owner_id = _identifier(owner_id, "invalid_argument")
+        if expected_state not in {"claimed", "inventorying"}:
+            raise StoreError("stale_state")
+        delay = _retry_delay(retry_delay)
+        try:
+            with self._transaction() as connection:
+                timestamp = _timestamp(now)
+                if timestamp > _MAX_TIMESTAMP - delay:
+                    raise StoreError("invalid_argument")
+                next_attempt_at = timestamp + delay
+                self._validate_active_device_invariant(connection)
+                row = connection.execute(
+                    "SELECT * FROM operations WHERE request_id = ?", (request_id,)
+                ).fetchone()
+                if row is None:
+                    raise StoreError("not_found")
+                _public_operation(row)
+                if row["state"] != expected_state:
+                    raise StoreError("stale_state")
+                _validate_work_authority(connection, row, owner_id, timestamp)
+                if timestamp < row["updated_at"]:
+                    raise StoreError("invalid_argument")
+                cursor = connection.execute(
+                    """
+                    UPDATE operations
+                    SET state='queued', claim_owner=NULL, lease_until=NULL,
+                        claimed_at=NULL, completed_at=NULL, updated_at=?,
+                        result_json=NULL, error_json=NULL,
+                        target_identity_hash=NULL, pre_write_hash=NULL,
+                        rewrite_count=0, next_attempt_at=?
+                    WHERE request_id=? AND state=? AND claim_owner=?
+                      AND lease_until>=?
+                    """,
+                    (
+                        timestamp,
+                        next_attempt_at,
+                        request_id,
+                        expected_state,
+                        owner_id,
+                        timestamp,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise StoreError("stale_state")
+                deleted = connection.execute(
+                    "DELETE FROM device_leases "
+                    "WHERE device_id=? AND owner_id=? AND lease_until=?",
+                    (row["device_id"], owner_id, row["lease_until"]),
+                )
+                if deleted.rowcount != 1:
+                    raise StoreError("store_unavailable")
+                deferred = connection.execute(
+                    "SELECT * FROM operations WHERE request_id=?", (request_id,)
+                ).fetchone()
+                return _public_operation(deferred)
+        except StoreError:
+            raise
+        except sqlite3.Error as error:
+            raise _translate_sqlite_error(error) from None
+
+    def get_work_item(
+        self,
+        request_id: object,
+        owner_id: object,
+        now: int | float | None = None,
+    ) -> dict:
+        request_id = _identifier(request_id, "invalid_argument")
+        owner_id = _identifier(owner_id, "invalid_argument")
+        timestamp = _timestamp(now)
+        try:
+            with self._connection() as connection:
+                row = connection.execute(
+                    "SELECT * FROM operations WHERE request_id = ?", (request_id,)
+                ).fetchone()
+                if row is None:
+                    raise StoreError("not_found")
+                _validate_work_authority(connection, row, owner_id, timestamp)
+                return _internal_work_item(row)
+        except StoreError:
+            raise
+        except sqlite3.Error as error:
+            raise _translate_sqlite_error(error) from None
+
+    def prepare_write(
+        self,
+        request_id: object,
+        owner_id: object,
+        target_identity_hash: object,
+        pre_write_hash: object,
+        now: int | float | None = None,
+    ) -> dict:
+        request_id = _identifier(request_id, "invalid_argument")
+        owner_id = _identifier(owner_id, "invalid_argument")
+        target_identity_hash = _hash(target_identity_hash)
+        pre_write_hash = _hash(pre_write_hash)
+        timestamp = _timestamp(now)
+        try:
+            with self._transaction() as connection:
+                row = connection.execute(
+                    "SELECT * FROM operations WHERE request_id = ?", (request_id,)
+                ).fetchone()
+                if row is None:
+                    raise StoreError("not_found")
+                if row["state"] != "inventorying":
+                    raise StoreError("stale_state")
+                _validate_work_authority(connection, row, owner_id, timestamp)
+                if timestamp < row["updated_at"]:
+                    raise StoreError("invalid_argument")
+                cursor = connection.execute(
+                    "UPDATE operations SET state='writing', updated_at=?, "
+                    "target_identity_hash=?, pre_write_hash=? "
+                    "WHERE request_id=? AND state='inventorying' AND claim_owner=?",
+                    (timestamp, target_identity_hash, pre_write_hash, request_id, owner_id),
+                )
+                if cursor.rowcount != 1:
+                    raise StoreError("stale_state")
+                return _public_operation(connection.execute(
+                    "SELECT * FROM operations WHERE request_id=?", (request_id,)
+                ).fetchone())
+        except StoreError:
+            raise
+        except sqlite3.Error as error:
+            raise _translate_sqlite_error(error) from None
+
+    def begin_controlled_rewrite(
+        self,
+        request_id: object,
+        owner_id: object,
+        now: int | float | None = None,
+    ) -> dict:
+        request_id = _identifier(request_id, "invalid_argument")
+        owner_id = _identifier(owner_id, "invalid_argument")
+        timestamp = _timestamp(now)
+        try:
+            with self._transaction() as connection:
+                row = connection.execute(
+                    "SELECT * FROM operations WHERE request_id=?", (request_id,)
+                ).fetchone()
+                if row is None:
+                    raise StoreError("not_found")
+                if row["state"] != "verifying":
+                    raise StoreError("stale_state")
+                _validate_work_authority(connection, row, owner_id, timestamp)
+                if timestamp < row["updated_at"]:
+                    raise StoreError("invalid_argument")
+                if row["rewrite_count"] != 0:
+                    raise StoreError("rewrite_exhausted")
+                if row["target_identity_hash"] is None or row["pre_write_hash"] is None:
+                    raise StoreError("store_unavailable")
+                cursor = connection.execute(
+                    "UPDATE operations SET state='writing', updated_at=?, rewrite_count=1 "
+                    "WHERE request_id=? AND state='verifying' AND claim_owner=? "
+                    "AND rewrite_count=0",
+                    (timestamp, request_id, owner_id),
+                )
+                if cursor.rowcount != 1:
+                    raise StoreError("rewrite_exhausted")
+                return _public_operation(connection.execute(
+                    "SELECT * FROM operations WHERE request_id=?", (request_id,)
+                ).fetchone())
+        except StoreError:
+            raise
+        except sqlite3.Error as error:
+            raise _translate_sqlite_error(error) from None
+
+    def resume_uncertain(
+        self,
+        request_id: object,
+        owner_id: object,
+        lease_seconds: object,
+        now: int | float | None = None,
+    ) -> dict:
+        request_id = _identifier(request_id, "invalid_argument")
+        owner_id = _identifier(owner_id, "invalid_argument")
+        try:
+            with self._transaction() as connection:
+                timestamp, lease_until = _lease_times(now, lease_seconds)
+                row = connection.execute(
+                    "SELECT * FROM operations WHERE request_id=?", (request_id,)
+                ).fetchone()
+                if row is None:
+                    raise StoreError("not_found")
+                if row["state"] != "failed_retryable":
+                    raise StoreError("not_uncertain")
+                try:
+                    _public_operation(row)
+                    error = _json_load(row["error_json"])
+                except (json.JSONDecodeError, StoreError):
+                    raise StoreError("store_unavailable") from None
+                if (
+                    error is None
+                    or error["code"] != AdapterErrorCode.WRITE_UNCERTAIN.value
+                    or row["target_identity_hash"] is None
+                    or row["pre_write_hash"] is None
+                ):
+                    raise StoreError("not_uncertain")
+                if timestamp < row["updated_at"]:
+                    raise StoreError("invalid_argument")
+                active = self._active_operation(connection, row["device_id"])
+                if active is not None:
+                    raise StoreError("lease_conflict")
+                current_lease = connection.execute(
+                    "SELECT owner_id, lease_until FROM device_leases WHERE device_id=?",
+                    (row["device_id"],),
+                ).fetchone()
+                if current_lease is not None and current_lease["owner_id"] != owner_id:
+                    if current_lease["lease_until"] >= timestamp:
+                        raise StoreError("lease_conflict")
+                    connection.execute(
+                        "DELETE FROM device_leases WHERE device_id=? AND owner_id=? "
+                        "AND lease_until < ?",
+                        (row["device_id"], current_lease["owner_id"], timestamp),
+                    )
+                effective = self._upsert_lease(
+                    connection, row["device_id"], owner_id, timestamp, lease_until
+                )
+                if effective is None:
+                    raise StoreError("lease_conflict")
+                cursor = connection.execute(
+                    "UPDATE operations SET state='verifying', claim_owner=?, lease_until=?, "
+                    "updated_at=?, completed_at=NULL, result_json=NULL, error_json=NULL, "
+                    "attempts=attempts+1 WHERE request_id=? AND state='failed_retryable'",
+                    (owner_id, effective, timestamp, request_id),
+                )
+                if cursor.rowcount != 1:
+                    raise StoreError("stale_state")
+                resumed = connection.execute(
+                    "SELECT * FROM operations WHERE request_id=?", (request_id,)
+                ).fetchone()
+                return _internal_work_item(resumed)
+        except StoreError:
+            raise
+        except sqlite3.Error as error:
+            raise _translate_sqlite_error(error) from None
+
+    def uncertain_request_ids(
+        self, device_id: object, *, batch_limit: int = _DEFAULT_RECOVERY_BATCH
+    ) -> list[str]:
+        """Return a bounded creation-order list of verify-only recovery candidates."""
+        device_id = _identifier(device_id, "invalid_argument")
+        if type(batch_limit) is not int or not 1 <= batch_limit <= _MAX_RECOVERY_BATCH:
+            raise StoreError("invalid_argument")
+        try:
+            with self._connection() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT request_id FROM operations
+                    WHERE device_id = ? AND state = 'failed_retryable'
+                      AND target_identity_hash IS NOT NULL
+                      AND pre_write_hash IS NOT NULL
+                      AND json_extract(error_json, '$.code') = ?
+                    ORDER BY created_at, id LIMIT ?
+                    """,
+                    (
+                        device_id,
+                        AdapterErrorCode.WRITE_UNCERTAIN.value,
+                        batch_limit,
+                    ),
+                ).fetchall()
+                return [str(row["request_id"]) for row in rows]
         except StoreError:
             raise
         except sqlite3.Error as error:
@@ -945,6 +1254,10 @@ class OperationStore:
                 ("claimed_at", "INTEGER", 0, None, 0),
                 ("completed_at", "INTEGER", 0, None, 0),
                 ("attempts", "INTEGER", 1, "0", 0),
+                ("target_identity_hash", "TEXT", 0, None, 0),
+                ("pre_write_hash", "TEXT", 0, None, 0),
+                ("rewrite_count", "INTEGER", 1, "0", 0),
+                ("next_attempt_at", "INTEGER", 0, None, 0),
                 ("result_json", "TEXT", 0, None, 0),
                 ("error_json", "TEXT", 0, None, 0),
             ],
@@ -963,7 +1276,11 @@ class OperationStore:
             if actual != expected:
                 raise StoreError("store_schema")
         expected_indexes = {
-            "operations_claim_idx": (False, False, ["device_id", "state", "created_at", "id"]),
+            "operations_claim_idx": (
+                False,
+                False,
+                ["device_id", "state", "next_attempt_at", "created_at", "id"],
+            ),
             "operations_recovery_idx": (
                 False,
                 True,
@@ -1101,6 +1418,19 @@ def _timestamp(value: int | float | None) -> int:
     return int(value)
 
 
+def _retry_delay(value: object) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+        or value > _MAX_RETRY_DELAY_SECONDS
+        or int(value) != value
+    ):
+        raise StoreError("invalid_argument")
+    return int(value)
+
+
 def _lease_times(now: int | float | None, lease_seconds: object) -> tuple[int, int]:
     timestamp = _timestamp(now)
     if (
@@ -1215,7 +1545,22 @@ def _public_operation(row: sqlite3.Row) -> dict:
             raise StoreError("store_unavailable")
         if type(row["attempts"]) is not int or row["attempts"] < 0:
             raise StoreError("store_unavailable")
-        for column in ("created_at", "updated_at", "claimed_at", "completed_at", "lease_until"):
+        if type(row["rewrite_count"]) is not int or row["rewrite_count"] not in {0, 1}:
+            raise StoreError("store_unavailable")
+        for column in ("target_identity_hash", "pre_write_hash"):
+            value = row[column]
+            if value is not None and (
+                not isinstance(value, str) or _HASH_RE.fullmatch(value) is None
+            ):
+                raise StoreError("store_unavailable")
+        if (row["target_identity_hash"] is None) != (row["pre_write_hash"] is None):
+            raise StoreError("store_unavailable")
+        if row["rewrite_count"] and row["target_identity_hash"] is None:
+            raise StoreError("store_unavailable")
+        for column in (
+            "created_at", "updated_at", "claimed_at", "completed_at", "lease_until",
+            "next_attempt_at",
+        ):
             value = row[column]
             if value is not None and (type(value) is not int or not 0 <= value <= _MAX_TIMESTAMP):
                 raise StoreError("store_unavailable")
@@ -1248,9 +1593,15 @@ def _public_operation(row: sqlite3.Row) -> dict:
             if row["claim_owner"] is not None or row["lease_until"] is not None:
                 raise StoreError("store_unavailable")
             if state == "queued":
-                if row["claimed_at"] is not None or row["attempts"] != 0:
+                if row["claimed_at"] is not None:
+                    raise StoreError("store_unavailable")
+                if row["attempts"] == 0 and row["next_attempt_at"] is not None:
+                    raise StoreError("store_unavailable")
+                if row["attempts"] > 0 and row["next_attempt_at"] is None:
                     raise StoreError("store_unavailable")
             elif row["claimed_at"] is None or row["attempts"] < 1:
+                raise StoreError("store_unavailable")
+            elif row["next_attempt_at"] is not None:
                 raise StoreError("store_unavailable")
         elif (
             row["claim_owner"] is None
@@ -1258,6 +1609,7 @@ def _public_operation(row: sqlite3.Row) -> dict:
             or row["lease_until"] is None
             or row["claimed_at"] is None
             or row["attempts"] < 1
+            or row["next_attempt_at"] is not None
         ):
             raise StoreError("store_unavailable")
     except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError, StoreError):
@@ -1279,6 +1631,49 @@ def _public_operation(row: sqlite3.Row) -> dict:
         "result": result,
         "error": error,
     }
+
+
+def _hash(value: object) -> str:
+    if not isinstance(value, str) or _HASH_RE.fullmatch(value) is None:
+        raise StoreError("invalid_argument")
+    return value
+
+
+def _validate_work_authority(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    owner_id: str,
+    now: int,
+) -> None:
+    if row["state"] not in {"claimed", "inventorying", "writing", "verifying"}:
+        raise StoreError("stale_state")
+    if row["claim_owner"] != owner_id or row["lease_until"] < now:
+        raise StoreError("lease_conflict")
+    lease = connection.execute(
+        "SELECT owner_id, lease_until FROM device_leases WHERE device_id=?",
+        (row["device_id"],),
+    ).fetchone()
+    if lease is None:
+        raise StoreError("store_unavailable")
+    if lease["owner_id"] != owner_id or lease["lease_until"] != row["lease_until"]:
+        raise StoreError("store_unavailable")
+
+
+def _internal_work_item(row: sqlite3.Row) -> dict:
+    public = _public_operation(row)
+    try:
+        payload = row["payload"]
+        if not isinstance(payload, bytes) or len(payload) != 24:
+            raise StoreError("store_unavailable")
+        return {
+            **public,
+            "payload": bytes(payload),
+            "target_identity_hash": row["target_identity_hash"],
+            "pre_write_hash": row["pre_write_hash"],
+            "rewrite_count": row["rewrite_count"],
+        }
+    except (KeyError, TypeError, ValueError, StoreError):
+        raise StoreError("store_unavailable") from None
 
 
 def _lease_dict(device_id: str, owner_id: str, lease_until: int) -> dict:

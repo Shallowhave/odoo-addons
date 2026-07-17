@@ -1210,6 +1210,280 @@ class TestRecovery(StoreCase):
                 store.close()
 
 
+class TestTask9RecoveryPrerequisites(StoreCase):
+    def _claim_inventorying(self, request_id="r1", *, device_id="reader-1"):
+        self.store.create_or_get(sample_request(request_id, device_id=device_id), now=1)
+        work = self.store.claim_next_work(device_id, "worker-a", 30, now=2)
+        self.store.transition(request_id, "worker-a", "claimed", "inventorying", now=3)
+        return work
+
+    def test_internal_claim_exposes_payload_only_to_authorized_service_code(self):
+        work = self._claim_inventorying()
+        self.assertEqual(work["payload"], bytes.fromhex(PAYLOAD_A))
+        self.assertEqual(work["rewrite_count"], 0)
+        self.assertNotIn("payload", self.store.get("r1"))
+        self.assertNotIn(PAYLOAD_A, repr(self.store.get("r1")))
+        with self.assertRaises(StoreError) as caught:
+            self.store.get_work_item("r1", "worker-b", now=3)
+        self.assertEqual(caught.exception.code, "lease_conflict")
+
+    def test_prepare_write_persists_only_hashes_and_hides_recovery_metadata(self):
+        self._claim_inventorying()
+        prepared = self.store.prepare_write(
+            "r1", "worker-a", "a" * 64, "b" * 64, now=4
+        )
+        self.assertEqual(prepared["state"], "writing")
+        public = self.store.get("r1")
+        for key in ("payload", "target_identity_hash", "pre_write_hash", "rewrite_count"):
+            self.assertNotIn(key, public)
+        work = self.store.get_work_item("r1", "worker-a", now=4)
+        self.assertEqual(work["target_identity_hash"], "a" * 64)
+        self.assertEqual(work["pre_write_hash"], "b" * 64)
+        self.assertEqual(work["rewrite_count"], 0)
+        self.assertNotIn(PAYLOAD_A, repr(public))
+
+    def test_guarded_rewrite_is_owner_lease_aware_and_allowed_once(self):
+        self._claim_inventorying()
+        self.store.prepare_write("r1", "worker-a", "a" * 64, "b" * 64, now=4)
+        self.store.transition("r1", "worker-a", "writing", "verifying", now=5)
+        rewritten = self.store.begin_controlled_rewrite("r1", "worker-a", now=6)
+        self.assertEqual(rewritten["state"], "writing")
+        self.assertEqual(
+            self.store.get_work_item("r1", "worker-a", now=6)["rewrite_count"], 1
+        )
+        self.store.transition("r1", "worker-a", "writing", "verifying", now=7)
+        with self.assertRaises(StoreError) as caught:
+            self.store.begin_controlled_rewrite("r1", "worker-a", now=8)
+        self.assertEqual(caught.exception.code, "rewrite_exhausted")
+        self.assertEqual(
+            self.store.get_work_item("r1", "worker-a", now=8)["rewrite_count"], 1
+        )
+
+    def test_uncertain_resume_is_verify_only_and_rejects_other_failures(self):
+        self._claim_inventorying()
+        self.store.prepare_write("r1", "worker-a", "a" * 64, "b" * 64, now=4)
+        self.store.transition("r1", "worker-a", "writing", "verifying", now=5)
+        self.store.transition(
+            "r1", "worker-a", "verifying", "failed_retryable",
+            error=safe_error("write_uncertain"), now=6,
+        )
+        resumed = self.store.resume_uncertain("r1", "worker-a", 30, now=7)
+        self.assertEqual(resumed["state"], "verifying")
+        self.assertEqual(resumed["payload"], bytes.fromhex(PAYLOAD_A))
+        self.assertEqual(resumed["claim_owner"], "worker-a")
+        self.assertIsNone(self.store.get("r1")["error"])
+
+        self.store.create_or_get(sample_request("pre", device_id="reader-2"), now=1)
+        self.store.claim_next("reader-2", "worker-a", 3, now=2)
+        self.store.transition(
+            "pre", "worker-a", "claimed", "failed_retryable",
+            error=safe_error("connection_error"), now=3,
+        )
+        with self.assertRaises(StoreError) as caught:
+            self.store.resume_uncertain("pre", "worker-b", 30, now=4)
+        self.assertEqual(caught.exception.code, "not_uncertain")
+
+    def test_resume_uncertain_validates_complete_row_before_mutation(self):
+        tamperings = {
+            "error-message": (
+                "UPDATE operations SET error_json=? WHERE request_id='r1'",
+                (json.dumps({
+                    "code": "write_uncertain",
+                    "message": "tampered",
+                    "device_code": None,
+                    "retryable": False,
+                }),),
+            ),
+            "error-retryability": (
+                "UPDATE operations SET error_json=? WHERE request_id='r1'",
+                (json.dumps({
+                    "code": "write_uncertain",
+                    "message": "write outcome is uncertain",
+                    "device_code": None,
+                    "retryable": True,
+                }),),
+            ),
+            "payload-hash": (
+                "UPDATE operations SET payload_hash=? WHERE request_id='r1'",
+                ("f" * 64,),
+            ),
+            "attempts": (
+                "UPDATE operations SET attempts=0 WHERE request_id='r1'",
+                (),
+            ),
+        }
+        pristine = self.path + ".resume-pristine"
+        self._claim_inventorying()
+        self.store.prepare_write("r1", "worker-a", "a" * 64, "b" * 64, now=4)
+        self.store.transition("r1", "worker-a", "writing", "verifying", now=5)
+        self.store.transition(
+            "r1", "worker-a", "verifying", "failed_retryable",
+            error=safe_error("write_uncertain"), now=6,
+        )
+        shutil.copyfile(self.path, pristine)
+        for name, (statement, parameters) in tamperings.items():
+            with self.subTest(name=name):
+                shutil.copyfile(pristine, self.path)
+                connection = sqlite3.connect(self.path)
+                connection.execute("PRAGMA ignore_check_constraints=ON")
+                connection.execute(statement, parameters)
+                connection.commit()
+                before = connection.execute(
+                    "SELECT state,claim_owner,lease_until,completed_at,result_json,error_json,attempts "
+                    "FROM operations WHERE request_id='r1'"
+                ).fetchone()
+                connection.close()
+                with self.assertRaises(StoreError) as caught:
+                    self.store.resume_uncertain("r1", "worker-b", 30, now=7)
+                self.assertEqual(caught.exception.code, "store_unavailable")
+                connection = sqlite3.connect(self.path)
+                try:
+                    after = connection.execute(
+                        "SELECT state,claim_owner,lease_until,completed_at,result_json,error_json,attempts "
+                        "FROM operations WHERE request_id='r1'"
+                    ).fetchone()
+                    self.assertEqual(after, before)
+                    self.assertIsNone(connection.execute(
+                        "SELECT 1 FROM device_leases WHERE owner_id='worker-b'"
+                    ).fetchone())
+                finally:
+                    connection.close()
+
+    def test_expired_uncertain_work_is_never_returned_to_generic_queue(self):
+        self._claim_inventorying()
+        self.store.prepare_write("r1", "worker-a", "a" * 64, "b" * 64, now=4)
+        recovered = self.store.recover_expired_claims(now=33)
+        self.assertEqual(recovered[0]["error"]["code"], "write_uncertain")
+        self.assertIsNone(self.store.claim_next_work("reader-1", "worker-b", 30, now=34))
+        self.assertEqual(self.store.get("r1")["state"], "failed_retryable")
+
+    def test_boundary_deferral_is_private_and_claims_at_inclusive_deadline(self):
+        self._claim_inventorying()
+        deferred = self.store.defer_boundary(
+            "r1", "worker-a", "inventorying", 60, now=4
+        )
+        self.assertEqual(deferred["state"], "queued")
+        self.assertIsNone(deferred["result"])
+        self.assertIsNone(deferred["error"])
+        self.assertIsNone(deferred["claim_owner"])
+        self.assertIsNone(deferred["lease_until"])
+        self.assertIsNone(deferred["claimed_at"])
+        self.assertEqual(deferred["attempts"], 1)
+        self.assertNotIn("next_attempt_at", deferred)
+        self.assertIsNone(self.store.get_lease("reader-1"))
+        connection = sqlite3.connect(self.path)
+        try:
+            private = connection.execute(
+                "SELECT next_attempt_at,target_identity_hash,pre_write_hash,rewrite_count "
+                "FROM operations WHERE request_id='r1'"
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(private, (64, None, None, 0))
+        self.assertIsNone(self.store.claim_next("reader-1", "worker-b", 30, now=63))
+        claimed = self.store.claim_next("reader-1", "worker-b", 30, now=64)
+        self.assertEqual(claimed["state"], "claimed")
+        self.assertEqual(claimed["attempts"], 2)
+        connection = sqlite3.connect(self.path)
+        try:
+            self.assertIsNone(connection.execute(
+                "SELECT next_attempt_at FROM operations WHERE request_id='r1'"
+            ).fetchone()[0])
+        finally:
+            connection.close()
+
+    def test_boundary_deferral_rejects_stale_owner_invalid_delay_and_corruption_atomically(self):
+        self._claim_inventorying()
+        baseline = None
+        connection = sqlite3.connect(self.path)
+        try:
+            baseline = connection.execute(
+                "SELECT state,claim_owner,lease_until,claimed_at,attempts,next_attempt_at "
+                "FROM operations WHERE request_id='r1'"
+            ).fetchone()
+        finally:
+            connection.close()
+        for owner, state, delay, code in (
+            ("worker-b", "inventorying", 60, "lease_conflict"),
+            ("worker-a", "claimed", 60, "stale_state"),
+            ("worker-a", "inventorying", 0, "invalid_argument"),
+            ("worker-a", "inventorying", 86401, "invalid_argument"),
+        ):
+            with self.subTest(owner=owner, state=state, delay=delay):
+                with self.assertRaises(StoreError) as caught:
+                    self.store.defer_boundary("r1", owner, state, delay, now=4)
+                self.assertEqual(caught.exception.code, code)
+                connection = sqlite3.connect(self.path)
+                try:
+                    self.assertEqual(connection.execute(
+                        "SELECT state,claim_owner,lease_until,claimed_at,attempts,next_attempt_at "
+                        "FROM operations WHERE request_id='r1'"
+                    ).fetchone(), baseline)
+                    self.assertEqual(connection.execute(
+                        "SELECT owner_id,lease_until FROM device_leases WHERE device_id='reader-1'"
+                    ).fetchone(), ("worker-a", 32))
+                finally:
+                    connection.close()
+
+        connection = sqlite3.connect(self.path)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE operations SET payload_hash=? WHERE request_id='r1'", ("f" * 64,)
+        )
+        connection.commit()
+        corrupted = connection.execute(
+            "SELECT state,claim_owner,lease_until,claimed_at,attempts,next_attempt_at "
+            "FROM operations WHERE request_id='r1'"
+        ).fetchone()
+        connection.close()
+        with self.assertRaises(StoreError) as caught:
+            self.store.defer_boundary("r1", "worker-a", "inventorying", 60, now=4)
+        self.assertEqual(caught.exception.code, "store_unavailable")
+        connection = sqlite3.connect(self.path)
+        try:
+            self.assertEqual(connection.execute(
+                "SELECT state,claim_owner,lease_until,claimed_at,attempts,next_attempt_at "
+                "FROM operations WHERE request_id='r1'"
+            ).fetchone(), corrupted)
+            self.assertEqual(connection.execute(
+                "SELECT owner_id,lease_until FROM device_leases WHERE device_id='reader-1'"
+            ).fetchone(), ("worker-a", 32))
+        finally:
+            connection.close()
+
+    def test_prior_v1_shape_is_rejected_without_mutation(self):
+        self.store.close()
+        connection = sqlite3.connect(self.path)
+        original_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name='operations'"
+        ).fetchone()[0]
+        connection.execute("PRAGMA writable_schema=ON")
+        connection.execute(
+            "UPDATE sqlite_master SET sql=? WHERE name='operations'",
+            (original_sql.replace(
+                ",\n        target_identity_hash TEXT", ""
+            ),),
+        )
+        connection.execute("PRAGMA writable_schema=OFF")
+        connection.commit()
+        before = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name='operations'"
+        ).fetchone()[0]
+        connection.close()
+        with self.assertRaises(StoreError) as caught:
+            OperationStore(self.path)
+        self.assertIn(caught.exception.code, {"store_schema", "store_unavailable"})
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute("PRAGMA writable_schema=ON")
+            self.assertEqual(
+                connection.execute("SELECT sql FROM sqlite_master WHERE name='operations'").fetchone()[0],
+                before,
+            )
+        finally:
+            connection.close()
+
+
 class TestResourcesAndContention(StoreCase):
     def test_close_is_idempotent_and_methods_use_independent_connections(self):
         for index in range(100):
@@ -1241,8 +1515,10 @@ class TestResourcesAndContention(StoreCase):
         try:
             claim = connection.execute(
                 "EXPLAIN QUERY PLAN SELECT id FROM operations "
-                "WHERE device_id=? AND state='queued' ORDER BY created_at,id LIMIT 1",
-                ("reader-1",),
+                "WHERE device_id=? AND state='queued' "
+                "AND (next_attempt_at IS NULL OR next_attempt_at<=?) "
+                "ORDER BY next_attempt_at,created_at,id LIMIT 1",
+                ("reader-1", 10),
             ).fetchall()
             recovery = connection.execute(
                 "EXPLAIN QUERY PLAN SELECT id FROM operations "
@@ -1251,6 +1527,7 @@ class TestResourcesAndContention(StoreCase):
                 (10, 100),
             ).fetchall()
             self.assertIn("operations_claim_idx", repr(claim))
+            self.assertNotIn("TEMP B-TREE", repr(claim).upper())
             self.assertIn("operations_recovery_idx", repr(recovery))
             self.assertNotIn("TEMP B-TREE", repr(recovery).upper())
         finally:

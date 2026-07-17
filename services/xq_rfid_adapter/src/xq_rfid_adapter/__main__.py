@@ -9,20 +9,35 @@ import sys
 from pathlib import Path
 
 from .api import create_server
-from .config import ConfigError, load_config, load_secret
+from .config import AdapterConfig, ConfigError, load_config, load_secret
+from .drivers.fake import FakeDriver
+from .queue import DeviceQueue, QueueError
+from .store import OperationStore, StoreError
 
 
-class _UnavailableService:
-    """Fail-closed service boundary until Tasks 8-9 supply runtime services."""
+def _replay_path(sqlite_path: Path) -> Path:
+    return sqlite_path.with_name(sqlite_path.name + ".replay")
 
-    def _unavailable(self, *args, **kwargs):
-        del args, kwargs
-        raise RuntimeError("service unavailable")
 
-    test_connection = _unavailable
-    get_device = _unavailable
-    submit_operation = _unavailable
-    get_operation = _unavailable
+def _create_runtime_service(config: AdapterConfig) -> DeviceQueue:
+    drivers = {}
+    capabilities = {}
+    for device_id, device in config.devices.items():
+        if device.driver != "fake" or config.production:
+            raise ConfigError("configured RFID driver is unavailable")
+        driver = FakeDriver()
+        drivers[device_id] = driver
+        capabilities[device_id] = driver.capabilities
+    if not drivers:
+        raise ConfigError("at least one RFID device is required")
+    store = OperationStore(config.sqlite_path)
+    try:
+        return DeviceQueue(store, drivers, capabilities=capabilities)
+    except BaseException:
+        for driver in drivers.values():
+            driver.close()
+        store.close()
+        raise
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,12 +68,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     server = None
+    service = None
     try:
+        service = _create_runtime_service(config)
         server = create_server(
             (config.bind.host, config.bind.port),
-            _UnavailableService(),
+            service,
             secret,
-            config.sqlite_path,
+            _replay_path(config.sqlite_path),
             frozenset(config.devices),
         )
         if config.tls is not None:
@@ -67,13 +84,15 @@ def main(argv: list[str] | None = None) -> int:
             context.load_cert_chain(config.tls.cert_file, config.tls.key_file)
             server.socket = context.wrap_socket(server.socket, server_side=True)
         server.serve_forever()
-    except (OSError, sqlite3.Error, ssl.SSLError):
+    except (ConfigError, OSError, QueueError, StoreError, sqlite3.Error, ssl.SSLError):
         parser.exit(2, "configuration error: server configuration is invalid\n")
     except KeyboardInterrupt:
         return 0
     finally:
         if server is not None:
             server.server_close()
+        if service is not None:
+            service.close()
     return 0
 
 
