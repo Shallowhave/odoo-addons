@@ -185,6 +185,50 @@ class QueueCase(unittest.TestCase):
         diagnostic_id = next(record["thread_id"] for record in driver.call_records if record["operation"] == "get_device_info")
         self.assertEqual(worker_id, diagnostic_id)
 
+    def test_diagnostic_cannot_enqueue_after_worker_stop(self):
+        driver = FakeDriver(capabilities=capabilities())
+        queue = self.make_queue({"reader-1": driver}, diagnostic_timeout=0.05)
+        worker = queue._workers["reader-1"]
+        acquired = threading.Event()
+        release = threading.Event()
+        outcome = []
+        original_slots = worker.diagnostic_slots
+        original_acquire = original_slots.acquire
+
+        class PausedSlots:
+            def acquire(self, *args, **kwargs):
+                result = original_acquire(*args, **kwargs)
+                acquired.set()
+                release.wait(1)
+                return result
+
+            def release(self):
+                original_slots.release()
+
+        worker.diagnostic_slots = PausedSlots()
+        caller = threading.Thread(
+            target=lambda: self._capture_diagnostic(queue, outcome)
+        )
+        caller.start()
+        self.assertTrue(acquired.wait(1))
+        queue.close()
+        release.set()
+        caller.join(1)
+
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], QueueError)
+        self.assertEqual(outcome[0].code, "queue_closed")
+        self.assertEqual(worker.diagnostics.qsize(), 0)
+
+    @staticmethod
+    def _capture_diagnostic(queue, outcome):
+        try:
+            result = queue.get_device("reader-1")
+        except BaseException as error:
+            result = error
+        outcome.append(result)
+
     def test_blocked_diagnostic_keeps_lease_until_hardware_call_returns(self):
         entered, release = threading.Event(), threading.Event()
         driver = FakeDriver(

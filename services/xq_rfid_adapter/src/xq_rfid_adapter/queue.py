@@ -80,6 +80,7 @@ class _DeviceWorker:
         self.stop_event = threading.Event()
         self.diagnostics: queue.Queue[_Diagnostic] = queue.Queue(max_diagnostics)
         self.diagnostic_slots = threading.BoundedSemaphore(max_diagnostics)
+        self.diagnostic_lock = threading.Lock()
         self.thread = threading.Thread(
             target=self._run,
             name=f"xq-rfid-{device_id}",
@@ -94,7 +95,8 @@ class _DeviceWorker:
         self.wake_event.set()
 
     def stop(self) -> None:
-        self.stop_event.set()
+        with self.diagnostic_lock:
+            self.stop_event.set()
         self.wake_event.set()
 
     def diagnose(self, method_name: str, timeout: float) -> object:
@@ -104,10 +106,16 @@ class _DeviceWorker:
             raise QueueError("diagnostic_overload")
         item = _Diagnostic(method_name)
         try:
-            self.diagnostics.put_nowait(item)
+            with self.diagnostic_lock:
+                if self.stop_event.is_set():
+                    raise QueueError("queue_closed")
+                self.diagnostics.put_nowait(item)
         except queue.Full:
             self.diagnostic_slots.release()
             raise QueueError("diagnostic_overload") from None
+        except BaseException:
+            self.diagnostic_slots.release()
+            raise
         self.wake()
         if not item.done.wait(timeout):
             raise QueueError("diagnostic_timeout")
