@@ -67,6 +67,64 @@ class StoreCase(unittest.TestCase):
 
 
 class TestSubmissionCancellation(StoreCase):
+    def test_cancellation_during_commit_rolls_back_insert(self):
+        commit_started = threading.Event()
+        release_commit = threading.Event()
+        outcome = []
+
+        class CommitCancellation:
+            def __init__(self):
+                self.cancelled = False
+                self.calls = 0
+
+            def is_set(self):
+                self.calls += 1
+                if self.calls >= 3 and not self.cancelled:
+                    commit_started.set()
+                    release_commit.wait(1)
+                return self.cancelled
+
+        cancellation = CommitCancellation()
+
+        def submit():
+            try:
+                with self.store._transaction(
+                    cancellation_event=cancellation
+                ) as connection:
+                    connection.execute(
+                        "INSERT INTO operations ("
+                        "request_id,device_id,operation_type,payload,"
+                        "payload_version,payload_hash,request_fingerprint,"
+                        "state,created_at,updated_at"
+                        ") VALUES (?,?,?,?,?,?,?,'queued',?,?)",
+                        (
+                            "cancelled-during-commit",
+                            "reader-1",
+                            "write_and_verify",
+                            b"0" * 24,
+                            1,
+                            "a" * 64,
+                            "b" * 64,
+                            1,
+                            1,
+                        ),
+                    )
+            except BaseException as error:
+                outcome.append(error)
+
+        submitter = threading.Thread(target=submit)
+        submitter.start()
+        self.assertTrue(commit_started.wait(1))
+        cancellation.cancelled = True
+        release_commit.set()
+        submitter.join(1)
+
+        self.assertFalse(submitter.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], StoreError)
+        self.assertEqual(outcome[0].code, "lease_conflict")
+        self.assertIsNone(self.store.get("cancelled-during-commit"))
+
     def test_cancellation_before_commit_rolls_back_insert(self):
         cancellation = threading.Event()
         entered = threading.Event()

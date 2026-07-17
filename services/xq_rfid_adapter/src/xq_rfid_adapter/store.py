@@ -1438,6 +1438,9 @@ class OperationStore:
                         return sqlite3.SQLITE_DENY
                     return sqlite3.SQLITE_OK
 
+                def cancel_commit():
+                    return 1 if cancellation_event.is_set() else 0
+
                 connection.set_authorizer(authorize)
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -1445,12 +1448,17 @@ class OperationStore:
                 if cancellation_event is not None and cancellation_event.is_set():
                     raise StoreError("lease_conflict")
                 try:
+                    if cancellation_event is not None:
+                        connection.set_progress_handler(cancel_commit, 1)
                     connection.commit()
                 except sqlite3.DatabaseError:
                     if cancellation_event is not None and cancellation_event.is_set():
+                        connection.set_progress_handler(None, 0)
                         raise StoreError("lease_conflict") from None
                     raise
             except BaseException:
+                if cancellation_event is not None:
+                    connection.set_progress_handler(None, 0)
                 connection.rollback()
                 raise
 
