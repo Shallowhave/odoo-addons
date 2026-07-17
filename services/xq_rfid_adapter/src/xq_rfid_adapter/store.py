@@ -1428,12 +1428,28 @@ class OperationStore:
     @contextmanager
     def _transaction(self, *, cancellation_event=None) -> Iterator[sqlite3.Connection]:
         with self._connection() as connection:
+            if cancellation_event is not None:
+                def authorize(action, first, _second, _database, _trigger):
+                    if (
+                        action == sqlite3.SQLITE_TRANSACTION
+                        and first == "COMMIT"
+                        and cancellation_event.is_set()
+                    ):
+                        return sqlite3.SQLITE_DENY
+                    return sqlite3.SQLITE_OK
+
+                connection.set_authorizer(authorize)
             connection.execute("BEGIN IMMEDIATE")
             try:
                 yield connection
                 if cancellation_event is not None and cancellation_event.is_set():
                     raise StoreError("lease_conflict")
-                connection.commit()
+                try:
+                    connection.commit()
+                except sqlite3.DatabaseError:
+                    if cancellation_event is not None and cancellation_event.is_set():
+                        raise StoreError("lease_conflict") from None
+                    raise
             except BaseException:
                 connection.rollback()
                 raise

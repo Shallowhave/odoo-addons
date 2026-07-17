@@ -16,6 +16,8 @@ from xq_rfid_adapter.domain import (
 from xq_rfid_adapter.drivers.base import Driver
 from xq_rfid_adapter.drivers.fake import FakeDriver
 from xq_rfid_adapter.service import RfidService, identity_hash, validate_payload
+from unittest import mock
+
 from xq_rfid_adapter.store import OperationStore, StoreError
 
 
@@ -834,6 +836,44 @@ class ServiceCase(unittest.TestCase):
         self.assertEqual(caught.exception.code, "lease_conflict")
         self.assertEqual(renew_calls, [])
         self.assertEqual(driver_calls, [])
+
+    def test_close_cannot_return_before_entered_driver_call_starts(self):
+        self.store.acquire_lease("reader-1", "worker-a", 30)
+        start_entered = threading.Event()
+        release_start = threading.Event()
+        hardware_started = threading.Event()
+        outcome = []
+        original_start = threading.Thread.start
+
+        def paused_start(thread):
+            if thread.name == "xq-rfid-lease-reader-1":
+                start_entered.set()
+                release_start.wait(1)
+            return original_start(thread)
+
+        with mock.patch.object(threading.Thread, "start", paused_start):
+            caller = threading.Thread(
+                target=lambda: self._capture_call_driver(
+                    outcome, hardware_started.set
+                )
+            )
+            caller.start()
+            self.assertTrue(start_entered.wait(1))
+            closer = threading.Thread(target=self.service.close)
+            closer.start()
+            closer.join(1)
+            self.assertFalse(closer.is_alive())
+            self.assertFalse(hardware_started.is_set())
+            release_start.set()
+            caller.join(1)
+            closer.join(1)
+
+        self.assertFalse(caller.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertFalse(hardware_started.is_set())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], StoreError)
+        self.assertEqual(outcome[0].code, "lease_conflict")
 
     def test_inflight_driver_return_after_close_cannot_renew_again(self):
         self.store.acquire_lease("reader-1", "worker-a", 30)

@@ -6,6 +6,7 @@ import binascii
 import hashlib
 import re
 import threading
+import time
 from collections.abc import Mapping
 
 from .domain import (
@@ -167,6 +168,8 @@ class RfidService:
         self._wake_device = wake_device
         self._cancellation_event = cancellation_event or threading.Event()
         self._lock = threading.Lock()
+        self._driver_start_condition = threading.Condition()
+        self._driver_starts = 0
         self._heartbeat_stops: set[threading.Event] = set()
         self._closed = False
 
@@ -289,11 +292,20 @@ class RfidService:
                 name=f"xq-rfid-lease-{device_id}",
                 daemon=True,
             )
-            thread.start()
             call_error = None
             result = None
             try:
-                result = method(*args)
+                thread.start()
+                with self._driver_start_condition:
+                    if self._cancellation_event.is_set():
+                        raise StoreError("lease_conflict")
+                    self._driver_starts += 1
+                try:
+                    result = method(*args)
+                finally:
+                    with self._driver_start_condition:
+                        self._driver_starts -= 1
+                        self._driver_start_condition.notify_all()
             except BaseException as error:
                 call_error = error
             finally:
@@ -605,11 +617,23 @@ class RfidService:
             )
         ):
             raise ValueError("timeout is invalid")
-        self._cancellation_event.set()
-        if timeout is None:
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
+        with self._driver_start_condition:
+            self._cancellation_event.set()
+            while self._driver_starts:
+                if deadline is None:
+                    self._driver_start_condition.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                self._driver_start_condition.wait(remaining)
+        if deadline is None:
             acquired = self._lock.acquire()
         else:
-            acquired = self._lock.acquire(timeout=float(timeout))
+            acquired = self._lock.acquire(
+                timeout=max(0.0, deadline - time.monotonic())
+            )
         if not acquired:
             return
         try:
