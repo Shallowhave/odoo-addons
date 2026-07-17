@@ -380,38 +380,24 @@ class DeviceQueue:
             leader = not self._closing_event.is_set()
             if leader:
                 self._closing_event.set()
-        remaining = max(0.0, deadline - time.monotonic())
-        acquired = self._lock.acquire(timeout=remaining)
-        if not acquired:
-            if leader:
-                with self._close_leader_lock:
-                    self._closing_event.clear()
-            return
-        try:
-            if self._closed:
-                return
-            if not leader:
-                wait_for_leader = True
-                workers = ()
-            else:
-                wait_for_leader = False
                 self._cancellation_event.set()
                 workers = tuple(self._workers.values())
                 for worker in workers:
                     worker.stop()
-        finally:
-            self._lock.release()
-        if wait_for_leader:
-            self._close_complete.wait(max(0.0, deadline - time.monotonic()))
+        if not leader:
+            self._close_complete.wait(
+                max(0.0, deadline - time.monotonic())
+            )
             return
         try:
-            self._service.close(timeout=max(0.0, deadline - time.monotonic()))
+            self._service.close(
+                timeout=max(0.0, deadline - time.monotonic())
+            )
             for worker in workers:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 worker.thread.join(remaining)
         finally:
-            with self._lock:
-                self._closed = True
+            self._closed = True
             self._close_complete.set()

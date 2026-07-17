@@ -336,8 +336,51 @@ class ServiceCase(unittest.TestCase):
         self.assertEqual(result["state"], "succeeded")
         self.assertEqual(self.driver.call_counts.get("write_memory", 0), 1)
 
-    def test_negative_and_malformed_write_responses_verify_before_finishing(self):
-        class ResponseDriver:
+    def test_exact_negative_write_response_fails_manual_without_rewrite(self):
+        class NegativeResponseDriver:
+            def __init__(self, delegate):
+                self.delegate = delegate
+                self.write_calls = 0
+
+            def test_connection(self):
+                return self.delegate.test_connection()
+
+            def get_device_info(self):
+                return self.delegate.get_device_info()
+
+            def inventory(self, duration_ms, include_tid):
+                return self.delegate.inventory(duration_ms, include_tid)
+
+            def read_memory(self, target, bank, word_offset, word_count):
+                return self.delegate.read_memory(
+                    target, bank, word_offset, word_count
+                )
+
+            def write_memory(self, target, bank, word_offset, data):
+                self.write_calls += 1
+                return {"written": False}
+
+            def close(self):
+                self.delegate.close()
+
+        driver = NegativeResponseDriver(self.driver)
+        service = RfidService(
+            self.store,
+            {"reader-1": driver},
+            owner_id="worker-a",
+            capabilities={"reader-1": capabilities()},
+        )
+        service.submit_operation(request())
+
+        result = service.process_operation("reader-1")
+
+        self.assertEqual(result["state"], "failed_manual")
+        self.assertEqual(result["error"]["code"], "device_error")
+        self.assertEqual(driver.write_calls, 1)
+        self.assertEqual(self.driver.call_counts.get("read_memory", 0), 1)
+
+    def test_malformed_write_responses_verify_possible_apply(self):
+        class MalformedResponseDriver:
             def __init__(self, delegate, response):
                 self.delegate = delegate
                 self.response = response
@@ -363,7 +406,7 @@ class ServiceCase(unittest.TestCase):
             def close(self):
                 self.delegate.close()
 
-        for index, response in enumerate(({"written": False}, {}, None, True)):
+        for index, response in enumerate(({}, None, True)):
             with self.subTest(response=response):
                 store = OperationStore(
                     os.path.join(self.tempdir.name, f"write-response-{index}.sqlite3")
@@ -371,11 +414,12 @@ class ServiceCase(unittest.TestCase):
                 delegate = FakeDriver(
                     capabilities=capabilities(),
                     inventory_snapshots=[
-                        [TagObservation(self.target)], [TagObservation(self.target)]
+                        [TagObservation(self.target)], [TagObservation(self.target)],
+                        [TagObservation(self.target)],
                     ],
                     user_memory={self.target: b"\x00" * 24},
                 )
-                driver = ResponseDriver(delegate, response)
+                driver = MalformedResponseDriver(delegate, response)
                 service = RfidService(
                     store,
                     {"reader-1": driver},
@@ -408,6 +452,25 @@ class ServiceCase(unittest.TestCase):
         result = self.service.process_operation("reader-1")
         self.assertEqual(result["error"]["code"], "verification_failed")
         self.assertEqual(self.driver.call_counts.get("write_memory", 0), 1)
+
+    def test_second_controlled_rewrite_read_timeout_remains_uncertain(self):
+        self.driver.write_modes = ["no_apply_then_timeout", "apply_and_return"]
+        self.driver.inventory_snapshots.append([TagObservation(self.target)])
+        self.driver.scripted_errors = {
+            "read_memory": [
+                None,
+                None,
+                AdapterError(AdapterErrorCode.TIMEOUT, "unsafe timeout"),
+            ]
+        }
+        self.service.submit_operation(request())
+
+        result = self.service.process_operation("reader-1")
+
+        self.assertEqual(result["state"], "failed_retryable")
+        self.assertEqual(result["error"]["code"], "write_uncertain")
+        self.assertEqual(self.driver.call_counts.get("write_memory", 0), 2)
+        self.assertIn("r1", self.store.uncertain_request_ids("reader-1"))
 
     def test_unreadable_verification_is_write_uncertain_and_restart_is_verify_first(self):
         self.driver.write_modes = ["no_apply_then_timeout"]
@@ -684,6 +747,26 @@ class ServiceCase(unittest.TestCase):
             finally:
                 service.close()
                 store.close()
+
+    def test_uncertain_recovery_target_mismatch_fails_manual(self):
+        changed = TagTarget("AABBCCEE", "00112244")
+        self.driver.write_modes = ["no_apply_then_timeout"]
+        self.driver.scripted_errors = {
+            "read_memory": [
+                None,
+                AdapterError(AdapterErrorCode.TIMEOUT, "unsafe timeout"),
+            ]
+        }
+        self.service.submit_operation(request())
+        first = self.service.process_operation("reader-1")
+        self.assertEqual(first["error"]["code"], "write_uncertain")
+        self.driver.inventory_snapshots.append([TagObservation(changed)])
+
+        result = self.service.recover_uncertain("r1")
+
+        self.assertEqual(result["state"], "failed_manual")
+        self.assertEqual(result["error"]["code"], "target_changed")
+        self.assertNotIn("r1", self.store.uncertain_request_ids("reader-1"))
 
     def test_uncertain_recovery_auth_and_configuration_errors_remain_resumable(self):
         for index, code in enumerate((

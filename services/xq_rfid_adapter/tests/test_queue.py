@@ -442,7 +442,7 @@ class QueueCase(unittest.TestCase):
         self.assertRegex(queue.owner_id, r"\Aadapter-[0-9a-f]{32,}\Z")
         self.assertTrue(all(thread.daemon for thread in queue.worker_threads))
 
-    def test_close_deadline_includes_submission_lock_contention(self):
+    def test_timed_out_close_permanently_rejects_uncommitted_submission(self):
         driver = FakeDriver(capabilities=capabilities())
         queue = self.make_queue(
             {"reader-1": driver}, poll_interval=5.0, shutdown_timeout=0.05
@@ -450,6 +450,7 @@ class QueueCase(unittest.TestCase):
         entered = threading.Event()
         release = threading.Event()
         original_submit = queue._service.submit_operation
+        outcome = []
 
         def blocked_submit(value):
             entered.set()
@@ -458,7 +459,9 @@ class QueueCase(unittest.TestCase):
 
         queue._service.submit_operation = blocked_submit
         submitter = threading.Thread(
-            target=lambda: self._capture_queue_submit(queue, request("blocked"))
+            target=lambda: self._capture_queue_submit(
+                queue, request("blocked"), outcome
+            )
         )
         submitter.start()
         self.assertTrue(entered.wait(1))
@@ -468,17 +471,35 @@ class QueueCase(unittest.TestCase):
         elapsed = time.monotonic() - started
 
         self.assertLess(elapsed, 0.15)
+        self.assertTrue(queue._closing_event.is_set())
+        self.assertTrue(queue._cancellation_event.is_set())
+        with self.assertRaises(QueueError) as caught:
+            queue.submit_operation(request("after-close"))
+        self.assertEqual(caught.exception.code, "queue_closed")
         release.set()
         submitter.join(1)
+        self.assertFalse(submitter.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], StoreError)
+        self.assertEqual(outcome[0].code, "lease_conflict")
+        self.assertIsNone(self.store.get("blocked"))
+        self.assertIsNone(self.store.get("after-close"))
+        self.assertEqual(
+            [record["operation"] for record in driver.call_records],
+            ["close"],
+        )
+        wait_for(lambda: not queue.worker_threads[0].is_alive())
 
     @staticmethod
-    def _capture_queue_submit(queue, value):
+    def _capture_queue_submit(queue, value, outcome=None):
         try:
-            queue.submit_operation(value)
-        except BaseException:
-            pass
+            result = queue.submit_operation(value)
+        except BaseException as error:
+            result = error
+        if outcome is not None:
+            outcome.append(result)
 
-    def test_close_cannot_overtake_an_accepted_submission(self):
+    def test_close_preserves_an_already_committed_submission(self):
         driver = FakeDriver(capabilities=capabilities())
         queue = self.make_queue({"reader-1": driver}, poll_interval=5.0)
         accepted = threading.Event()
@@ -487,9 +508,10 @@ class QueueCase(unittest.TestCase):
         outcome = []
 
         def paused_submit(value):
+            result = original_submit(value)
             accepted.set()
             release.wait(1)
-            return original_submit(value)
+            return result
 
         queue._service.submit_operation = paused_submit
         submitter = threading.Thread(
@@ -498,18 +520,19 @@ class QueueCase(unittest.TestCase):
         submitter.start()
         self.assertTrue(accepted.wait(1))
 
-        closer = threading.Thread(target=queue.close)
-        closer.start()
-        time.sleep(0.05)
-        self.assertTrue(closer.is_alive())
+        started = time.monotonic()
+        queue.close()
 
+        self.assertLess(time.monotonic() - started, 0.3)
         release.set()
         submitter.join(1)
-        closer.join(1)
         self.assertFalse(submitter.is_alive())
-        self.assertFalse(closer.is_alive())
         self.assertEqual(outcome[0]["request_id"], "accepted")
         self.assertEqual(self.store.get("accepted")["request_id"], "accepted")
+        self.assertEqual(
+            [record["operation"] for record in driver.call_records],
+            ["close"],
+        )
 
     def test_close_stops_blocked_call_heartbeat_so_expired_lease_can_be_taken_over(self):
         target = TagTarget("AABBCCDD", "00112233")

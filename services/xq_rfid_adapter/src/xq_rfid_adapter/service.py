@@ -361,12 +361,14 @@ class RfidService:
             payload,
         )
         if (
-            not isinstance(result, dict)
-            or set(result) != {"written"}
-            or type(result["written"]) is not bool
-            or not result["written"]
+            isinstance(result, dict)
+            and set(result) == {"written"}
+            and type(result["written"]) is bool
         ):
-            raise _error(AdapterErrorCode.WRITE_UNCERTAIN)
+            if result["written"]:
+                return
+            raise _error(AdapterErrorCode.DEVICE_ERROR)
+        raise _error(AdapterErrorCode.WRITE_UNCERTAIN)
 
     def _reconfirm_persisted_target(
         self,
@@ -512,7 +514,12 @@ class RfidService:
                 try:
                     second = self._read(device_id, driver, target)
                 except AdapterError as error:
-                    return self._fail(work, "verifying", error)
+                    return self._fail(
+                        work,
+                        "verifying",
+                        error,
+                        uncertain=error.code in _UNPROVABLE_WRITE_CODES,
+                    )
                 if second == payload:
                     return self._succeed(work, target)
         return self._fail(
@@ -551,8 +558,10 @@ class RfidService:
             current = self._read(work["device_id"], driver, target)
         except AdapterError as error:
             return self._fail(
-                work, "verifying", error,
-                uncertain=True,
+                work,
+                "verifying",
+                error,
+                uncertain=error.code in _UNPROVABLE_WRITE_CODES,
             )
         if current == work["payload"]:
             return self._succeed(work, target)
@@ -571,8 +580,10 @@ class RfidService:
                     raise _error(AdapterErrorCode.TARGET_CHANGED)
             except AdapterError as error:
                 return self._fail(
-                    work, "verifying", error,
-                    uncertain=True,
+                    work,
+                    "verifying",
+                    error,
+                    uncertain=error.code in _UNPROVABLE_WRITE_CODES,
                 )
             self._mutate_store(
                 self._store.begin_controlled_rewrite,
