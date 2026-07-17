@@ -331,11 +331,17 @@ class RfidService:
                     thread.join()
                 with self._lock:
                     self._heartbeat_stops.discard(stopped)
-            if call_error is not None:
-                raise call_error
-            self._renew(device_id)
+            try:
+                self._renew(device_id)
+            except StoreError as error:
+                if call_error is None:
+                    raise
+                if not self._cancellation_event.is_set():
+                    raise error from None
             if lease_error:
                 raise lease_error[0]
+            if call_error is not None:
+                raise call_error
             return result
 
     @staticmethod

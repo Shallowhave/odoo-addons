@@ -933,6 +933,26 @@ class ServiceCase(unittest.TestCase):
         self.assertIsInstance(outcome[0], StoreError)
         self.assertEqual(outcome[0].code, "lease_conflict")
 
+    def test_driver_error_still_requires_post_call_renewal(self):
+        self.store.acquire_lease("reader-1", "worker-a", 30)
+        renew_calls = []
+        original_renew = self.store.renew_lease
+        driver_error = AdapterError(AdapterErrorCode.TIMEOUT, "unsafe")
+
+        def record_renew(*args, **kwargs):
+            renew_calls.append((args, kwargs))
+            return original_renew(*args, **kwargs)
+
+        def fail_driver_call():
+            raise driver_error
+
+        self.store.renew_lease = record_renew
+        with self.assertRaises(AdapterError) as caught:
+            self.service.call_driver("reader-1", fail_driver_call)
+
+        self.assertIs(caught.exception, driver_error)
+        self.assertEqual(len(renew_calls), 2)
+
     def test_inflight_driver_return_after_close_cannot_renew_again(self):
         self.store.acquire_lease("reader-1", "worker-a", 30)
         entered = threading.Event()
