@@ -848,6 +848,53 @@ class ServiceCase(unittest.TestCase):
         self.assertEqual(renew_calls, [])
         self.assertEqual(driver_calls, [])
 
+    def test_heartbeat_start_failure_preserves_error_and_cleans_registration(self):
+        self.store.acquire_lease("reader-1", "worker-a", 30)
+        heartbeat_error = RuntimeError("heartbeat start failed")
+        original_start = threading.Thread.start
+
+        def failing_start(thread):
+            if thread.name == "xq-rfid-lease-reader-1":
+                raise heartbeat_error
+            return original_start(thread)
+
+        with mock.patch.object(threading.Thread, "start", failing_start):
+            with self.assertRaises(RuntimeError) as caught:
+                self.service.call_driver("reader-1", lambda: None)
+
+        self.assertIs(caught.exception, heartbeat_error)
+        self.assertEqual(self.service._heartbeat_stops, set())
+        self.assertEqual(self.driver.call_records, [])
+
+    def test_concurrent_close_does_not_mask_heartbeat_start_failure(self):
+        self.store.acquire_lease("reader-1", "worker-a", 30)
+        start_entered = threading.Event()
+        release_start = threading.Event()
+        outcome = []
+        heartbeat_error = RuntimeError("heartbeat start failed")
+        original_start = threading.Thread.start
+
+        def failing_start(thread):
+            if thread.name == "xq-rfid-lease-reader-1":
+                start_entered.set()
+                release_start.wait(1)
+                raise heartbeat_error
+            return original_start(thread)
+
+        with mock.patch.object(threading.Thread, "start", failing_start):
+            caller = threading.Thread(
+                target=lambda: self._capture_call_driver(outcome, lambda: None)
+            )
+            caller.start()
+            self.assertTrue(start_entered.wait(1))
+            self.service.close()
+            release_start.set()
+            caller.join(1)
+
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(outcome, [heartbeat_error])
+        self.assertEqual(self.service._heartbeat_stops, set())
+
     def test_close_cannot_return_before_entered_driver_call_starts(self):
         self.store.acquire_lease("reader-1", "worker-a", 30)
         start_entered = threading.Event()

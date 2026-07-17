@@ -1019,6 +1019,84 @@ class TestClaimsAndLeases(StoreCase):
         self.assertIsNone(self.store.get_lease("reader-1"))
         self.assertFalse(self.store.release_lease("reader-1", "worker-b"))
 
+    def test_cancelled_acquire_lease_rolls_back_before_commit(self):
+        cancellation = threading.Event()
+        commit_reached = threading.Event()
+        release_commit = threading.Event()
+        original_transaction = self.store._transaction
+
+        @contextmanager
+        def paused_transaction(*args, **kwargs):
+            with original_transaction(*args, **kwargs) as connection:
+                yield connection
+                commit_reached.set()
+                release_commit.wait(1)
+
+        self.store._transaction = paused_transaction
+        outcome = []
+
+        def acquire():
+            try:
+                outcome.append(self.store.acquire_lease(
+                    "reader-1", "worker-a", 30,
+                    cancellation_event=cancellation,
+                ))
+            except BaseException as error:
+                outcome.append(error)
+
+        thread = threading.Thread(target=acquire)
+        thread.start()
+        self.assertTrue(commit_reached.wait(1))
+        cancellation.set()
+        release_commit.set()
+        thread.join(1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], StoreError)
+        self.assertEqual(outcome[0].code, "lease_conflict")
+        self.assertIsNone(self.store.get_lease("reader-1"))
+
+    def test_cancelled_claim_rolls_back_before_commit(self):
+        self.store.create_or_get(sample_request(), now=1)
+        cancellation = threading.Event()
+        commit_reached = threading.Event()
+        release_commit = threading.Event()
+        original_transaction = self.store._transaction
+
+        @contextmanager
+        def paused_transaction(*args, **kwargs):
+            with original_transaction(*args, **kwargs) as connection:
+                yield connection
+                commit_reached.set()
+                release_commit.wait(1)
+
+        self.store._transaction = paused_transaction
+        outcome = []
+
+        def claim():
+            try:
+                outcome.append(self.store.claim_next(
+                    "reader-1", "worker-a", 30,
+                    cancellation_event=cancellation,
+                ))
+            except BaseException as error:
+                outcome.append(error)
+
+        thread = threading.Thread(target=claim)
+        thread.start()
+        self.assertTrue(commit_reached.wait(1))
+        cancellation.set()
+        release_commit.set()
+        thread.join(1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], StoreError)
+        self.assertEqual(outcome[0].code, "lease_conflict")
+        self.assertEqual(self.store.get("r1")["state"], "queued")
+        self.assertIsNone(self.store.get_lease("reader-1"))
+
     def test_renew_requires_existing_matching_unexpired_owner(self):
         with self.assertRaises(StoreError) as caught:
             self.store.renew_lease("reader-1", "worker-a", 2, now=10)

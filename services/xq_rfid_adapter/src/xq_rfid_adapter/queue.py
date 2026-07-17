@@ -76,6 +76,7 @@ class _DeviceWorker:
         self.recovery_batch = recovery_batch
         self.recovery_retry_seconds = max(1.0, poll_interval * 4)
         self._next_recovery_at = 0.0
+        self.start_event = threading.Event()
         self.wake_event = threading.Event()
         self.stop_event = threading.Event()
         self.diagnostics: queue.Queue[_Diagnostic] = queue.Queue(max_diagnostics)
@@ -88,8 +89,11 @@ class _DeviceWorker:
         )
 
     def start(self) -> None:
-        self.wake_event.set()
         self.thread.start()
+
+    def activate(self) -> None:
+        self.start_event.set()
+        self.wake_event.set()
 
     def wake(self) -> None:
         self.wake_event.set()
@@ -139,16 +143,16 @@ class _DeviceWorker:
             if self.stop_event.is_set():
                 return False
             try:
-                self.store.acquire_lease(
-                    self.device_id, self.owner_id, self.service.lease_seconds
-                )
+                self.service.acquire_device_lease(self.device_id)
             except StoreError:
                 return False
             try:
                 operation = self.service.recover_uncertain(request_id)
             except StoreError:
+                self._release_idle_lease()
                 return False
             except BaseException:
+                self._release_idle_lease()
                 return False
             self._release_idle_lease()
             if (
@@ -192,9 +196,9 @@ class _DeviceWorker:
             except queue.Empty:
                 return
             try:
-                self.store.acquire_lease(
-                    self.device_id, self.owner_id, self.service.lease_seconds
-                )
+                if self.stop_event.is_set():
+                    raise QueueError("queue_closed")
+                self.service.acquire_device_lease(self.device_id)
                 method: Callable[[], object] = getattr(self.driver, item.method_name)
                 item.result = self.service.call_driver(
                     self.device_id, method
@@ -225,6 +229,7 @@ class _DeviceWorker:
             self.diagnostics.task_done()
 
     def _run(self) -> None:
+        self.start_event.wait()
         try:
             while not self.stop_event.is_set():
                 self.wake_event.wait(self.poll_interval)
@@ -336,8 +341,51 @@ class DeviceQueue:
             store.recover_expired_claims(batch_limit=recovery_batch)
         except StoreError:
             pass
-        for worker in self._workers.values():
-            worker.start()
+        started_workers = []
+        startup_deadline = time.monotonic() + self._shutdown_timeout
+        try:
+            for worker in self._workers.values():
+                worker.start()
+                started_workers.append(worker)
+        except BaseException:
+            self._cancellation_event.set()
+            for worker in started_workers:
+                worker.stop()
+                worker.activate()
+            for worker in started_workers:
+                remaining = startup_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                worker.thread.join(remaining)
+            closers = []
+            for worker in self._workers.values():
+                if worker not in started_workers:
+                    closer = threading.Thread(
+                        target=self._close_driver,
+                        args=(worker.driver,),
+                        name=f"xq-rfid-close-{worker.device_id}",
+                        daemon=True,
+                    )
+                    closer.start()
+                    closers.append(closer)
+            for closer in closers:
+                remaining = startup_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                closer.join(remaining)
+            self._service.close(
+                timeout=max(0.0, startup_deadline - time.monotonic())
+            )
+            raise
+        for worker in started_workers:
+            worker.activate()
+
+    @staticmethod
+    def _close_driver(driver: Driver) -> None:
+        try:
+            driver.close()
+        except BaseException:
+            pass
 
     @property
     def owner_id(self) -> str:

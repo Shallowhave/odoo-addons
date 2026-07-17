@@ -375,6 +375,8 @@ class OperationStore:
         result: object = None,
         error: object = None,
         now: int | float | None = None,
+        *,
+        cancellation_event=None,
     ) -> dict:
         request_id = _identifier(request_id, "invalid_argument")
         owner_id = _identifier(owner_id, "invalid_argument")
@@ -401,8 +403,12 @@ class OperationStore:
             )
         """
         try:
-            with self._transaction() as connection:
+            with self._transaction(
+                cancellation_event=cancellation_event
+            ) as connection:
                 timestamp = _timestamp(now)
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise StoreError("lease_conflict")
                 self._validate_active_device_invariant(connection)
                 current = connection.execute(
                     "SELECT state, updated_at, device_id, claim_owner, lease_until "
@@ -482,12 +488,18 @@ class OperationStore:
         owner_id: object,
         lease_seconds: object,
         now: int | float | None = None,
+        *,
+        cancellation_event=None,
     ) -> dict:
         device_id = _identifier(device_id, "invalid_argument")
         owner_id = _identifier(owner_id, "invalid_argument")
         try:
-            with self._transaction() as connection:
+            with self._transaction(
+                cancellation_event=cancellation_event
+            ) as connection:
                 timestamp, lease_until = _lease_times(now, lease_seconds)
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise StoreError("lease_conflict")
                 self._validate_active_device_invariant(connection)
                 current = connection.execute(
                     "SELECT device_id, owner_id, lease_until FROM device_leases WHERE device_id = ?",
@@ -551,12 +563,18 @@ class OperationStore:
         owner_id: object,
         lease_seconds: object,
         now: int | float | None = None,
+        *,
+        cancellation_event=None,
     ) -> dict:
         device_id = _identifier(device_id, "invalid_argument")
         owner_id = _identifier(owner_id, "invalid_argument")
         try:
-            with self._transaction() as connection:
+            with self._transaction(
+                cancellation_event=cancellation_event
+            ) as connection:
                 timestamp, lease_until = _lease_times(now, lease_seconds)
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise StoreError("lease_conflict")
                 self._validate_active_device_invariant(connection)
                 current = connection.execute(
                     "SELECT device_id, owner_id, lease_until FROM device_leases WHERE device_id = ?",
@@ -656,12 +674,18 @@ class OperationStore:
         owner_id: object,
         lease_seconds: object,
         now: int | float | None = None,
+        *,
+        cancellation_event=None,
     ) -> dict | None:
         device_id = _identifier(device_id, "invalid_argument")
         owner_id = _identifier(owner_id, "invalid_argument")
         try:
-            with self._transaction() as connection:
+            with self._transaction(
+                cancellation_event=cancellation_event
+            ) as connection:
                 timestamp, lease_until = _lease_times(now, lease_seconds)
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise StoreError("lease_conflict")
                 self._validate_active_device_invariant(connection)
                 current = connection.execute(
                     "SELECT device_id, owner_id, lease_until FROM device_leases WHERE device_id = ?",
@@ -759,8 +783,16 @@ class OperationStore:
         owner_id: object,
         lease_seconds: object,
         now: int | float | None = None,
+        *,
+        cancellation_event=None,
     ) -> dict | None:
-        operation = self.claim_next(device_id, owner_id, lease_seconds, now=now)
+        operation = self.claim_next(
+            device_id,
+            owner_id,
+            lease_seconds,
+            now=now,
+            cancellation_event=cancellation_event,
+        )
         if operation is None:
             return None
         return self.get_work_item(operation["request_id"], owner_id, now=now)
@@ -772,6 +804,8 @@ class OperationStore:
         expected_state: object,
         retry_delay: object,
         now: int | float | None = None,
+        *,
+        cancellation_event=None,
     ) -> dict:
         request_id = _identifier(request_id, "invalid_argument")
         owner_id = _identifier(owner_id, "invalid_argument")
@@ -779,8 +813,12 @@ class OperationStore:
             raise StoreError("stale_state")
         delay = _retry_delay(retry_delay)
         try:
-            with self._transaction() as connection:
+            with self._transaction(
+                cancellation_event=cancellation_event
+            ) as connection:
                 timestamp = _timestamp(now)
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise StoreError("lease_conflict")
                 if timestamp > _MAX_TIMESTAMP - delay:
                     raise StoreError("invalid_argument")
                 next_attempt_at = timestamp + delay
@@ -864,6 +902,8 @@ class OperationStore:
         target_identity_hash: object,
         pre_write_hash: object,
         now: int | float | None = None,
+        *,
+        cancellation_event=None,
     ) -> dict:
         request_id = _identifier(request_id, "invalid_argument")
         owner_id = _identifier(owner_id, "invalid_argument")
@@ -872,8 +912,12 @@ class OperationStore:
         if now is not None:
             _timestamp(now)
         try:
-            with self._transaction() as connection:
+            with self._transaction(
+                cancellation_event=cancellation_event
+            ) as connection:
                 timestamp = _timestamp(now)
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise StoreError("lease_conflict")
                 row = connection.execute(
                     "SELECT * FROM operations WHERE request_id = ?", (request_id,)
                 ).fetchone()
@@ -905,14 +949,20 @@ class OperationStore:
         request_id: object,
         owner_id: object,
         now: int | float | None = None,
+        *,
+        cancellation_event=None,
     ) -> dict:
         request_id = _identifier(request_id, "invalid_argument")
         owner_id = _identifier(owner_id, "invalid_argument")
         if now is not None:
             _timestamp(now)
         try:
-            with self._transaction() as connection:
+            with self._transaction(
+                cancellation_event=cancellation_event
+            ) as connection:
                 timestamp = _timestamp(now)
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise StoreError("lease_conflict")
                 row = connection.execute(
                     "SELECT * FROM operations WHERE request_id=?", (request_id,)
                 ).fetchone()
@@ -949,12 +999,18 @@ class OperationStore:
         owner_id: object,
         lease_seconds: object,
         now: int | float | None = None,
+        *,
+        cancellation_event=None,
     ) -> dict:
         request_id = _identifier(request_id, "invalid_argument")
         owner_id = _identifier(owner_id, "invalid_argument")
         try:
-            with self._transaction() as connection:
+            with self._transaction(
+                cancellation_event=cancellation_event
+            ) as connection:
                 timestamp, lease_until = _lease_times(now, lease_seconds)
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise StoreError("lease_conflict")
                 row = connection.execute(
                     "SELECT * FROM operations WHERE request_id=?", (request_id,)
                 ).fetchone()

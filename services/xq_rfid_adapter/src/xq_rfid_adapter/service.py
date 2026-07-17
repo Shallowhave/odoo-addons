@@ -258,12 +258,22 @@ class RfidService:
             self._require_active_locked()
             return operation(*args, **kwargs)
 
+    def acquire_device_lease(self, device_id: str) -> None:
+        self._mutate_store(
+            self._store.acquire_lease,
+            device_id,
+            self._owner_id,
+            self._lease_seconds,
+            cancellation_event=self._cancellation_event,
+        )
+
     def _renew(self, device_id: str) -> None:
         self._mutate_store(
             self._store.renew_lease,
             device_id,
             self._owner_id,
             self._lease_seconds,
+            cancellation_event=self._cancellation_event,
         )
 
     def call_driver(self, device_id: str, method, *args):
@@ -277,7 +287,10 @@ class RfidService:
             with self._lock:
                 self._require_active_locked()
                 self._store.renew_lease(
-                    device_id, self._owner_id, self._lease_seconds
+                    device_id,
+                    self._owner_id,
+                    self._lease_seconds,
+                    cancellation_event=self._cancellation_event,
                 )
                 self._heartbeat_stops.add(stopped)
 
@@ -296,8 +309,10 @@ class RfidService:
             )
             call_error = None
             result = None
+            heartbeat_started = False
             try:
                 thread.start()
+                heartbeat_started = True
                 with self._driver_start_condition:
                     if self._cancellation_event.is_set():
                         raise StoreError("lease_conflict")
@@ -312,14 +327,15 @@ class RfidService:
                 call_error = error
             finally:
                 stopped.set()
-                thread.join()
+                if heartbeat_started:
+                    thread.join()
                 with self._lock:
                     self._heartbeat_stops.discard(stopped)
+            if call_error is not None:
+                raise call_error
             self._renew(device_id)
             if lease_error:
                 raise lease_error[0]
-            if call_error is not None:
-                raise call_error
             return result
 
     @staticmethod
@@ -409,6 +425,7 @@ class RfidService:
             self._owner_id,
             expected_state,
             self._boundary_retry_seconds,
+            cancellation_event=self._cancellation_event,
         )
         raise _error(error.code, device_code=error.device_code) from None
 
@@ -422,12 +439,16 @@ class RfidService:
             self._store.transition,
             work["request_id"], self._owner_id, expected_state, new_state,
             error=safe.to_dict(),
+            cancellation_event=self._cancellation_event,
         )
 
     def process_operation(self, device_id: str) -> dict | None:
         work = self._mutate_store(
             self._store.claim_next_work,
-            device_id, self._owner_id, self._lease_seconds,
+            device_id,
+            self._owner_id,
+            self._lease_seconds,
+            cancellation_event=self._cancellation_event,
         )
         if work is None:
             return None
@@ -435,6 +456,7 @@ class RfidService:
         self._mutate_store(
             self._store.transition,
             work["request_id"], self._owner_id, "claimed", "inventorying",
+            cancellation_event=self._cancellation_event,
         )
         try:
             driver = self._driver(device_id)
@@ -451,6 +473,7 @@ class RfidService:
                 self._store.prepare_write,
                 work["request_id"], self._owner_id, identity_hash(target),
                 hashlib.sha256(before).hexdigest(),
+                cancellation_event=self._cancellation_event,
             )
         except AdapterError as error:
             if error.code in _BOUNDARY_CODES:
@@ -476,6 +499,7 @@ class RfidService:
         self._mutate_store(
             self._store.transition,
             work["request_id"], self._owner_id, "writing", "verifying",
+            cancellation_event=self._cancellation_event,
         )
         internal = None
         try:
@@ -515,6 +539,7 @@ class RfidService:
                 self._mutate_store(
                     self._store.begin_controlled_rewrite,
                     work["request_id"], self._owner_id,
+                    cancellation_event=self._cancellation_event,
                 )
                 try:
                     self._write(device_id, driver, target, payload)
@@ -550,13 +575,17 @@ class RfidService:
                 "epc_identity": _identity_descriptor(target.epc),
                 "tid_identity": _identity_descriptor(target.tid),
             },
+            cancellation_event=self._cancellation_event,
         )
         return result
 
     def recover_uncertain(self, request_id: str) -> dict:
         work = self._mutate_store(
             self._store.resume_uncertain,
-            request_id, self._owner_id, self._lease_seconds,
+            request_id,
+            self._owner_id,
+            self._lease_seconds,
+            cancellation_event=self._cancellation_event,
         )
         driver = self._driver(work["device_id"])
         try:

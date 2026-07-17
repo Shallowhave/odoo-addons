@@ -4,6 +4,8 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
+from unittest import mock
 
 from xq_rfid_adapter.domain import AdapterError, AdapterErrorCode, DeviceCapabilities, TagObservation, TagTarget
 from xq_rfid_adapter.drivers.fake import FakeDriver
@@ -258,6 +260,143 @@ class QueueCase(unittest.TestCase):
         self.assertFalse(caller.is_alive())
         self.assertEqual(outcome[0]["status"], "connected")
 
+    def test_dequeued_diagnostic_cannot_acquire_lease_after_close(self):
+        driver = FakeDriver(capabilities=capabilities())
+        queue = self.make_queue(
+            {"reader-1": driver}, poll_interval=5.0, shutdown_timeout=0.05,
+            diagnostic_timeout=1.0,
+        )
+        wait_for(lambda: self.store.get_lease("reader-1") is None)
+        worker = queue._workers["reader-1"]
+        dequeued = threading.Event()
+        release = threading.Event()
+        outcome = []
+        lease_calls = []
+        original_get = worker.diagnostics.get_nowait
+        original_acquire = self.store.acquire_lease
+
+        def paused_get():
+            item = original_get()
+            dequeued.set()
+            release.wait(1)
+            return item
+
+        def recording_acquire(*args, **kwargs):
+            lease_calls.append((args, kwargs))
+            return original_acquire(*args, **kwargs)
+
+        worker.diagnostics.get_nowait = paused_get
+        self.store.acquire_lease = recording_acquire
+        caller = threading.Thread(
+            target=lambda: self._capture_diagnostic(queue, outcome)
+        )
+        caller.start()
+        self.assertTrue(dequeued.wait(1))
+
+        queue.close()
+        release.set()
+        caller.join(1)
+
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(lease_calls, [])
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], QueueError)
+        self.assertEqual(outcome[0].code, "queue_closed")
+        self.assertIsNone(self.store.get_lease("reader-1"))
+        self.assertEqual(
+            [record["operation"] for record in driver.call_records],
+            ["close"],
+        )
+
+    def test_inflight_diagnostic_lease_acquire_rolls_back_after_close(self):
+        driver = FakeDriver(capabilities=capabilities())
+        queue = self.make_queue(
+            {"reader-1": driver}, poll_interval=5.0, shutdown_timeout=0.05,
+            diagnostic_timeout=1.0,
+        )
+        wait_for(lambda: self.store.get_lease("reader-1") is None)
+        entered = threading.Event()
+        release = threading.Event()
+        outcome = []
+        original_acquire = self.store.acquire_lease
+        original_transaction = self.store._transaction
+        acquire_active = threading.Event()
+
+        @contextmanager
+        def paused_transaction(*args, **kwargs):
+            with original_transaction(*args, **kwargs) as connection:
+                yield connection
+                if acquire_active.is_set():
+                    entered.set()
+                    release.wait(1)
+
+        def marked_acquire(*args, **kwargs):
+            acquire_active.set()
+            try:
+                return original_acquire(*args, **kwargs)
+            finally:
+                acquire_active.clear()
+
+        self.store._transaction = paused_transaction
+        self.store.acquire_lease = marked_acquire
+        caller = threading.Thread(
+            target=lambda: self._capture_diagnostic(queue, outcome)
+        )
+        caller.start()
+        self.assertTrue(entered.wait(1))
+
+        queue.close()
+        release.set()
+        caller.join(1)
+
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], StoreError)
+        self.assertEqual(outcome[0].code, "lease_conflict")
+        self.assertIsNone(self.store.get_lease("reader-1"))
+        self.assertEqual(
+            [record["operation"] for record in driver.call_records],
+            ["close"],
+        )
+
+    def test_close_after_diagnostic_lease_commit_releases_idle_lease(self):
+        driver = FakeDriver(capabilities=capabilities())
+        queue = self.make_queue(
+            {"reader-1": driver}, poll_interval=5.0, shutdown_timeout=0.05,
+            diagnostic_timeout=1.0,
+        )
+        wait_for(lambda: self.store.get_lease("reader-1") is None)
+        committed = threading.Event()
+        release = threading.Event()
+        outcome = []
+        original_acquire = queue._service.acquire_device_lease
+
+        def paused_acquire(device_id):
+            original_acquire(device_id)
+            committed.set()
+            release.wait(1)
+
+        queue._service.acquire_device_lease = paused_acquire
+        caller = threading.Thread(
+            target=lambda: self._capture_diagnostic(queue, outcome)
+        )
+        caller.start()
+        self.assertTrue(committed.wait(1))
+
+        queue.close()
+        release.set()
+        caller.join(1)
+
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], StoreError)
+        self.assertEqual(outcome[0].code, "lease_conflict")
+        self.assertIsNone(self.store.get_lease("reader-1"))
+        self.assertEqual(
+            [record["operation"] for record in driver.call_records],
+            ["close"],
+        )
+
     def test_diagnostic_hardware_call_is_surrounded_by_lease_renewal(self):
         events = []
 
@@ -415,6 +554,10 @@ class QueueCase(unittest.TestCase):
                     "error": {"code": "write_uncertain"},
                 }
 
+            def acquire_device_lease(self, device_id):
+                return None
+
+
         worker = _DeviceWorker(
             "reader-1",
             FakeDriver(),
@@ -436,6 +579,50 @@ class QueueCase(unittest.TestCase):
         self.assertEqual(worker.service.calls, ["oldest"])
         self.assertFalse(worker._recover_one_tick())
         self.assertEqual(worker.service.calls, ["oldest"])
+
+    def test_recovery_close_after_lease_commit_releases_idle_lease(self):
+        class PausedRecoveryService:
+            lease_seconds = 30
+
+            def __init__(self):
+                self.committed = threading.Event()
+                self.release = threading.Event()
+
+            def acquire_device_lease(self, device_id):
+                self.store.acquire_lease(device_id, "worker-a", 30)
+                self.committed.set()
+                self.release.wait(1)
+
+            def recover_uncertain(self, request_id):
+                raise StoreError("lease_conflict")
+
+        service = PausedRecoveryService()
+        service.store = self.store
+        worker = _DeviceWorker(
+            "reader-1",
+            FakeDriver(),
+            service,
+            self.store,
+            "worker-a",
+            poll_interval=1.0,
+            poll_limit=1,
+            recovery_batch=1,
+            max_diagnostics=1,
+        )
+        self.store.uncertain_request_ids = lambda *args, **kwargs: ["uncertain"]
+        outcome = []
+        runner = threading.Thread(
+            target=lambda: outcome.append(worker._recover_one_tick())
+        )
+        runner.start()
+        self.assertTrue(service.committed.wait(1))
+        worker.stop()
+        service.release.set()
+        runner.join(1)
+
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(outcome, [False])
+        self.assertIsNone(self.store.get_lease("reader-1"))
 
     def test_restart_uncertain_recovery_is_verify_first(self):
         target = TagTarget("AABBCCDD", "00112233")
@@ -476,6 +663,126 @@ class QueueCase(unittest.TestCase):
         wait_for(lambda: self.store.get("uncertain")["state"] == "succeeded")
         operations = [record["operation"] for record in resumed.call_records]
         self.assertEqual(operations[:2], ["inventory", "read_memory"])
+
+    def test_partial_worker_start_failure_rolls_back_started_workers(self):
+        drivers = {
+            "reader-1": FakeDriver(capabilities=capabilities()),
+            "reader-2": FakeDriver(capabilities=capabilities()),
+        }
+        original_start = threading.Thread.start
+        starts = 0
+
+        def fail_second_worker(thread):
+            nonlocal starts
+            if thread.name.startswith("xq-rfid-"):
+                starts += 1
+                if starts == 2:
+                    raise RuntimeError("worker start failed")
+            return original_start(thread)
+
+        with mock.patch.object(threading.Thread, "start", fail_second_worker):
+            with self.assertRaisesRegex(RuntimeError, "worker start failed"):
+                DeviceQueue(
+                    self.store,
+                    drivers,
+                    capabilities={
+                        device_id: capabilities() for device_id in drivers
+                    },
+                    owner_id="startup-owner",
+                )
+
+        wait_for(lambda: drivers["reader-1"].call_counts.get("close", 0) == 1)
+        self.assertEqual(drivers["reader-2"].call_counts.get("close", 0), 1)
+        self.assertFalse(any(
+            thread.name == "xq-rfid-reader-1" and thread.is_alive()
+            for thread in threading.enumerate()
+        ))
+
+    def test_partial_start_rollback_closes_every_unstarted_driver(self):
+        drivers = {
+            f"reader-{index}": FakeDriver(capabilities=capabilities())
+            for index in range(3)
+        }
+        original_start = threading.Thread.start
+        starts = 0
+
+        def fail_second_worker(thread):
+            nonlocal starts
+            if thread.name.startswith("xq-rfid-"):
+                starts += 1
+                if starts == 2:
+                    raise RuntimeError("worker start failed")
+            return original_start(thread)
+
+        with mock.patch.object(threading.Thread, "start", fail_second_worker):
+            with self.assertRaisesRegex(RuntimeError, "worker start failed"):
+                DeviceQueue(
+                    self.store,
+                    drivers,
+                    capabilities={
+                        device_id: capabilities() for device_id in drivers
+                    },
+                    owner_id="startup-owner",
+                    shutdown_timeout=0,
+                )
+
+        wait_for(lambda: all(
+            driver.call_counts.get("close", 0) == 1
+            for driver in drivers.values()
+        ))
+
+    def test_partial_start_rollback_uses_shutdown_deadline(self):
+        close_entered = threading.Event()
+        release_close = threading.Event()
+
+        class BlockingCloseDriver(FakeDriver):
+            def close(self):
+                close_entered.set()
+                release_close.wait(1)
+                super().close()
+
+        drivers = {
+            "reader-1": BlockingCloseDriver(capabilities=capabilities()),
+            "reader-2": FakeDriver(capabilities=capabilities()),
+        }
+        original_start = threading.Thread.start
+        starts = 0
+        outcome = []
+
+        def fail_second_worker(thread):
+            nonlocal starts
+            if thread.name.startswith("xq-rfid-"):
+                starts += 1
+                if starts == 2:
+                    raise RuntimeError("worker start failed")
+            return original_start(thread)
+
+        def construct():
+            try:
+                DeviceQueue(
+                    self.store,
+                    drivers,
+                    capabilities={
+                        device_id: capabilities() for device_id in drivers
+                    },
+                    owner_id="startup-owner",
+                    shutdown_timeout=0.05,
+                )
+            except BaseException as error:
+                outcome.append(error)
+
+        with mock.patch.object(threading.Thread, "start", fail_second_worker):
+            constructor = threading.Thread(target=construct)
+            constructor.start()
+            self.assertTrue(close_entered.wait(1))
+            constructor.join(0.2)
+
+        self.assertFalse(constructor.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], RuntimeError)
+        self.assertEqual(str(outcome[0]), "worker start failed")
+        release_close.set()
+        wait_for(lambda: drivers["reader-1"].call_counts.get("close", 0) == 1)
 
     def test_bounds_worker_count_and_default_owner_has_128_random_bits(self):
         drivers = {f"reader-{index}": FakeDriver() for index in range(65)}
@@ -615,6 +922,59 @@ class QueueCase(unittest.TestCase):
             [record["operation"] for record in driver.call_records],
             ["close"],
         )
+
+    def test_claim_commit_paused_across_close_is_rolled_back(self):
+        driver = FakeDriver(capabilities=capabilities())
+        queue = self.make_queue(
+            {"reader-1": driver}, poll_interval=5.0, shutdown_timeout=0.05
+        )
+        queue._workers["reader-1"].stop()
+        queue.worker_threads[0].join(1)
+        self.store.create_or_get(request("claim-race"))
+        commit_reached = threading.Event()
+        release_commit = threading.Event()
+        original_transaction = self.store._transaction
+        outcome = []
+
+        @contextmanager
+        def paused_transaction(*args, **kwargs):
+            with original_transaction(*args, **kwargs) as connection:
+                yield connection
+                if kwargs.get("cancellation_event") is queue._cancellation_event:
+                    commit_reached.set()
+                    release_commit.wait(1)
+
+        self.store._transaction = paused_transaction
+        worker = threading.Thread(
+            target=lambda: self._capture_process_operation(
+                queue._service, outcome
+            )
+        )
+        worker.start()
+        self.assertTrue(commit_reached.wait(1))
+
+        queue.close()
+        release_commit.set()
+        worker.join(1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], StoreError)
+        self.assertEqual(outcome[0].code, "lease_conflict")
+        self.assertEqual(self.store.get("claim-race")["state"], "queued")
+        self.assertIsNone(self.store.get_lease("reader-1"))
+        self.assertEqual(
+            [record["operation"] for record in driver.call_records],
+            ["close"],
+        )
+
+    @staticmethod
+    def _capture_process_operation(service, outcome):
+        try:
+            result = service.process_operation("reader-1")
+        except BaseException as error:
+            result = error
+        outcome.append(result)
 
     def test_close_stops_blocked_call_heartbeat_so_expired_lease_can_be_taken_over(self):
         target = TagTarget("AABBCCDD", "00112233")
