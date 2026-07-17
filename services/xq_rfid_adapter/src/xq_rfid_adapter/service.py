@@ -200,10 +200,12 @@ class RfidService:
         return capability
 
     def test_connection(self, device_id: str) -> dict:
-        return self._driver(device_id).test_connection()
+        driver = self._driver(device_id)
+        return self._call(device_id, driver.test_connection)
 
     def get_device(self, device_id: str) -> dict:
-        return self._driver(device_id).get_device_info()
+        driver = self._driver(device_id)
+        return self._call(device_id, driver.get_device_info)
 
     def submit_operation(self, request: dict) -> dict:
         validate_payload(request)

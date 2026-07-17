@@ -815,6 +815,17 @@ class ServiceCase(unittest.TestCase):
                 service.close()
                 store.close()
 
+    def test_public_diagnostics_after_close_never_call_driver(self):
+        self.service.close()
+
+        for method in (self.service.test_connection, self.service.get_device):
+            with self.subTest(method=method.__name__):
+                with self.assertRaises(StoreError) as caught:
+                    method("reader-1")
+                self.assertEqual(caught.exception.code, "lease_conflict")
+
+        self.assertEqual(self.driver.call_records, [])
+
     def test_call_driver_after_close_never_renews_or_calls_driver(self):
         self.store.acquire_lease("reader-1", "worker-a", 30)
         renew_calls = []
