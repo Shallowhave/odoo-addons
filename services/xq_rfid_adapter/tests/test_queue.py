@@ -731,6 +731,43 @@ class QueueCase(unittest.TestCase):
             for driver in drivers.values()
         ))
 
+    def test_cleanup_closer_start_failure_preserves_original_and_closes_all(self):
+        drivers = {
+            f"reader-{index}": FakeDriver(capabilities=capabilities())
+            for index in range(3)
+        }
+        original_start = threading.Thread.start
+        worker_starts = 0
+
+        def fail_worker_and_closers(thread):
+            nonlocal worker_starts
+            if thread.name.startswith("xq-rfid-close-"):
+                raise RuntimeError("closer start failed")
+            if thread.name.startswith("xq-rfid-"):
+                worker_starts += 1
+                if worker_starts == 2:
+                    raise RuntimeError("worker start failed")
+            return original_start(thread)
+
+        with mock.patch.object(
+            threading.Thread, "start", fail_worker_and_closers
+        ):
+            with self.assertRaisesRegex(RuntimeError, "worker start failed"):
+                DeviceQueue(
+                    self.store,
+                    drivers,
+                    capabilities={
+                        device_id: capabilities() for device_id in drivers
+                    },
+                    owner_id="startup-owner",
+                    shutdown_timeout=0.2,
+                )
+
+        wait_for(lambda: all(
+            driver.call_counts.get("close", 0) == 1
+            for driver in drivers.values()
+        ))
+
     def test_partial_start_rollback_uses_shutdown_deadline(self):
         close_entered = threading.Event()
         release_close = threading.Event()

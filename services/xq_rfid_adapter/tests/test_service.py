@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 
 from xq_rfid_adapter.domain import (
     AdapterError,
@@ -438,6 +439,223 @@ class ServiceCase(unittest.TestCase):
                 finally:
                     service.close()
                     store.close()
+
+    def test_unexpected_inventory_error_fails_safely_and_releases_lease(self):
+        class UnexpectedInventoryDriver(FakeDriver):
+            def inventory(self, duration_ms, include_tid):
+                raise RuntimeError("secret inventory failure")
+
+        driver = UnexpectedInventoryDriver(capabilities=capabilities())
+        service = RfidService(
+            self.store,
+            {"reader-1": driver},
+            owner_id="worker-a",
+            capabilities={"reader-1": capabilities()},
+        )
+        service.submit_operation(request())
+
+        result = service.process_operation("reader-1")
+
+        self.assertEqual(result["state"], "failed_manual")
+        self.assertEqual(result["error"]["code"], "device_error")
+        self.assertNotIn("secret", repr(result))
+        self.assertEqual(self.store.get("r1")["state"], "failed_manual")
+        self.store.release_lease("reader-1", "worker-a")
+        self.assertIsNone(self.store.get_lease("reader-1"))
+        service.close()
+
+    def test_unexpected_write_error_is_verified_before_finishing(self):
+        class UnexpectedWriteDriver(FakeDriver):
+            def write_memory(self, target, bank, word_offset, data):
+                super().write_memory(target, bank, word_offset, data)
+                raise RuntimeError("secret write failure")
+
+        driver = UnexpectedWriteDriver(
+            capabilities=capabilities(),
+            inventory_snapshots=[
+                [TagObservation(self.target)], [TagObservation(self.target)],
+                [TagObservation(self.target)],
+            ],
+            user_memory={self.target: b"\x00" * 24},
+        )
+        service = RfidService(
+            self.store,
+            {"reader-1": driver},
+            owner_id="worker-a",
+            capabilities={"reader-1": capabilities()},
+        )
+        service.submit_operation(request())
+
+        result = service.process_operation("reader-1")
+
+        self.assertEqual(result["state"], "succeeded")
+        self.assertNotIn("secret", repr(result))
+        self.assertEqual(self.store.get("r1")["state"], "succeeded")
+        self.store.release_lease("reader-1", "worker-a")
+        self.assertIsNone(self.store.get_lease("reader-1"))
+        service.close()
+
+    def test_controlled_rewrite_transition_rolls_back_on_close(self):
+        cancellation = threading.Event()
+        service = RfidService(
+            self.store,
+            {"reader-1": self.driver},
+            owner_id="worker-a",
+            capabilities={"reader-1": capabilities()},
+            cancellation_event=cancellation,
+        )
+        service.submit_operation(request())
+        work = self.store.claim_next_work("reader-1", "worker-a", 30)
+        self.store.transition(
+            "r1", "worker-a", "claimed", "inventorying"
+        )
+        self.store.prepare_write(
+            "r1", "worker-a", identity_hash(self.target), "0" * 64
+        )
+        self.store.transition(
+            "r1", "worker-a", "writing", "verifying"
+        )
+        self.store.begin_controlled_rewrite("r1", "worker-a")
+        work = {**work, "state": "writing"}
+        entered = threading.Event()
+        release = threading.Event()
+        transition_active = threading.Event()
+        outcome = []
+        original_transition = self.store.transition
+        original_transaction = self.store._transaction
+
+        @contextmanager
+        def paused_transaction(*args, **kwargs):
+            with original_transaction(*args, **kwargs) as connection:
+                yield connection
+                if transition_active.is_set():
+                    entered.set()
+                    release.wait(1)
+
+        def marked_transition(*args, **kwargs):
+            if args[2:4] != ("writing", "verifying"):
+                return original_transition(*args, **kwargs)
+            transition_active.set()
+            try:
+                return original_transition(*args, **kwargs)
+            finally:
+                transition_active.clear()
+
+        self.store._transaction = paused_transaction
+        self.store.transition = marked_transition
+        service._write = lambda *args: None
+        service._read = lambda *args: payload()
+        worker = threading.Thread(
+            target=lambda: self._capture_custom(
+                outcome,
+                lambda: service._write_and_verify(
+                    work, self.driver, self.target, b"\x00" * 24,
+                    initial=False,
+                ),
+            )
+        )
+        worker.start()
+        self.assertTrue(entered.wait(1))
+        closer = threading.Thread(target=service.close)
+        closer.start()
+        self.assertTrue(cancellation.wait(1))
+        release.set()
+        worker.join(1)
+        closer.join(1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], StoreError)
+        self.assertEqual(outcome[0].code, "lease_conflict")
+        operation = self.store.get("r1")
+        internal = self.store.get_work_item("r1", "worker-a")
+        self.assertEqual(operation["state"], "writing")
+        self.assertEqual(internal["rewrite_count"], 1)
+
+    def test_recovery_controlled_rewrite_rolls_back_on_close(self):
+        self.driver.write_modes = ["no_apply_then_timeout"]
+        self.driver.scripted_errors = {
+            "read_memory": [
+                None,
+                AdapterError(AdapterErrorCode.TIMEOUT, "private"),
+            ]
+        }
+        self.service.submit_operation(request())
+        self.assertEqual(
+            self.service.process_operation("reader-1")["state"],
+            "failed_retryable",
+        )
+        cancellation = threading.Event()
+        resumed_driver = FakeDriver(
+            capabilities=capabilities(),
+            inventory_snapshots=[
+                [TagObservation(self.target)], [TagObservation(self.target)],
+            ],
+            user_memory={self.target: b"\x00" * 24},
+        )
+        service = RfidService(
+            self.store,
+            {"reader-1": resumed_driver},
+            owner_id="worker-a",
+            capabilities={"reader-1": capabilities()},
+            cancellation_event=cancellation,
+        )
+        entered = threading.Event()
+        release = threading.Event()
+        begin_active = threading.Event()
+        outcome = []
+        original_begin = self.store.begin_controlled_rewrite
+        original_transaction = self.store._transaction
+
+        @contextmanager
+        def paused_transaction(*args, **kwargs):
+            with original_transaction(*args, **kwargs) as connection:
+                yield connection
+                if begin_active.is_set():
+                    entered.set()
+                    release.wait(1)
+
+        def marked_begin(*args, **kwargs):
+            begin_active.set()
+            try:
+                return original_begin(*args, **kwargs)
+            finally:
+                begin_active.clear()
+
+        self.store._transaction = paused_transaction
+        self.store.begin_controlled_rewrite = marked_begin
+        worker = threading.Thread(
+            target=lambda: self._capture_custom(
+                outcome, lambda: service.recover_uncertain("r1")
+            )
+        )
+        worker.start()
+        self.assertTrue(entered.wait(1))
+        closer = threading.Thread(target=service.close)
+        closer.start()
+        self.assertTrue(cancellation.wait(1))
+        release.set()
+        worker.join(1)
+        closer.join(1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], StoreError)
+        self.assertEqual(outcome[0].code, "lease_conflict")
+        operation = self.store.get("r1")
+        internal = self.store.get_work_item("r1", "worker-a")
+        self.assertEqual(operation["state"], "verifying")
+        self.assertEqual(internal["rewrite_count"], 0)
+
+    @staticmethod
+    def _capture_custom(outcome, operation):
+        try:
+            result = operation()
+        except BaseException as error:
+            result = error
+        outcome.append(result)
 
     def test_no_apply_timeout_allows_exactly_one_controlled_rewrite(self):
         self.driver.write_modes = ["no_apply_then_timeout", "apply_and_return"]

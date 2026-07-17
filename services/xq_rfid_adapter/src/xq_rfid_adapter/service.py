@@ -78,6 +78,10 @@ def _safe_error(error: AdapterError) -> AdapterError:
     return _error(code, device_code=error.device_code)
 
 
+class _UnexpectedDriverError(Exception):
+    """Internal marker that deliberately discards unsafe Driver details."""
+
+
 def validate_payload(request: object) -> bytes:
     try:
         if not isinstance(request, dict):
@@ -310,6 +314,7 @@ class RfidService:
             call_error = None
             result = None
             heartbeat_started = False
+            driver_invoked = False
             try:
                 thread.start()
                 heartbeat_started = True
@@ -318,6 +323,7 @@ class RfidService:
                         raise StoreError("lease_conflict")
                     self._driver_starts += 1
                 try:
+                    driver_invoked = True
                     result = method(*args)
                 finally:
                     with self._driver_start_condition:
@@ -341,6 +347,10 @@ class RfidService:
             if lease_error:
                 raise lease_error[0]
             if call_error is not None:
+                if isinstance(call_error, (AdapterError, StoreError)):
+                    raise call_error
+                if driver_invoked:
+                    raise _UnexpectedDriverError from None
                 raise call_error
             return result
 
@@ -485,6 +495,10 @@ class RfidService:
             if error.code in _BOUNDARY_CODES:
                 self._defer_boundary(work, "inventorying", error)
             return self._fail(work, "inventorying", error)
+        except _UnexpectedDriverError:
+            return self._fail(
+                work, "inventorying", _error(AdapterErrorCode.DEVICE_ERROR)
+            )
         return self._write_and_verify(work, driver, target, before, initial=True)
 
     def _write_and_verify(
@@ -493,15 +507,15 @@ class RfidService:
         device_id = work["device_id"]
         payload = work["payload"]
         ambiguous = False
-        boundary_ambiguous = False
         try:
             self._write(device_id, driver, target, payload)
         except AdapterError as error:
             if error.code in _UNPROVABLE_WRITE_CODES:
                 ambiguous = True
-                boundary_ambiguous = error.code in _BOUNDARY_CODES
             else:
                 return self._fail(work, "writing", error)
+        except _UnexpectedDriverError:
+            ambiguous = True
         self._mutate_store(
             self._store.transition,
             work["request_id"], self._owner_id, "writing", "verifying",
@@ -524,6 +538,13 @@ class RfidService:
                 *_BOUNDARY_CODES,
             }
             return self._fail(work, "verifying", error, uncertain=uncertain)
+        except _UnexpectedDriverError:
+            return self._fail(
+                work,
+                "verifying",
+                _error(AdapterErrorCode.WRITE_UNCERTAIN),
+                uncertain=True,
+            )
         if current == payload:
             return self._succeed(work, target)
         if ambiguous and current == before:
@@ -542,6 +563,13 @@ class RfidService:
                         error,
                         uncertain=error.code in _UNPROVABLE_WRITE_CODES,
                     )
+                except _UnexpectedDriverError:
+                    return self._fail(
+                        work,
+                        "verifying",
+                        _error(AdapterErrorCode.WRITE_UNCERTAIN),
+                        uncertain=True,
+                    )
                 self._mutate_store(
                     self._store.begin_controlled_rewrite,
                     work["request_id"], self._owner_id,
@@ -552,6 +580,8 @@ class RfidService:
                 except AdapterError as error:
                     if error.code not in _UNPROVABLE_WRITE_CODES:
                         return self._fail(work, "writing", error)
+                except _UnexpectedDriverError:
+                    pass
                 self._mutate_store(
                     self._store.transition,
                     work["request_id"], self._owner_id, "writing", "verifying",
@@ -565,6 +595,13 @@ class RfidService:
                         "verifying",
                         error,
                         uncertain=error.code in _UNPROVABLE_WRITE_CODES,
+                    )
+                except _UnexpectedDriverError:
+                    return self._fail(
+                        work,
+                        "verifying",
+                        _error(AdapterErrorCode.WRITE_UNCERTAIN),
+                        uncertain=True,
                     )
                 if second == payload:
                     return self._succeed(work, target)
@@ -613,6 +650,13 @@ class RfidService:
                 error,
                 uncertain=error.code in _UNPROVABLE_WRITE_CODES,
             )
+        except _UnexpectedDriverError:
+            return self._fail(
+                work,
+                "verifying",
+                _error(AdapterErrorCode.WRITE_UNCERTAIN),
+                uncertain=True,
+            )
         if current == work["payload"]:
             return self._succeed(work, target)
         if (
@@ -634,6 +678,13 @@ class RfidService:
                     "verifying",
                     error,
                     uncertain=error.code in _UNPROVABLE_WRITE_CODES,
+                )
+            except _UnexpectedDriverError:
+                return self._fail(
+                    work,
+                    "verifying",
+                    _error(AdapterErrorCode.WRITE_UNCERTAIN),
+                    uncertain=True,
                 )
             self._mutate_store(
                 self._store.begin_controlled_rewrite,

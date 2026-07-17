@@ -343,6 +343,21 @@ class TestConfig(unittest.TestCase):
                 with self.assertRaises(ConfigError):
                     load_config(self.config_path)
 
+    def test_more_than_64_devices_are_rejected(self):
+        value = dict(self.base)
+        value["devices"] = {
+            f"reader-{index}": {"driver": "fake"}
+            for index in range(65)
+        }
+        self.write(value)
+
+        with self.assertRaises(ConfigError) as raised:
+            load_config(self.config_path)
+
+        self.assertEqual(
+            str(raised.exception), "too many RFID devices are configured"
+        )
+
     def test_device_whitelist_exact_and_immutable(self):
         self.write(self.base)
         config = load_config(self.config_path)
@@ -1664,6 +1679,31 @@ with tempfile.TemporaryDirectory() as directory:
         self.assertEqual(raised.exception.code, 2)
         self.assertNotIn("/private", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_check_config_rejects_65_devices_without_side_effects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "must-not-exist.sqlite3"
+            secret = root / "secret"
+            secret.write_bytes(b"q" * 32)
+            config = root / "config.json"
+            config.write_text(json.dumps({
+                "bind": {"host": "127.0.0.1", "port": 65535},
+                "sqlite_path": str(database), "production": False,
+                "tls": None,
+                "devices": {
+                    f"reader-{index}": {"driver": "fake"}
+                    for index in range(65)
+                },
+            }), encoding="utf-8")
+            env = dict(os.environ, RFID_ADAPTER_SECRET_FILE=str(secret))
+            result = subprocess.run(
+                [sys.executable, "-m", "xq_rfid_adapter", "--config", str(config), "--check-config"],
+                env=env, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("too many RFID devices", result.stderr)
+            self.assertFalse(database.exists())
 
     def test_check_config_does_not_create_database_or_bind(self):
         with tempfile.TemporaryDirectory() as directory:

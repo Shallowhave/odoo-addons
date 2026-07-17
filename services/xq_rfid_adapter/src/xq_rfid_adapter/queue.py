@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import _thread
 import queue
 import re
 import secrets
@@ -366,8 +367,17 @@ class DeviceQueue:
                         name=f"xq-rfid-close-{worker.device_id}",
                         daemon=True,
                     )
-                    closer.start()
-                    closers.append(closer)
+                    try:
+                        closer.start()
+                    except BaseException:
+                        try:
+                            _thread.start_new_thread(
+                                self._close_driver, (worker.driver,)
+                            )
+                        except BaseException:
+                            pass
+                    else:
+                        closers.append(closer)
             for closer in closers:
                 remaining = startup_deadline - time.monotonic()
                 if remaining <= 0:

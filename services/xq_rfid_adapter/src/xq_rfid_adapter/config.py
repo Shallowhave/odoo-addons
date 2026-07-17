@@ -47,6 +47,7 @@ _BIND_KEYS = frozenset({"host", "port"})
 _TLS_KEYS = frozenset({"cert_file", "key_file"})
 _DEVICE_KEYS = frozenset({"driver"})
 _IDENTIFIER_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+_MAX_DEVICES = 64
 
 
 def _object(value: object, name: str) -> dict:
@@ -148,6 +149,8 @@ def load_config(path: str | os.PathLike[str]) -> AdapterConfig:
         raise ConfigError("plaintext TCP bind must use loopback")
 
     devices_raw = _object(root["devices"], "devices")
+    if len(devices_raw) > _MAX_DEVICES:
+        raise ConfigError("too many RFID devices are configured")
     devices: dict[str, DeviceConfig] = {}
     for raw_device_id, raw_device in devices_raw.items():
         device_id = _safe_identifier(raw_device_id, "device id")
