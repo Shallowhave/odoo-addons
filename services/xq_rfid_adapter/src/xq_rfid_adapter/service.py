@@ -34,6 +34,7 @@ _BOUNDARY_CODES = frozenset({
 _UNPROVABLE_WRITE_CODES = frozenset({
     AdapterErrorCode.TIMEOUT,
     AdapterErrorCode.CONNECTION_ERROR,
+    AdapterErrorCode.WRITE_UNCERTAIN,
     *_BOUNDARY_CODES,
 })
 _PAYLOAD_RE = re.compile(r"\A[0-9A-Fa-f]{48}\Z")
@@ -203,7 +204,11 @@ class RfidService:
 
     def submit_operation(self, request: dict) -> dict:
         validate_payload(request)
-        operation = self._mutate_store(self._store.create_or_get, request)
+        operation = self._mutate_store(
+            self._store.create_or_get,
+            request,
+            cancellation_event=self._cancellation_event,
+        )
         if self._wake_device is not None:
             self._wake_device(operation["device_id"])
         return self._submitted(operation)
@@ -260,47 +265,48 @@ class RfidService:
         return self._call(device_id, method, *args)
 
     def _call(self, device_id: str, method, *args):
-        stopped = threading.Event()
-        lease_error = []
-        interval = max(0.05, self._lease_seconds / 3)
-        with self._lock:
-            self._require_active_locked()
-            self._store.renew_lease(
-                device_id, self._owner_id, self._lease_seconds
-            )
-            self._heartbeat_stops.add(stopped)
-
-        def heartbeat() -> None:
-            while not stopped.wait(interval):
-                try:
-                    self._renew(device_id)
-                except StoreError as error:
-                    lease_error.append(error)
-                    return
-
-        thread = threading.Thread(
-            target=heartbeat,
-            name=f"xq-rfid-lease-{device_id}",
-            daemon=True,
-        )
-        thread.start()
-        call_error = None
-        result = None
-        try:
-            result = method(*args)
-        except BaseException as error:
-            call_error = error
-        finally:
-            stopped.set()
-            thread.join()
+        with self._store.device_guard(device_id, self._cancellation_event):
+            stopped = threading.Event()
+            lease_error = []
+            interval = max(0.05, self._lease_seconds / 3)
             with self._lock:
-                self._heartbeat_stops.discard(stopped)
-        self._renew(device_id)
-        if lease_error:
-            raise lease_error[0]
-        if call_error is not None:
-            raise call_error
-        return result
+                self._require_active_locked()
+                self._store.renew_lease(
+                    device_id, self._owner_id, self._lease_seconds
+                )
+                self._heartbeat_stops.add(stopped)
+
+            def heartbeat() -> None:
+                while not stopped.wait(interval):
+                    try:
+                        self._renew(device_id)
+                    except StoreError as error:
+                        lease_error.append(error)
+                        return
+
+            thread = threading.Thread(
+                target=heartbeat,
+                name=f"xq-rfid-lease-{device_id}",
+                daemon=True,
+            )
+            thread.start()
+            call_error = None
+            result = None
+            try:
+                result = method(*args)
+            except BaseException as error:
+                call_error = error
+            finally:
+                stopped.set()
+                thread.join()
+                with self._lock:
+                    self._heartbeat_stops.discard(stopped)
+            self._renew(device_id)
+            if lease_error:
+                raise lease_error[0]
+            if call_error is not None:
+                raise call_error
+            return result
 
     @staticmethod
     def _select_target(observations: list[TagObservation], include_tid: bool) -> TagTarget:
@@ -360,7 +366,7 @@ class RfidService:
             or type(result["written"]) is not bool
             or not result["written"]
         ):
-            raise _error(AdapterErrorCode.DEVICE_ERROR)
+            raise _error(AdapterErrorCode.WRITE_UNCERTAIN)
 
     def _reconfirm_persisted_target(
         self,
@@ -455,11 +461,6 @@ class RfidService:
             self._store.transition,
             work["request_id"], self._owner_id, "writing", "verifying",
         )
-        if boundary_ambiguous:
-            return self._fail(
-                work, "verifying", _error(AdapterErrorCode.WRITE_UNCERTAIN),
-                uncertain=True,
-            )
         internal = None
         try:
             if ambiguous:
@@ -471,10 +472,12 @@ class RfidService:
                 )
             current = self._read(device_id, driver, target)
         except AdapterError as error:
-            return self._fail(
-                work, "verifying", error,
-                uncertain=error.code in _UNPROVABLE_WRITE_CODES,
-            )
+            uncertain = error.code in {
+                AdapterErrorCode.CONNECTION_ERROR,
+                AdapterErrorCode.TIMEOUT,
+                *_BOUNDARY_CODES,
+            }
+            return self._fail(work, "verifying", error, uncertain=uncertain)
         if current == payload:
             return self._succeed(work, target)
         if ambiguous and current == before:
@@ -488,7 +491,9 @@ class RfidService:
                     )
                 except AdapterError as error:
                     return self._fail(
-                        work, "verifying", error,
+                        work,
+                        "verifying",
+                        error,
                         uncertain=error.code in _UNPROVABLE_WRITE_CODES,
                     )
                 self._mutate_store(
@@ -507,10 +512,7 @@ class RfidService:
                 try:
                     second = self._read(device_id, driver, target)
                 except AdapterError as error:
-                    return self._fail(
-                        work, "verifying", error,
-                        uncertain=error.code in _UNPROVABLE_WRITE_CODES,
-                    )
+                    return self._fail(work, "verifying", error)
                 if second == payload:
                     return self._succeed(work, target)
         return self._fail(
@@ -521,7 +523,12 @@ class RfidService:
         result = self._mutate_store(
             self._store.transition,
             work["request_id"], self._owner_id, "verifying", "succeeded",
-            result={"identity_hash": identity_hash(target), "verification_ok": True},
+            result={
+                "identity_hash": identity_hash(target),
+                "verification_ok": True,
+                "epc_identity": _identity_descriptor(target.epc),
+                "tid_identity": _identity_descriptor(target.tid),
+            },
         )
         return result
 
@@ -545,7 +552,7 @@ class RfidService:
         except AdapterError as error:
             return self._fail(
                 work, "verifying", error,
-                uncertain=error.code in _UNPROVABLE_WRITE_CODES,
+                uncertain=True,
             )
         if current == work["payload"]:
             return self._succeed(work, target)
@@ -565,7 +572,7 @@ class RfidService:
             except AdapterError as error:
                 return self._fail(
                     work, "verifying", error,
-                    uncertain=error.code in _UNPROVABLE_WRITE_CODES,
+                    uncertain=True,
                 )
             self._mutate_store(
                 self._store.begin_controlled_rewrite,

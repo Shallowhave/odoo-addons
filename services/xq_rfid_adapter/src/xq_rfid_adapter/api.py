@@ -71,6 +71,10 @@ _IDENTITY_SUFFIX_RE = re.compile(r"\A[0-9A-Fa-f]{2,4}\Z")
 _IDENTITY_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 _MIN_IDENTITY_NIBBLES = 8
 _MAX_IDENTITY_NIBBLES = 512
+_CANONICAL_RETRYABLE = frozenset({
+    AdapterErrorCode.CONNECTION_ERROR,
+    AdapterErrorCode.TIMEOUT,
+})
 _SAFE_MESSAGES = {
     AdapterErrorCode.AUTHENTICATION_ERROR: "authentication failed",
     AdapterErrorCode.CONFIGURATION_ERROR: "resource is not configured",
@@ -642,7 +646,7 @@ def make_handler(
             try:
                 return future.result(timeout=SERVICE_TIMEOUT_SECONDS)
             except concurrent.futures.TimeoutError as error:
-                service_executor.mark_unhealthy()
+                future.cancel()
                 raise _HttpError(504, AdapterErrorCode.TIMEOUT) from error
             except _SafeServiceNotFound as error:
                 raise _HttpError(
@@ -731,7 +735,9 @@ def make_handler(
                 error.code, _SAFE_MESSAGES[AdapterErrorCode.DEVICE_ERROR]
             )
             code = error.code if error.code in _SAFE_MESSAGES else AdapterErrorCode.DEVICE_ERROR
-            safe = AdapterError(code, message, retryable=error.retryable)
+            safe = AdapterError(
+                code, message, retryable=code in _CANONICAL_RETRYABLE
+            )
             self._send_json(status, error_envelope(safe))
 
         def _send_json(self, status: int, envelope: dict) -> None:
@@ -828,7 +834,7 @@ class _BoundedServiceExecutor:
                     AdapterError(
                         error.code,
                         _SAFE_MESSAGES[error.code],
-                        retryable=error.retryable,
+                        retryable=error.code in _CANONICAL_RETRYABLE,
                     )
                 )
             except StoreError as error:

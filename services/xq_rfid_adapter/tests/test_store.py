@@ -49,6 +49,8 @@ def safe_result():
     return {
         "identity_hash": "a" * 64,
         "verification_ok": True,
+        "epc_identity": {"nibble_length": 8, "suffix": "DD"},
+        "tid_identity": {"nibble_length": 8, "suffix": "33"},
     }
 
 
@@ -696,6 +698,71 @@ class TestTransitions(StoreCase):
                 with self.assertRaises(StoreError):
                     self.store.transition("r1", "worker-a", "claimed", "failed_retryable", error=error, now=12)
         self.assertEqual(self.store.get("r1")["state"], "claimed")
+
+    def test_default_mutation_clocks_are_sampled_after_transaction_lock(self):
+        cases = ("transition", "prepare_write", "begin_controlled_rewrite")
+        for index, mutation in enumerate(cases):
+            path = os.path.join(self.tempdir.name, f"clock-{index}.sqlite3")
+            store = OperationStore(path, busy_timeout_ms=1000)
+            store.create_or_get(sample_request(), now=1)
+            store.claim_next("reader-1", "worker-a", 30, now=2)
+            if mutation != "transition":
+                store.transition(
+                    "r1", "worker-a", "claimed", "inventorying", now=3
+                )
+            if mutation == "begin_controlled_rewrite":
+                store.prepare_write(
+                    "r1", "worker-a", "a" * 64, "b" * 64, now=4
+                )
+                store.transition(
+                    "r1", "worker-a", "writing", "verifying", now=5
+                )
+            lock = sqlite3.connect(path, isolation_level=None)
+            lock.execute("BEGIN IMMEDIATE")
+            outcome = []
+
+            def mutate():
+                try:
+                    if mutation == "transition":
+                        outcome.append(store.transition(
+                            "r1", "worker-a", "claimed", "inventorying"
+                        ))
+                    elif mutation == "prepare_write":
+                        outcome.append(store.prepare_write(
+                            "r1", "worker-a", "a" * 64, "b" * 64
+                        ))
+                    else:
+                        outcome.append(store.begin_controlled_rewrite(
+                            "r1", "worker-a"
+                        ))
+                except BaseException as error:
+                    outcome.append(error)
+
+            with mock.patch(
+                "xq_rfid_adapter.store.time.time",
+                return_value=40,
+            ):
+                thread = threading.Thread(target=mutate)
+                thread.start()
+                time.sleep(0.05)
+                lock.execute(
+                    "UPDATE device_leases SET lease_until=45 "
+                    "WHERE device_id='reader-1'"
+                )
+                lock.execute(
+                    "UPDATE operations SET lease_until=45,updated_at=35 "
+                    "WHERE request_id='r1'"
+                )
+                lock.commit()
+                thread.join(1)
+            lock.close()
+            try:
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(len(outcome), 1)
+                self.assertIsInstance(outcome[0], dict)
+                self.assertEqual(outcome[0]["updated_at"], 40)
+            finally:
+                store.close()
 
     def test_transition_requires_matching_active_device_lease(self):
         connection = sqlite3.connect(self.path)
@@ -1380,6 +1447,55 @@ class TestTask9RecoveryPrerequisites(StoreCase):
         self.assertEqual(self.store.get("later")["state"], "queued")
         self.assertIsNone(self.store.get_lease("reader-1"))
 
+    def test_deferred_head_blocks_later_work_without_starving_when_due(self):
+        self._claim_inventorying("oldest")
+        self.store.defer_boundary(
+            "oldest", "worker-a", "inventorying", 60, now=4
+        )
+        self.store.create_or_get(sample_request("later"), now=5)
+
+        self.assertIsNone(
+            self.store.claim_next_work("reader-1", "worker-b", 30, now=20)
+        )
+        self.assertEqual(self.store.get("later")["state"], "queued")
+        claimed = self.store.claim_next_work(
+            "reader-1", "worker-b", 30, now=64
+        )
+        self.assertEqual(claimed["request_id"], "oldest")
+
+    def test_corrupt_uncertain_metadata_fails_closed_and_blocks_later_work(self):
+        self._claim_inventorying("uncertain")
+        self.store.prepare_write(
+            "uncertain", "worker-a", "a" * 64, "b" * 64, now=4
+        )
+        self.store.transition(
+            "uncertain",
+            "worker-a",
+            "writing",
+            "failed_retryable",
+            error=safe_error("write_uncertain"),
+            now=5,
+        )
+        self.store.release_lease("reader-1", "worker-a")
+        self.store.create_or_get(sample_request("later"), now=6)
+        connection = sqlite3.connect(self.path)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE operations SET target_identity_hash=NULL "
+            "WHERE request_id='uncertain'"
+        )
+        connection.commit()
+        connection.close()
+
+        with self.assertRaises(StoreError) as caught:
+            self.store.claim_next_work("reader-1", "worker-b", 30, now=7)
+        self.assertEqual(caught.exception.code, "store_unavailable")
+        with self.assertRaises(StoreError) as caught:
+            self.store.uncertain_request_ids("reader-1")
+        self.assertEqual(caught.exception.code, "store_unavailable")
+        self.assertEqual(self.store.get("later")["state"], "queued")
+        self.assertIsNone(self.store.get_lease("reader-1"))
+
     def test_boundary_deferral_is_private_and_claims_at_inclusive_deadline(self):
         self._claim_inventorying()
         deferred = self.store.defer_boundary(
@@ -1537,11 +1653,10 @@ class TestResourcesAndContention(StoreCase):
         connection = sqlite3.connect(self.path)
         try:
             claim = connection.execute(
-                "EXPLAIN QUERY PLAN SELECT id FROM operations "
+                "EXPLAIN QUERY PLAN SELECT id,next_attempt_at FROM operations "
                 "WHERE device_id=? AND state='queued' "
-                "AND (next_attempt_at IS NULL OR next_attempt_at<=?) "
-                "ORDER BY next_attempt_at,created_at,id LIMIT 1",
-                ("reader-1", 10),
+                "ORDER BY created_at,id LIMIT 1",
+                ("reader-1",),
             ).fetchall()
             recovery = connection.execute(
                 "EXPLAIN QUERY PLAN SELECT id FROM operations "

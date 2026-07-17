@@ -7,7 +7,7 @@ import unittest
 
 from xq_rfid_adapter.domain import AdapterError, AdapterErrorCode, DeviceCapabilities, TagObservation, TagTarget
 from xq_rfid_adapter.drivers.fake import FakeDriver
-from xq_rfid_adapter.queue import DeviceQueue, QueueError
+from xq_rfid_adapter.queue import DeviceQueue, QueueError, _DeviceWorker
 from xq_rfid_adapter.service import RfidService
 from xq_rfid_adapter.store import OperationStore, StoreError
 
@@ -357,6 +357,42 @@ class QueueCase(unittest.TestCase):
             self.store.uncertain_request_ids = original_uncertain
             del mock_uncertain
 
+    def test_oldest_unresolved_recovery_blocks_later_recovery(self):
+        class RecoveryService:
+            lease_seconds = 30
+
+            def __init__(self):
+                self.calls = []
+
+            def recover_uncertain(self, request_id):
+                self.calls.append(request_id)
+                return {
+                    "state": "failed_retryable",
+                    "error": {"code": "write_uncertain"},
+                }
+
+        worker = _DeviceWorker(
+            "reader-1",
+            FakeDriver(),
+            RecoveryService(),
+            self.store,
+            "worker-a",
+            poll_interval=1.0,
+            poll_limit=1,
+            recovery_batch=2,
+            max_diagnostics=1,
+        )
+        self.store.uncertain_request_ids = lambda *args, **kwargs: [
+            "oldest", "later"
+        ]
+        self.store.acquire_lease = lambda *args, **kwargs: {}
+        self.store.release_lease = lambda *args, **kwargs: True
+
+        self.assertFalse(worker._recover_one_tick())
+        self.assertEqual(worker.service.calls, ["oldest"])
+        self.assertFalse(worker._recover_one_tick())
+        self.assertEqual(worker.service.calls, ["oldest"])
+
     def test_restart_uncertain_recovery_is_verify_first(self):
         target = TagTarget("AABBCCDD", "00112233")
         driver = FakeDriver(
@@ -519,6 +555,33 @@ class QueueCase(unittest.TestCase):
             release.set()
             other_store.close()
         wait_for(lambda: driver.call_counts.get("close", 0) == 1)
+
+    def test_concurrent_close_callers_share_one_shutdown(self):
+        driver = FakeDriver(capabilities=capabilities())
+        queue = self.make_queue({"reader-1": driver}, shutdown_timeout=0.5)
+        entered = threading.Event()
+        release = threading.Event()
+        original_close = queue._service.close
+        calls = []
+
+        def paused_close(timeout=None):
+            calls.append(timeout)
+            entered.set()
+            release.wait(1)
+            return original_close(timeout=timeout)
+
+        queue._service.close = paused_close
+        closers = [threading.Thread(target=queue.close) for _ in range(2)]
+        closers[0].start()
+        self.assertTrue(entered.wait(1))
+        closers[1].start()
+        time.sleep(0.05)
+        self.assertTrue(closers[1].is_alive())
+        release.set()
+        for closer in closers:
+            closer.join(1)
+            self.assertFalse(closer.is_alive())
+        self.assertEqual(len(calls), 1)
 
     def test_close_uses_shared_deadline_is_idempotent_and_never_closes_active_driver(self):
         releases = []

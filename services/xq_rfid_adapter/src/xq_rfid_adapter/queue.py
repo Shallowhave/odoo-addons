@@ -74,6 +74,8 @@ class _DeviceWorker:
         self.poll_interval = poll_interval
         self.poll_limit = poll_limit
         self.recovery_batch = recovery_batch
+        self.recovery_retry_seconds = max(1.0, poll_interval * 4)
+        self._next_recovery_at = 0.0
         self.wake_event = threading.Event()
         self.stop_event = threading.Event()
         self.diagnostics: queue.Queue[_Diagnostic] = queue.Queue(max_diagnostics)
@@ -116,6 +118,9 @@ class _DeviceWorker:
         return item.result
 
     def _recover_one_tick(self) -> bool:
+        now = time.monotonic()
+        if now < self._next_recovery_at:
+            return False
         try:
             request_ids = self.store.uncertain_request_ids(
                 self.device_id, batch_limit=self.recovery_batch
@@ -132,12 +137,22 @@ class _DeviceWorker:
             except StoreError:
                 return False
             try:
-                self.service.recover_uncertain(request_id)
+                operation = self.service.recover_uncertain(request_id)
             except StoreError:
                 return False
             except BaseException:
                 return False
             self._release_idle_lease()
+            if (
+                operation.get("state") == "failed_retryable"
+                and (operation.get("error") or {}).get("code")
+                == AdapterErrorCode.WRITE_UNCERTAIN.value
+            ):
+                self._next_recovery_at = (
+                    time.monotonic() + self.recovery_retry_seconds
+                )
+                return False
+        self._next_recovery_at = 0.0
         return True
 
     def _process_operations(self) -> None:
@@ -280,7 +295,10 @@ class DeviceQueue:
         self._diagnostic_timeout = float(diagnostic_timeout)
         self._shutdown_timeout = float(shutdown_timeout)
         self._lock = threading.RLock()
+        self._close_leader_lock = threading.Lock()
+        self._closing_event = threading.Event()
         self._closed = False
+        self._close_complete = threading.Event()
         self._cancellation_event = threading.Event()
         self._service = RfidService(
             store,
@@ -329,14 +347,14 @@ class DeviceQueue:
 
     def wake(self, device_id: str) -> None:
         with self._lock:
-            if self._closed:
+            if self._closing_event.is_set() or self._closed:
                 return
             worker = self._worker(device_id)
         worker.wake()
 
     def submit_operation(self, request: dict) -> dict:
         with self._lock:
-            if self._closed:
+            if self._closing_event.is_set() or self._closed:
                 raise QueueError("queue_closed")
             return self._service.submit_operation(request)
 
@@ -358,27 +376,42 @@ class DeviceQueue:
 
     def close(self) -> None:
         deadline = time.monotonic() + self._shutdown_timeout
+        with self._close_leader_lock:
+            leader = not self._closing_event.is_set()
+            if leader:
+                self._closing_event.set()
         remaining = max(0.0, deadline - time.monotonic())
         acquired = self._lock.acquire(timeout=remaining)
+        if not acquired:
+            if leader:
+                with self._close_leader_lock:
+                    self._closing_event.clear()
+            return
         try:
-            if acquired:
-                if self._closed:
-                    return
-                self._closed = True
-            elif self._closed:
+            if self._closed:
                 return
+            if not leader:
+                wait_for_leader = True
+                workers = ()
             else:
-                self._closed = True
-            workers = tuple(self._workers.values())
+                wait_for_leader = False
+                self._cancellation_event.set()
+                workers = tuple(self._workers.values())
+                for worker in workers:
+                    worker.stop()
         finally:
-            if acquired:
-                self._lock.release()
-        self._cancellation_event.set()
-        for worker in workers:
-            worker.stop()
-        self._service.close(timeout=max(0.0, deadline - time.monotonic()))
-        for worker in workers:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            worker.thread.join(remaining)
+            self._lock.release()
+        if wait_for_leader:
+            self._close_complete.wait(max(0.0, deadline - time.monotonic()))
+            return
+        try:
+            self._service.close(timeout=max(0.0, deadline - time.monotonic()))
+            for worker in workers:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                worker.thread.join(remaining)
+        finally:
+            with self._lock:
+                self._closed = True
+            self._close_complete.set()

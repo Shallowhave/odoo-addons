@@ -106,6 +106,8 @@ class ServiceCase(unittest.TestCase):
         public = self.service.get_operation("r1")
         self.assertEqual(public["identity_hash"], "sha256:" + identity_hash(self.target))
         self.assertTrue(public["verification_ok"])
+        self.assertEqual(public["epc_identity"], {"nibble_length": 8, "suffix": "DD"})
+        self.assertEqual(public["tid_identity"], {"nibble_length": 8, "suffix": "33"})
         rendered = repr(public)
         self.assertNotIn(self.target.epc, rendered)
         self.assertNotIn(self.target.tid, rendered)
@@ -334,7 +336,7 @@ class ServiceCase(unittest.TestCase):
         self.assertEqual(result["state"], "succeeded")
         self.assertEqual(self.driver.call_counts.get("write_memory", 0), 1)
 
-    def test_negative_and_malformed_write_responses_fail_closed(self):
+    def test_negative_and_malformed_write_responses_verify_before_finishing(self):
         class ResponseDriver:
             def __init__(self, delegate, response):
                 self.delegate = delegate
@@ -383,9 +385,10 @@ class ServiceCase(unittest.TestCase):
                 try:
                     service.submit_operation(request(f"write-response-{index}"))
                     result = service.process_operation("reader-1")
-                    self.assertEqual(result["state"], "failed_manual")
-                    self.assertEqual(result["error"]["code"], "device_error")
-                    self.assertEqual(delegate.call_counts.get("read_memory", 0), 1)
+                    self.assertEqual(result["state"], "succeeded")
+                    self.assertIsNone(result["error"])
+                    self.assertEqual(delegate.call_counts.get("read_memory", 0), 2)
+                    self.assertEqual(delegate.call_counts.get("write_memory", 0), 1)
                 finally:
                     service.close()
                     store.close()
@@ -635,7 +638,7 @@ class ServiceCase(unittest.TestCase):
                 service.close()
                 store.close()
 
-    def test_post_write_auth_and_configuration_errors_are_write_uncertain(self):
+    def test_post_write_auth_and_configuration_errors_verify_before_finishing(self):
         for index, (operation, code) in enumerate((
             ("write_memory", AdapterErrorCode.AUTHENTICATION_ERROR),
             ("read_memory", AdapterErrorCode.CONFIGURATION_ERROR),
@@ -669,12 +672,15 @@ class ServiceCase(unittest.TestCase):
             try:
                 service.submit_operation(request(f"post-boundary-{index}"))
                 result = service.process_operation("reader-1")
-                self.assertEqual(result["state"], "failed_retryable")
-                self.assertEqual(result["error"]["code"], "write_uncertain")
-                self.assertFalse(result["error"]["retryable"])
+                if operation == "write_memory":
+                    self.assertEqual(result["state"], "succeeded")
+                    self.assertEqual(driver.call_counts.get("write_memory", 0), 2)
+                else:
+                    self.assertEqual(result["state"], "failed_retryable")
+                    self.assertEqual(result["error"]["code"], "write_uncertain")
+                    self.assertFalse(result["error"]["retryable"])
+                    self.assertEqual(driver.call_counts.get("write_memory", 0), 1)
                 self.assertNotIn("secret", repr(result))
-                self.assertEqual(driver.call_counts.get("write_memory", 0), 1)
-                self.assertIsNone(store.claim_next_work("reader-1", "worker-b", 30))
             finally:
                 service.close()
                 store.close()

@@ -568,6 +568,8 @@ class TestRealQueueApiIntegration(unittest.TestCase):
         })
         self.assertEqual(result["state"], "succeeded")
         self.assertEqual(result["identity_hash"][:7], "sha256:")
+        self.assertEqual(result["masked_epc"], "******DD")
+        self.assertEqual(result["masked_tid"], "******33")
         self.assertTrue(result["verification_ok"])
         self.assertIsNone(result["error"])
         self.assertNotIn("payload_hex", result)
@@ -861,6 +863,13 @@ class TestHttpApi(unittest.TestCase):
                 self.assertNotIn(unsafe, serialized)
                 self.assertNotIn("raw-device-code", serialized)
                 self.assertIsNone(envelope["error"]["device_code"])
+                self.assertEqual(
+                    envelope["error"]["retryable"],
+                    code in {
+                        AdapterErrorCode.CONNECTION_ERROR,
+                        AdapterErrorCode.TIMEOUT,
+                    },
+                )
 
     def test_untrusted_service_exceptions_remain_safe_internal_errors(self):
         target = "/v1/operations/missing"
@@ -1190,6 +1199,9 @@ class TestHttpApi(unittest.TestCase):
         target = "/v1/devices/reader-1"
 
         class CompletedAfterDeadline:
+            def __init__(self):
+                self.cancelled = False
+
             def add_done_callback(self, callback):
                 self.callback = callback
 
@@ -1201,26 +1213,23 @@ class TestHttpApi(unittest.TestCase):
             def done(self):
                 return True
 
+            def cancel(self):
+                self.cancelled = True
+                return False
+
         future = CompletedAfterDeadline()
         future.service_result = self.service._return("get_device", "reader-1")
-        with (
-            mock.patch.object(
-                self.server.service_executor,
-                "submit",
-                return_value=future,
-            ),
-            mock.patch.object(
-                self.server.service_executor,
-                "mark_unhealthy",
-                wraps=self.server.service_executor.mark_unhealthy,
-            ) as unhealthy,
+        with mock.patch.object(
+            self.server.service_executor,
+            "submit",
+            return_value=future,
         ):
             status, _, envelope = self.request(
                 "GET", target, headers=self.auth("GET", target)
             )
         self.assertEqual(status, 504)
         self.assertEqual(envelope["error"]["code"], "timeout")
-        unhealthy.assert_called_once_with()
+        self.assertTrue(future.cancelled)
 
     def test_submit_rejection_is_safe_503_without_invoking_service(self):
         from xq_rfid_adapter import api
@@ -1584,6 +1593,30 @@ with tempfile.TemporaryDirectory() as directory:
         capabilities = queue_type.call_args.kwargs["capabilities"]["reader-1"]
         self.assertIsInstance(capabilities, DeviceCapabilities)
         self.assertEqual(events, ["server", "service"])
+        service.close.assert_called_once_with()
+
+    def test_bootstrap_closes_queue_when_server_close_fails(self):
+        from xq_rfid_adapter import __main__ as cli
+
+        config = mock.Mock()
+        config.bind.host = "127.0.0.1"
+        config.bind.port = 0
+        config.sqlite_path = Path("adapter.sqlite3")
+        config.production = False
+        config.devices = {"reader-1": mock.Mock(driver="fake")}
+        config.tls = None
+        service = mock.Mock()
+        server = mock.Mock()
+        server.serve_forever.side_effect = KeyboardInterrupt
+        server.server_close.side_effect = OSError("private path")
+        with (
+            mock.patch.object(cli, "load_config", return_value=config),
+            mock.patch.object(cli, "load_secret", return_value=b"q" * 32),
+            mock.patch.object(cli, "_create_runtime_service", return_value=service),
+            mock.patch.object(cli, "create_server", return_value=server),
+            self.assertRaises(OSError),
+        ):
+            cli.main(["serve", "--config", "ignored.json"])
         service.close.assert_called_once_with()
 
     def test_bootstrap_rejects_unknown_and_unavailable_production_drivers_safely(self):

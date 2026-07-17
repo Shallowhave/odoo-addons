@@ -89,10 +89,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         return 0
     finally:
-        if server is not None:
-            server.server_close()
-        if service is not None:
-            service.close()
+        try:
+            if server is not None:
+                server.server_close()
+        finally:
+            if service is not None:
+                service.close()
     return 0
 
 

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
 import time
@@ -57,7 +59,10 @@ _ALLOWED_TRANSITIONS = {
     ),
     "verifying": frozenset({"succeeded", "failed_retryable", "failed_manual"}),
 }
-_RESULT_KEYS = frozenset({"identity_hash", "verification_ok"})
+_RESULT_KEYS = frozenset(
+    {"identity_hash", "verification_ok", "epc_identity", "tid_identity"}
+)
+_IDENTITY_DESCRIPTOR_KEYS = frozenset({"nibble_length", "suffix"})
 _ERROR_KEYS = frozenset({"code", "message", "device_code", "retryable"})
 _SAFE_ERRORS = {
     AdapterErrorCode.CONNECTION_ERROR: ("device connection failed", True),
@@ -166,7 +171,7 @@ _SCHEMA_STATEMENTS = (
         value TEXT NOT NULL
     )""",
     """CREATE INDEX operations_claim_idx
-        ON operations(device_id, state, next_attempt_at, created_at, id)""",
+        ON operations(device_id, state, created_at, id)""",
     """CREATE INDEX operations_recovery_idx
         ON operations(lease_until, created_at, id)
         WHERE state IN ('claimed','inventorying','writing','verifying')""",
@@ -244,11 +249,55 @@ class OperationStore:
     def close(self) -> None:
         """Compatibility no-op: method-scoped connections are already closed."""
 
-    def create_or_get(self, request: object, now: int | float | None = None) -> dict:
+    @contextmanager
+    def device_guard(
+        self,
+        device_id: object,
+        cancellation_event=None,
+    ) -> Iterator[None]:
+        """Serialize physical access across adapter processes using this store."""
+        device_id = _identifier(device_id, "invalid_argument")
+        digest = hashlib.sha256(device_id.encode("utf-8")).hexdigest()
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(f"{self._path}.device-{digest}.lock", flags, 0o600)
+        except OSError:
+            raise StoreError("store_unavailable") from None
+        try:
+            while True:
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise StoreError("lease_conflict")
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(0.01)
+                except OSError:
+                    raise StoreError("store_unavailable") from None
+            yield
+        finally:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(descriptor)
+
+    def create_or_get(
+        self,
+        request: object,
+        now: int | float | None = None,
+        *,
+        cancellation_event=None,
+    ) -> dict:
         request_id = _request_identifier(request)
-        timestamp = _timestamp(now)
+        if now is not None:
+            _timestamp(now)
         try:
             with self._transaction() as connection:
+                timestamp = _timestamp(now)
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise StoreError("lease_conflict")
                 existing = connection.execute(
                     "SELECT * FROM operations WHERE request_id = ?",
                     (request_id,),
@@ -331,7 +380,8 @@ class OperationStore:
             raise StoreError("illegal_transition")
         if new_state not in _ALLOWED_TRANSITIONS.get(expected_state, frozenset()):
             raise StoreError("illegal_transition")
-        timestamp = _timestamp(now)
+        if now is not None:
+            _timestamp(now)
         result_value = _validate_result(result, new_state)
         error_value = _validate_error(error, new_state)
         terminal = new_state in _TERMINAL_STATES
@@ -348,6 +398,7 @@ class OperationStore:
         """
         try:
             with self._transaction() as connection:
+                timestamp = _timestamp(now)
                 self._validate_active_device_invariant(connection)
                 current = connection.execute(
                     "SELECT state, updated_at, device_id, claim_owner, lease_until "
@@ -635,27 +686,34 @@ class OperationStore:
                     raise StoreError("lease_conflict")
                 uncertain = connection.execute(
                     """
-                    SELECT 1 FROM operations
+                    SELECT * FROM operations
                     WHERE device_id = ? AND state = 'failed_retryable'
-                      AND target_identity_hash IS NOT NULL
-                      AND pre_write_hash IS NOT NULL
                       AND json_extract(error_json, '$.code') = ?
-                    LIMIT 1
+                    ORDER BY created_at, id LIMIT 1
                     """,
                     (device_id, AdapterErrorCode.WRITE_UNCERTAIN.value),
                 ).fetchone()
                 if uncertain is not None:
+                    _public_operation(uncertain)
+                    if (
+                        uncertain["target_identity_hash"] is None
+                        or uncertain["pre_write_hash"] is None
+                    ):
+                        raise StoreError("store_unavailable")
                     return None
                 candidate = connection.execute(
                     """
-                    SELECT id FROM operations
+                    SELECT id, next_attempt_at FROM operations
                     WHERE device_id = ? AND state = 'queued'
-                      AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                    ORDER BY next_attempt_at, created_at, id LIMIT 1
+                    ORDER BY created_at, id LIMIT 1
                     """,
-                    (device_id, timestamp),
+                    (device_id,),
                 ).fetchone()
-                if candidate is None:
+                if (
+                    candidate is None
+                    or candidate["next_attempt_at"] is not None
+                    and candidate["next_attempt_at"] > timestamp
+                ):
                     return None
                 effective_lease_until = self._upsert_lease(
                     connection, device_id, owner_id, timestamp, lease_until
@@ -807,9 +865,11 @@ class OperationStore:
         owner_id = _identifier(owner_id, "invalid_argument")
         target_identity_hash = _hash(target_identity_hash)
         pre_write_hash = _hash(pre_write_hash)
-        timestamp = _timestamp(now)
+        if now is not None:
+            _timestamp(now)
         try:
             with self._transaction() as connection:
+                timestamp = _timestamp(now)
                 row = connection.execute(
                     "SELECT * FROM operations WHERE request_id = ?", (request_id,)
                 ).fetchone()
@@ -844,9 +904,11 @@ class OperationStore:
     ) -> dict:
         request_id = _identifier(request_id, "invalid_argument")
         owner_id = _identifier(owner_id, "invalid_argument")
-        timestamp = _timestamp(now)
+        if now is not None:
+            _timestamp(now)
         try:
             with self._transaction() as connection:
+                timestamp = _timestamp(now)
                 row = connection.execute(
                     "SELECT * FROM operations WHERE request_id=?", (request_id,)
                 ).fetchone()
@@ -958,10 +1020,8 @@ class OperationStore:
             with self._connection() as connection:
                 rows = connection.execute(
                     """
-                    SELECT request_id FROM operations
+                    SELECT * FROM operations
                     WHERE device_id = ? AND state = 'failed_retryable'
-                      AND target_identity_hash IS NOT NULL
-                      AND pre_write_hash IS NOT NULL
                       AND json_extract(error_json, '$.code') = ?
                     ORDER BY created_at, id LIMIT ?
                     """,
@@ -971,6 +1031,13 @@ class OperationStore:
                         batch_limit,
                     ),
                 ).fetchall()
+                for row in rows:
+                    _public_operation(row)
+                    if (
+                        row["target_identity_hash"] is None
+                        or row["pre_write_hash"] is None
+                    ):
+                        raise StoreError("store_unavailable")
                 return [str(row["request_id"]) for row in rows]
         except StoreError:
             raise
@@ -980,12 +1047,14 @@ class OperationStore:
     def recover_expired_claims(
         self, now: int | float | None = None, *, batch_limit: int = _DEFAULT_RECOVERY_BATCH
     ) -> list[dict]:
-        timestamp = _timestamp(now)
+        if now is not None:
+            _timestamp(now)
         if type(batch_limit) is not int or not 1 <= batch_limit <= _MAX_RECOVERY_BATCH:
             raise StoreError("invalid_argument")
         recovered: list[dict] = []
         try:
             with self._transaction() as connection:
+                timestamp = _timestamp(now)
                 candidates = connection.execute(
                     """
                     SELECT id, state FROM operations
@@ -1292,7 +1361,7 @@ class OperationStore:
             "operations_claim_idx": (
                 False,
                 False,
-                ["device_id", "state", "next_attempt_at", "created_at", "id"],
+                ["device_id", "state", "created_at", "id"],
             ),
             "operations_recovery_idx": (
                 False,
@@ -1461,6 +1530,27 @@ def _lease_times(now: int | float | None, lease_seconds: object) -> tuple[int, i
     return timestamp, lease_until
 
 
+def _validate_identity_descriptor(value: object, *, required: bool) -> dict | None:
+    if value is None:
+        if required:
+            raise StoreError("invalid_result")
+        return None
+    if not isinstance(value, dict) or set(value) != _IDENTITY_DESCRIPTOR_KEYS:
+        raise StoreError("invalid_result")
+    nibble_length = value["nibble_length"]
+    suffix = value["suffix"]
+    if (
+        type(nibble_length) is not int
+        or not 8 <= nibble_length <= 512
+        or nibble_length % 2
+        or not isinstance(suffix, str)
+        or len(suffix) != min(4, nibble_length // 4)
+        or any(character not in "0123456789ABCDEF" for character in suffix)
+    ):
+        raise StoreError("invalid_result")
+    return {"nibble_length": nibble_length, "suffix": suffix}
+
+
 def _validate_result(value: object, state: str) -> dict | None:
     if state != "succeeded":
         if value is not None:
@@ -1475,7 +1565,16 @@ def _validate_result(value: object, state: str) -> dict | None:
         raise StoreError("invalid_result")
     if type(value["verification_ok"]) is not bool or not value["verification_ok"]:
         raise StoreError("invalid_result")
-    return {"identity_hash": identity_hash, "verification_ok": True}
+    return {
+        "identity_hash": identity_hash,
+        "verification_ok": True,
+        "epc_identity": _validate_identity_descriptor(
+            value["epc_identity"], required=True
+        ),
+        "tid_identity": _validate_identity_descriptor(
+            value["tid_identity"], required=False
+        ),
+    }
 
 
 def _fixed_error(
