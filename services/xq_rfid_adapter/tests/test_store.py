@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -66,6 +67,37 @@ class StoreCase(unittest.TestCase):
 
 
 class TestSubmissionCancellation(StoreCase):
+    def test_cancellation_before_commit_rolls_back_insert(self):
+        cancellation = threading.Event()
+        entered = threading.Event()
+        release = threading.Event()
+        value = sample_request("cancelled-before-commit")
+        original_transaction = self.store._transaction
+
+        @contextmanager
+        def paused_transaction(*args, **kwargs):
+            with original_transaction(*args, **kwargs) as connection:
+                yield connection
+                entered.set()
+                release.wait(1)
+
+        self.store._transaction = paused_transaction
+        outcome = []
+        submitter = threading.Thread(
+            target=lambda: self._capture_create(value, cancellation, outcome)
+        )
+        submitter.start()
+        self.assertTrue(entered.wait(1))
+        cancellation.set()
+        release.set()
+        submitter.join(1)
+
+        self.assertFalse(submitter.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], StoreError)
+        self.assertEqual(outcome[0].code, "lease_conflict")
+        self.assertIsNone(self.store.get(value["request_id"]))
+
     def test_cancellation_during_validation_prevents_insert(self):
         cancellation = threading.Event()
         entered = threading.Event()

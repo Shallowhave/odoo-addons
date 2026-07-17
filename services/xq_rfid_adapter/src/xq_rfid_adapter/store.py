@@ -294,7 +294,9 @@ class OperationStore:
         if now is not None:
             _timestamp(now)
         try:
-            with self._transaction() as connection:
+            with self._transaction(
+                cancellation_event=cancellation_event
+            ) as connection:
                 timestamp = _timestamp(now)
                 if cancellation_event is not None and cancellation_event.is_set():
                     raise StoreError("lease_conflict")
@@ -1424,11 +1426,13 @@ class OperationStore:
                 connection.close()
 
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Connection]:
+    def _transaction(self, *, cancellation_event=None) -> Iterator[sqlite3.Connection]:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 yield connection
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise StoreError("lease_conflict")
                 connection.commit()
             except BaseException:
                 connection.rollback()
