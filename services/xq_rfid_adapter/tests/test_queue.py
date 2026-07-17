@@ -442,6 +442,44 @@ class QueueCase(unittest.TestCase):
         self.assertRegex(queue.owner_id, r"\Aadapter-[0-9a-f]{32,}\Z")
         self.assertTrue(all(thread.daemon for thread in queue.worker_threads))
 
+    def test_close_cancellation_during_validation_prevents_late_commit(self):
+        driver = FakeDriver(capabilities=capabilities())
+        queue = self.make_queue(
+            {"reader-1": driver}, poll_interval=5.0, shutdown_timeout=0.05
+        )
+        entered = threading.Event()
+        release = threading.Event()
+        outcome = []
+
+        class PausedRequest(dict):
+            def __getitem__(self, key):
+                if key == "device_id":
+                    entered.set()
+                    release.wait(1)
+                return super().__getitem__(key)
+
+        value = PausedRequest(request("validation-race"))
+        submitter = threading.Thread(
+            target=lambda: self._capture_queue_submit(queue, value, outcome)
+        )
+        submitter.start()
+        self.assertTrue(entered.wait(1))
+
+        queue.close()
+        self.assertIsNone(self.store.get("validation-race"))
+        release.set()
+        submitter.join(1)
+
+        self.assertFalse(submitter.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], StoreError)
+        self.assertEqual(outcome[0].code, "lease_conflict")
+        self.assertIsNone(self.store.get("validation-race"))
+        self.assertEqual(
+            [record["operation"] for record in driver.call_records],
+            ["close"],
+        )
+
     def test_timed_out_close_permanently_rejects_uncommitted_submission(self):
         driver = FakeDriver(capabilities=capabilities())
         queue = self.make_queue(

@@ -65,6 +65,48 @@ class StoreCase(unittest.TestCase):
         self.tempdir.cleanup()
 
 
+class TestSubmissionCancellation(StoreCase):
+    def test_cancellation_during_validation_prevents_insert(self):
+        cancellation = threading.Event()
+        entered = threading.Event()
+        release = threading.Event()
+        value = sample_request("cancelled-during-validation")
+
+        class PausedRequest(dict):
+            def __getitem__(self, key):
+                if key == "device_id":
+                    entered.set()
+                    release.wait(1)
+                return super().__getitem__(key)
+
+        outcome = []
+        submitter = threading.Thread(
+            target=lambda: self._capture_create(
+                PausedRequest(value), cancellation, outcome
+            )
+        )
+        submitter.start()
+        self.assertTrue(entered.wait(1))
+        cancellation.set()
+        release.set()
+        submitter.join(1)
+
+        self.assertFalse(submitter.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], StoreError)
+        self.assertEqual(outcome[0].code, "lease_conflict")
+        self.assertIsNone(self.store.get(value["request_id"]))
+
+    def _capture_create(self, request, cancellation, outcome):
+        try:
+            result = self.store.create_or_get(
+                request, cancellation_event=cancellation
+            )
+        except BaseException as error:
+            result = error
+        outcome.append(result)
+
+
 class TestSchemaAndSafety(StoreCase):
     def test_fresh_schema_has_version_pragmas_constraints_and_indexes(self):
         self.assertEqual(self.store.schema_version, SCHEMA_VERSION)

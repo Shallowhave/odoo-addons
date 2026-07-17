@@ -313,6 +313,8 @@ class OperationStore:
                     if existing["request_fingerprint"] != fingerprint:
                         raise StoreError("request_conflict")
                     return _public_operation(existing)
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise StoreError("lease_conflict")
                 connection.execute(
                     """
                     INSERT INTO operations (
