@@ -1,17 +1,9 @@
-/** @odoo-module **/
+import re
 
-import { patch } from "@web/core/utils/patch";
-import { MrpQualityCheckConfirmationDialog } from "@mrp_workorder/mrp_display/dialog/mrp_quality_check_confirmation_dialog";
-import { RfidGenerationWizard } from "./rfid_generation_wizard";
-import { RfidWriteWizard } from "./rfid_write_wizard";
+with open("xq_rfid/static/src/components/mrp_quality_check_confirmation_dialog.js", "r") as f:
+    content = f.read()
 
-patch(MrpQualityCheckConfirmationDialog.prototype, {
-    setup() {
-        super.setup();
-        this.orm = this.env.services.orm;
-    },
-
-    async validate() {
+new_validate = """    async validate() {
         if (!this.props.record || this.props.record.resModel !== 'quality.check') {
             return super.validate();
         }
@@ -88,31 +80,11 @@ patch(MrpQualityCheckConfirmationDialog.prototype, {
         } finally {
             this.env.services.ui.unblock();
         }
-    },
+    },"""
 
-    get rfidInfo() {
-        return {
-            name: "rfid_label",
-            record: this.props.record,
-            close: this.props.close,
-            validate: this.validate && this.validate.bind(this),
-        };
-    },
+# Insert new methods after setup()
+content = re.sub(r'    setup\(\) \{[\s\S]*?\},', lambda m: m.group(0) + '\n\n' + new_validate, content)
 
-    get rfidWriteInfo() {
-        return {
-            name: "rfid_write",
-            record: this.props.record,
-            close: this.props.close,
-            validate: this.validate && this.validate.bind(this),
-        };
-    },
-});
+with open("xq_rfid/static/src/components/mrp_quality_check_confirmation_dialog.js", "w") as f:
+    f.write(content)
 
-MrpQualityCheckConfirmationDialog.components = { 
-    ...MrpQualityCheckConfirmationDialog.components, 
-    RfidGenerationWizard,
-    RfidWriteWizard
-};
-
-console.log('RFID components loaded:', MrpQualityCheckConfirmationDialog.components);
