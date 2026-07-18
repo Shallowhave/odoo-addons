@@ -9,515 +9,361 @@
 #
 ##############################################################################
 
-from odoo import fields, models, api, _
-from odoo.exceptions import UserError
-import logging
+from odoo import _, api, fields, models
+from odoo.exceptions import AccessError, UserError
 
-_logger = logging.getLogger(__name__)
+
+def _validate_device_type(device_type):
+    if device_type == "legacy_disabled":
+        raise UserError(_("不能创建或设置已停用的旧设备类型。"))
 
 
 class RfidDeviceService(models.AbstractModel):
-    """
-    RFID 设备服务抽象模型
+    """Compatibility interface that fails closed until an Adapter is provided."""
 
-    此模型提供 RFID 硬件设备的统一接口，具体的硬件实现应该
-    继承此模型并实现具体的读写方法。
+    _name = "rfid.device.service"
+    _description = "RFID 设备服务接口"
 
-    使用示例：
-    --------
-    # 在其他模块中继承并实现具体设备驱动
-    class RfidDeviceServiceImpl(models.Model):
-        _inherit = 'rfid.device.service'
-
-        def _connect_device(self):
-            # 实现具体的设备连接逻辑
-            pass
-    """
-
-    _name = 'rfid.device.service'
-    _description = 'RFID 设备服务接口'
+    def _ensure_rfid_manager(self):
+        if not self.env.user.has_group("xq_rfid.group_rfid_manager"):
+            raise UserError(_("只有 RFID 管理员可以执行设备硬件操作。"))
 
     def write_rfid_tag(self, data):
-        """
-        写入 RFID 标签（抽象方法）
-
-        :param data: 要写入的数据字典，包含：
-            - rfid_number: RFID 编号
-            - product_code: 产品编码
-            - product_name: 产品名称
-            - lot_number: 批次号
-            - production_date: 生产日期
-            - production_order: 生产订单号
-            - 其他自定义数据...
-
-        :return: 字典格式的结果
-            {
-                'success': True/False,
-                'message': '写入成功/失败信息',
-                'error': '错误详情（可选）',
-                'device_response': '设备原始响应（可选）'
-            }
-        """
-        # 默认实现：模拟模式（无实际硬件）
-        _logger.info('RFID 写入（模拟模式）: %s', data)
-
-        return {
-            'success': True,
-            'message': '模拟写入成功（未连接实际设备）',
-            'data': data
-        }
+        del data
+        self._ensure_rfid_manager()
+        return {"success": False, "error": _("未配置可用的 RFID Adapter 驱动。")}
 
     def read_rfid_tag(self):
-        """
-        读取 RFID 标签（抽象方法）
-
-        :return: 字典格式的结果
-            {
-                'success': True/False,
-                'rfid_number': 'RFID编号',
-                'data': {...},  # 读取到的其他数据
-                'error': '错误信息（可选）'
-            }
-        """
-        _logger.info('RFID 读取（模拟模式）')
-
-        return {
-            'success': False,
-            'error': '模拟模式：未连接实际设备'
-        }
+        self._ensure_rfid_manager()
+        return {"success": False, "error": _("未配置可用的 RFID Adapter 驱动。")}
 
     def verify_rfid_tag(self, rfid_number):
-        """
-        验证 RFID 标签（抽象方法）
-
-        :param rfid_number: RFID 编号
-        :return: 字典格式的结果
-            {
-                'success': True/False,
-                'valid': True/False,
-                'data': {...},  # 标签数据
-                'error': '错误信息（可选）'
-            }
-        """
-        _logger.info('RFID 验证（模拟模式）: %s', rfid_number)
-
-        # 在数据库中查找
-        rfid_tag = self.env['rfid.tag'].search([
-            ('name', '=', rfid_number)
-        ], limit=1)
-
-        if rfid_tag:
-            return {
-                'success': True,
-                'valid': True,
-                'data': {
-                    'rfid_number': rfid_tag.name,
-                    'product': rfid_tag.product_id.name,
-                    'lot': rfid_tag.stock_prod_lot_id.name,
-                    'production_order': rfid_tag.production_id.name if rfid_tag.production_id else '',
-                }
-            }
-        else:
-            return {
-                'success': True,
-                'valid': False,
-                'error': 'RFID 标签不存在'
-            }
-
-    def erase_rfid_tag(self):
-        """
-        擦除 RFID 标签（抽象方法）
-
-        :return: 字典格式的结果
-        """
-        _logger.info('RFID 擦除（模拟模式）')
-
+        del rfid_number
+        self._ensure_rfid_manager()
         return {
-            'success': False,
-            'error': '模拟模式：未连接实际设备'
+            "success": False,
+            "valid": False,
+            "error": _("未配置可用的 RFID Adapter 驱动。"),
         }
 
-    def get_device_status(self):
-        """
-        获取设备状态（抽象方法）
+    def erase_rfid_tag(self):
+        self._ensure_rfid_manager()
+        return {"success": False, "error": _("未配置可用的 RFID Adapter 驱动。")}
 
-        :return: 字典格式的结果
-            {
-                'connected': True/False,
-                'device_name': '设备名称',
-                'firmware_version': '固件版本',
-                'error': '错误信息（可选）'
-            }
-        """
+    def get_device_status(self):
+        self._ensure_rfid_manager()
         return {
-            'connected': False,
-            'device_name': '模拟设备',
-            'firmware_version': '1.0.0-mock',
-            'mode': 'simulation'
+            "connected": False,
+            "error": _("未配置可用的 RFID Adapter 驱动。"),
         }
 
 
 class RfidDeviceConfig(models.Model):
-    """
-    RFID 设备配置模型
+    _name = "rfid.device.config"
+    _description = "RFID 设备配置"
+    _order = "sequence, id"
+    _check_company_auto = True
 
-    用于存储 RFID 读写器的配置信息
-    """
+    _sql_constraints = [
+        (
+            "adapter_device_id_company_uniq",
+            "unique(company_id, adapter_device_id)",
+            "每个公司的 Adapter 设备 ID 必须唯一。",
+        )
+    ]
 
-    _name = 'rfid.device.config'
-    _description = 'RFID 设备配置'
-    _order = 'sequence, id'
-
-    name = fields.Char(string='设备名称', required=True)
-    sequence = fields.Integer(string='序号', default=10)
-    active = fields.Boolean(string='启用', default=True)
-
-    device_type = fields.Selection([
-        ('simulation', '模拟设备'),
-        ('usb', 'USB 读写器'),
-        ('serial', '串口读写器'),
-        ('network', '网络读写器'),
-        ('uhf_reader18', 'UHFReader18'),
-        ('custom', '自定义设备'),
-    ], string='设备类型', default='simulation', required=True)
-
-    # 连接参数
-    connection_string = fields.Char(
-        string='连接字符串',
-        help='设备连接参数，如：COM3、192.168.1.100:8080 等'
+    name = fields.Char(string="设备名称", required=True)
+    sequence = fields.Integer(string="序号", default=10)
+    active = fields.Boolean(string="启用", default=True)
+    company_id = fields.Many2one(
+        "res.company",
+        required=True,
+        default=lambda self: self.env.company,
+        index=True,
+    )
+    device_type = fields.Selection(
+        [
+            ("simulation", "模拟设备"),
+            ("legacy_disabled", "旧设备（需要重新配置）"),
+            ("si120x1", "SI120X1"),
+            ("custom", "自定义设备"),
+        ],
+        default="simulation",
+        required=True,
+    )
+    migration_required = fields.Boolean(
+        readonly=True,
+        compute="_compute_migration_required",
+        store=True,
+    )
+    validation_state = fields.Selection(
+        [
+            ("unvalidated", "未验证"),
+            ("validated", "已验证"),
+            ("error", "验证错误"),
+        ],
+        string="验证状态",
+        default="unvalidated",
+        required=True,
+        readonly=True,
     )
 
-    port = fields.Char(string='端口')
-    baudrate = fields.Integer(string='波特率', default=9600)
-    timeout = fields.Integer(string='超时时间（秒）', default=5)
-
-    # UHFReader18 特有字段
-    ip_address = fields.Char(string='IP地址', help='UHFReader18设备的IP地址')
-    device_address = fields.Integer(string='设备地址', default=0, help='RS485网络地址，0x00~0xFE')
-    service_model_name = fields.Char(string='服务模型名称', compute='_compute_service_model_name', store=True)
-
-    # 高级配置
-    auto_connect = fields.Boolean(
-        string='自动连接',
-        default=True,
-        help='系统启动时自动连接设备'
+    # ------------------------------------------------------------------
+    # Capability fields for SI120X1 / Adapter
+    # ------------------------------------------------------------------
+    adapter_device_id = fields.Char(string="Adapter 设备 ID", index=True)
+    protocol_family = fields.Selection(
+        [
+            ("unconfirmed", "未确认"),
+            ("moduleapi_http", "ModuleAPI HTTP"),
+            ("moduleapi_sdk", "ModuleAPI SDK"),
+            ("ex10_raw", "EX10 原始协议"),
+        ],
+        string="协议族",
+        default="unconfirmed",
+        readonly=True,
     )
-
-    retry_times = fields.Integer(
-        string='重试次数',
-        default=3,
-        help='操作失败时的重试次数'
+    transport_type = fields.Selection(
+        [
+            ("http", "HTTP"),
+            ("tcp_transparent", "TCP 透传"),
+            ("serial", "串口"),
+            ("sdk_tcp", "SDK TCP"),
+            ("sdk_serial", "SDK 串口"),
+        ],
+        string="传输层",
+        readonly=True,
     )
+    firmware_version = fields.Char(string="固件版本", readonly=True)
+    hardware_version = fields.Char(string="硬件版本", readonly=True)
+    module_version = fields.Char(string="模块版本", readonly=True)
+    antenna_count = fields.Integer(string="天线数量", readonly=True)
+    region = fields.Char(string="频段区域", readonly=True)
+    supports_epc = fields.Boolean(string="支持 EPC", readonly=True)
+    supports_tid = fields.Boolean(string="支持 TID", readonly=True)
+    supports_user_read = fields.Boolean(string="支持读 User 区", readonly=True)
+    supports_user_write = fields.Boolean(string="支持写 User 区", readonly=True)
+    last_connection_test_at = fields.Datetime(string="最后连接测试", readonly=True)
+    last_successful_operation_at = fields.Datetime(string="最后成功操作", readonly=True)
+    last_device_code = fields.Char(string="最后设备状态码", readonly=True)
 
-    # 状态信息
-    last_connected = fields.Datetime(string='最后连接时间', readonly=True)
-    connection_status = fields.Selection([
-        ('disconnected', '未连接'),
-        ('connected', '已连接'),
-        ('error', '连接错误'),
-    ], string='连接状态', default='disconnected', readonly=True)
+    # Generic connection metadata. Hardware methods never accept connection
+    # endpoints from RPC arguments; Task 10 will map records to the Adapter.
+    connection_string = fields.Char(string="连接字符串")
+    ip_address = fields.Char(string="IP 地址")
+    port = fields.Char(string="端口")
+    baudrate = fields.Integer(string="波特率", default=9600)
+    timeout = fields.Integer(string="超时时间（秒）", default=5)
+    auto_connect = fields.Boolean(string="自动连接", default=True)
+    retry_times = fields.Integer(string="重试次数", default=3)
 
-    error_message = fields.Text(string='错误信息', readonly=True)
+    last_connected = fields.Datetime(string="最后连接时间", readonly=True)
+    connection_status = fields.Selection(
+        [
+            ("disconnected", "未连接"),
+            ("connected", "已连接"),
+            ("error", "连接错误"),
+        ],
+        string="连接状态",
+        default="disconnected",
+        readonly=True,
+    )
+    error_message = fields.Text(string="错误信息", readonly=True)
+    write_count = fields.Integer(string="写入次数", default=0, readonly=True)
+    read_count = fields.Integer(string="读取次数", default=0, readonly=True)
+    notes = fields.Text(string="备注")
 
-    # 统计信息
-    write_count = fields.Integer(string='写入次数', default=0, readonly=True)
-    read_count = fields.Integer(string='读取次数', default=0, readonly=True)
+    @api.model
+    def _validate_allowed_company(self, company_id):
+        if not company_id:
+            return
+        company = self.env["res.company"].browse(company_id).exists()
+        if not company or company not in self.env.companies:
+            raise AccessError(_("无权将 RFID 设备分配到该公司。"))
 
-    notes = fields.Text(string='备注')
+    @api.model_create_multi
+    def create(self, vals_list):
+        default_device_type = self.env.context.get("default_device_type")
+        default_company_id = self.env.context.get("default_company_id")
+        for vals in vals_list:
+            _validate_device_type(vals.get("device_type", default_device_type))
+            self._validate_allowed_company(
+                vals.get("company_id", default_company_id or self.env.company.id)
+            )
+            if vals.get("device_type", default_device_type) == "si120x1" and not vals.get("adapter_device_id"):
+                raise UserError(_("SI120X1 类型的设备必须配置 Adapter 设备 ID。"))
+        return super().create(vals_list)
 
-    @api.depends('device_type')
-    def _compute_service_model_name(self):
-        """计算服务模型名称"""
-        for record in self:
-            if record.device_type == 'uhf_reader18':
-                record.service_model_name = 'uhf.reader18.service'
-            else:
-                record.service_model_name = 'rfid.device.service'
+    def write(self, vals):
+        _validate_device_type(vals.get("device_type"))
+        self._validate_allowed_company(vals.get("company_id"))
+        if "device_type" in vals or "adapter_device_id" in vals:
+            for device in self:
+                dev_type = vals.get("device_type", device.device_type)
+                adapter_id = vals.get("adapter_device_id", device.adapter_device_id)
+                if dev_type == "si120x1" and not adapter_id:
+                    raise UserError(_("SI120X1 类型的设备必须配置 Adapter 设备 ID。"))
+        return super().write(vals)
+
+    @api.depends("device_type")
+    def _compute_migration_required(self):
+        for device in self:
+            device.migration_required = device.device_type == "legacy_disabled"
 
     def _ensure_rfid_manager(self):
-        if not self.env.user.has_group('xq_rfid.group_rfid_manager'):
-            raise UserError(_('只有 RFID 管理员可以执行设备配置和硬件操作。'))
+        if not self.env.user.has_group("xq_rfid.group_rfid_manager"):
+            raise UserError(_("只有 RFID 管理员可以执行设备配置和硬件操作。"))
+
+    @api.model
+    def _selectable_domain(self, company=None):
+        company = company or self.env.company
+        if company not in self.env.companies:
+            raise UserError(_("无权访问该公司的 RFID 设备。"))
+        return [
+            ("device_type", "=", "si120x1"),
+            ("active", "=", True),
+            ("validation_state", "=", "validated"),
+            ("company_id", "=", company.id),
+        ]
+
+    @api.model
+    def _find_selectable(self, company=None):
+        return self.search(self._selectable_domain(company), limit=1)
+
+    def _ensure_probe_ready(self):
+        self.ensure_one()
+        if not self.active:
+            raise UserError(_("RFID 设备已停用。"))
+        if self.migration_required:
+            raise UserError(_("旧 RFID 设备必须重新配置。"))
+        if self.device_type != "si120x1":
+            raise UserError(_("该设备不是 SI120X1。"))
+        if self.company_id not in self.env.companies:
+            raise UserError(_("无权访问该公司的 RFID 设备。"))
+        return True
+
+    def _ensure_operational(self):
+        self._ensure_probe_ready()
+        if self.validation_state != "validated":
+            raise UserError(_("SI120X1 设备尚未验证。"))
+        return True
+
+    def _raise_adapter_not_configured(self):
+        raise UserError(_("RFID Adapter 尚未配置。"))
+
+    def write_and_verify(self, payload):
+        del payload
+        self._ensure_rfid_manager()
+        self._ensure_operational()
+        self._raise_adapter_not_configured()
+
+    def read_memory(self, epc_hex, memory_bank, word_offset, word_count):
+        del epc_hex, memory_bank, word_offset, word_count
+        self._ensure_rfid_manager()
+        self._ensure_operational()
+        self._raise_adapter_not_configured()
 
     def action_test_connection(self):
-        """测试设备连接"""
         self.ensure_one()
         self._ensure_rfid_manager()
+        self._ensure_probe_ready()
 
-        # 根据设备类型选择相应的服务
-        if self.device_type == 'uhf_reader18':
-            # 对于UHFReader18设备
-            device_service = self.env['uhf.reader18.service']
+        client = self.env["rfid.adapter.client"]
 
-            if not self.ip_address or not self.port:
-                return {
-                    'type': 'ir.actions.client',
-                    'tag': 'display_notification',
-                    'params': {
-                        'title': _('配置错误'),
-                        'message': _('请填写IP地址和端口'),
-                        'type': 'warning',
-                        'sticky': True,
-                    }
-                }
+        # 1. 测连通性
+        try:
+            conn_result = client.test_connection(self)
+        except Exception as exc:
+            self.write({
+                "validation_state": "error",
+                "connection_status": "error",
+                "error_message": str(exc),
+                "last_connection_test_at": fields.Datetime.now(),
+            })
+            raise
 
-            try:
-                port = int(self.port)
-                status = device_service.get_device_status(self.ip_address, port)
-            except ValueError:
-                return {
-                    'type': 'ir.actions.client',
-                    'tag': 'display_notification',
-                    'params': {
-                        'title': _('配置错误'),
-                        'message': _('端口必须是数字'),
-                        'type': 'warning',
-                        'sticky': True,
-                    }
-                }
-        elif self.device_type == 'network':
-            # 对于其他网络设备，使用UHFReader18服务
-            device_service = self.env['uhf.reader18.service']
+        if conn_result.get("status") != "connected":
+            self.write({
+                "validation_state": "error",
+                "connection_status": "disconnected",
+                "error_message": _("Adapter 未连接到硬件。"),
+                "last_connection_test_at": fields.Datetime.now(),
+            })
+            raise UserError(_("Adapter 未连接到硬件。"))
 
-            # 解析连接字符串获取IP和端口
-            if self.connection_string and ':' in self.connection_string:
-                ip, port = self.connection_string.split(':')
-                port = int(port)
-            else:
-                return {
-                    'type': 'ir.actions.client',
-                    'tag': 'display_notification',
-                    'params': {
-                        'title': _('配置错误'),
-                        'message': _('请检查连接字符串格式，应为 IP:端口'),
-                        'type': 'warning',
-                        'sticky': True,
-                    }
-                }
+        # 2. 查设备能力
+        try:
+            dev_info = client.get_device_info(self)
+        except Exception as exc:
+            self.write({
+                "validation_state": "error",
+                "connection_status": "error",
+                "error_message": str(exc),
+                "last_connection_test_at": fields.Datetime.now(),
+            })
+            raise
 
-            status = device_service.get_device_status(ip, port)
-        else:
-            # 使用通用服务
-            device_service = self.env['rfid.device.service']
-            status = device_service.get_device_status()
+        caps = dev_info.get("capabilities", {})
 
-        if status.get('connected'):
-            self.connection_status = 'connected'
-            self.last_connected = fields.Datetime.now()
-            self.error_message = False
+        # We must confirm the device matches our requirements
+        is_si120x1 = self.device_type == "si120x1"
+        is_protocol_confirmed = self.protocol_family != "unconfirmed"
+        supports_reqs = caps.get("supports_epc") and caps.get("supports_user_read") and caps.get("supports_user_write")
 
-            return {
-                'type': 'ir.actions.client',
-                'tag': 'display_notification',
-                'params': {
-                    'title': _('连接成功'),
-                    'message': _('设备 %s 连接正常') % status.get('device_name', ''),
-                    'type': 'success',
-                }
-            }
-        else:
-            self.connection_status = 'error'
-            self.error_message = status.get('error', '未知错误')
+        valid = is_si120x1 and is_protocol_confirmed and supports_reqs
 
-            return {
-                'type': 'ir.actions.client',
-                'tag': 'display_notification',
-                'params': {
-                    'title': _('连接失败'),
-                    'message': status.get('error', '无法连接设备'),
-                    'type': 'warning',
-                    'sticky': True,
-                }
-            }
+        self.write({
+            "connection_status": "connected",
+            "last_connected": fields.Datetime.now(),
+            "last_connection_test_at": fields.Datetime.now(),
+            "error_message": False,
+            "firmware_version": dev_info.get("firmware_version"),
+            "hardware_version": dev_info.get("hardware_version"),
+            "module_version": dev_info.get("module_version"),
+            "antenna_count": dev_info.get("antenna_count"),
+            "region": dev_info.get("region"),
+            "supports_epc": caps.get("supports_epc"),
+            "supports_tid": caps.get("supports_tid"),
+            "supports_user_read": caps.get("supports_user_read"),
+            "supports_user_write": caps.get("supports_user_write"),
+            "validation_state": "validated" if valid else "error",
+        })
+
+        if not valid:
+            raise UserError(_("设备能力不满足写后验证要求，或协议族尚未确认。"))
 
     def action_write_test_tag(self):
-        """写入测试标签"""
         self.ensure_one()
         self._ensure_rfid_manager()
-
-        if self.device_type == 'uhf_reader18':
-            # 对于UHFReader18设备，使用询查功能作为测试
-            device_service = self.env['uhf.reader18.service']
-
-            if not self.ip_address or not self.port:
-                return {
-                    'type': 'ir.actions.client',
-                    'tag': 'display_notification',
-                    'params': {
-                        'title': _('配置错误'),
-                        'message': _('请填写IP地址和端口'),
-                        'type': 'warning',
-                        'sticky': True,
-                    }
-                }
-
-            try:
-                port = int(self.port)
-                # 测试写入使用设备返回的第一个 EPC，避免硬编码生产标签。
-                inventory = device_service.inventory_tags(self.ip_address, port)
-                epc_list = inventory.get('epc_list') or []
-                if not inventory.get('success') or not epc_list:
-                    raise UserError(_('未检测到可用于测试写入的 RFID 标签。'))
-                test_bytes = b'TEST-DATA-WRITE'
-                if len(test_bytes) % 2:
-                    test_bytes += b'\x00'
-                test_data = [
-                    (test_bytes[i] << 8) | test_bytes[i + 1]
-                    for i in range(0, len(test_bytes), 2)
-                ]
-                epc_hex = epc_list[0]['epc']
-
-                result = device_service.write_data(
-                    ip=self.ip_address,
-                    port=port,
-                    epc_hex=epc_hex,
-                    mem_bank=0x03,  # 用户存储区
-                    word_ptr=0x00,  # 从开始位置写入
-                    write_data=test_data
-                )
-
-                if result.get('success'):
-                    message = _('写入测试成功！数据已写入到RFID标签')
-                    msg_type = 'success'
-                    # 更新写入计数器
-                    self.write_count += 1
-                else:
-                    message = result.get('error', '写入测试失败')
-                    msg_type = 'warning'
-            except ValueError:
-                return {
-                    'type': 'ir.actions.client',
-                    'tag': 'display_notification',
-                    'params': {
-                        'title': _('配置错误'),
-                        'message': _('端口必须是数字'),
-                        'type': 'warning',
-                        'sticky': True,
-                    }
-                }
-        else:
-            # 使用通用服务
-            device_service = self.env['rfid.device.service']
-
-            test_data = {
-                'rfid_number': 'TEST-001',
-                'product_code': 'TEST',
-                'product_name': '测试产品',
-                'lot_number': 'TEST-LOT-001',
-                'production_date': fields.Datetime.now(),
-            }
-
-            result = device_service.write_rfid_tag(test_data)
-
-            if result.get('success'):
-                message = result.get('message', '写入成功')
-                msg_type = 'success'
-                self.write_count += 1
-            else:
-                message = result.get('error', '写入失败')
-                msg_type = 'warning'
-
-        return {
-            'type': 'ir.actions.client',
-            'tag': 'display_notification',
-            'params': {
-                'title': _('测试写入'),
-                'message': message,
-                'type': msg_type,
-            }
-        }
+        self.write_and_verify({"test": True})
 
     def action_read_test_tag(self):
-        """读取测试标签"""
         self.ensure_one()
         self._ensure_rfid_manager()
-
-        if self.device_type == 'uhf_reader18':
-            # 对于UHFReader18设备，使用询查功能作为测试
-            device_service = self.env['uhf.reader18.service']
-
-            if not self.ip_address or not self.port:
-                return {
-                    'type': 'ir.actions.client',
-                    'tag': 'display_notification',
-                    'params': {
-                        'title': _('配置错误'),
-                        'message': _('请填写IP地址和端口'),
-                        'type': 'warning',
-                        'sticky': True,
-                    }
-                }
-
-            try:
-                port = int(self.port)
-                result = device_service.inventory_tags(self.ip_address, port, self.device_address)
-
-                if result.get('success'):
-                    message = _('询查成功，检测到 %d 个标签') % result.get('num_tags', 0)
-                    msg_type = 'success'
-                    # 更新读取计数器（询查操作也算作一次操作）
-                    self.read_count += 1
-                else:
-                    message = result.get('error', '询查失败')
-                    msg_type = 'warning'
-            except ValueError:
-                return {
-                    'type': 'ir.actions.client',
-                    'tag': 'display_notification',
-                    'params': {
-                        'title': _('配置错误'),
-                        'message': _('端口必须是数字'),
-                        'type': 'warning',
-                        'sticky': True,
-                    }
-                }
-        else:
-            # 使用通用服务
-            device_service = self.env['rfid.device.service']
-            result = device_service.read_rfid_tag()
-
-            if result.get('success'):
-                message = _('读取成功: %s') % result.get('rfid_number', '')
-                msg_type = 'success'
-                self.read_count += 1
-            else:
-                message = result.get('error', '读取失败')
-                msg_type = 'warning'
-
-        return {
-            'type': 'ir.actions.client',
-            'tag': 'display_notification',
-            'params': {
-                'title': _('测试读取'),
-                'message': message,
-                'type': msg_type,
-            }
-        }
+        self.read_memory("00", "user", 0, 1)
 
     def action_view_write_logs(self):
-        """查看写入日志"""
         self.ensure_one()
-
+        self._ensure_rfid_manager()
         return {
-            'type': 'ir.actions.client',
-            'tag': 'display_notification',
-            'params': {
-                'title': _('写入统计'),
-                'message': _('设备 %s 累计写入次数: %d') % (self.name, self.write_count),
-                'type': 'info',
-            }
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": _("写入统计"),
+                "message": _("设备 %s 累计写入次数: %d") % (self.name, self.write_count),
+                "type": "info",
+            },
         }
 
     def action_view_read_logs(self):
-        """查看读取日志"""
         self.ensure_one()
-
+        self._ensure_rfid_manager()
         return {
-            'type': 'ir.actions.client',
-            'tag': 'display_notification',
-            'params': {
-                'title': _('读取统计'),
-                'message': _('设备 %s 累计读取次数: %d') % (self.name, self.read_count),
-                'type': 'info',
-            }
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": _("读取统计"),
+                "message": _("设备 %s 累计读取次数: %d") % (self.name, self.read_count),
+                "type": "info",
+            },
         }
-

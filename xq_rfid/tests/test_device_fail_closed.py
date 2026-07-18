@@ -1,0 +1,823 @@
+# -*- coding: utf-8 -*-
+
+from unittest.mock import patch
+
+from odoo.exceptions import UserError
+from odoo.tests import TransactionCase, tagged
+
+
+@tagged("post_install", "-at_install")
+class TestDeviceFailClosed(TransactionCase):
+    @classmethod
+    def _ensure_mrp_picking_type(cls, company):
+        warehouse = cls.setup_env["stock.warehouse"].search([
+            ("company_id", "=", company.id),
+        ], limit=1)
+        if not warehouse:
+            warehouse = cls.setup_env["stock.warehouse"].create({
+                "name": f"{company.name} Test Warehouse",
+                "code": f"T{company.id}",
+                "company_id": company.id,
+            })
+        picking_type = warehouse.manu_type_id
+        if not picking_type:
+            picking_type = cls.setup_env["stock.picking.type"].search([
+                ("code", "=", "mrp_operation"),
+                ("company_id", "=", company.id),
+            ], limit=1)
+        assert picking_type, f"Missing manufacturing picking type for {company.name}"
+        assert picking_type.code == "mrp_operation"
+        assert picking_type.company_id == company
+        return picking_type
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.setup_env = cls.env
+        cls.manager = cls.setup_env["res.users"].with_context(
+            no_reset_password=True
+        ).create({
+            "name": "RFID Test Manager",
+            "login": "rfid-test-manager",
+            "company_id": cls.setup_env.company.id,
+            "company_ids": [(6, 0, cls.setup_env.company.ids)],
+            "groups_id": [(6, 0, [
+                cls.setup_env.ref("base.group_user").id,
+                cls.setup_env.ref("base.group_multi_company").id,
+                cls.setup_env.ref("quality.group_quality_manager").id,
+                cls.setup_env.ref("mrp.group_mrp_manager").id,
+                cls.setup_env.ref("stock.group_stock_manager").id,
+                cls.setup_env.ref("xq_rfid.group_rfid_manager").id,
+            ])],
+        })
+        cls.env = cls.setup_env(user=cls.manager)
+        cls.device = cls.setup_env["rfid.device.config"].create({
+            "name": "SI120X1 test",
+            "device_type": "si120x1",
+            "company_id": cls.setup_env.company.id,
+            "active": True,
+        }).with_env(cls.env)
+        cls.quality_team = cls.setup_env["quality.alert.team"].create({
+            "name": "RFID Test Quality Team",
+            "company_id": cls.setup_env.company.id,
+        }).with_env(cls.env)
+        cls.mrp_picking_type = cls._ensure_mrp_picking_type(
+            cls.setup_env.company
+        ).with_env(cls.env)
+
+    def _create_company(self, name):
+        company = self.setup_env["res.company"].create({"name": name})
+        self.manager.company_ids |= company
+        self._ensure_mrp_picking_type(company)
+        return company
+
+    def _manager_model(self, model_name, companies=None, **context):
+        companies = companies or self.env.companies
+        return self.setup_env[model_name].with_user(self.manager).with_context(
+            allowed_company_ids=companies.ids,
+            **context,
+        )
+
+    def _company_picking_type(self, company):
+        picking_type = self._ensure_mrp_picking_type(company).with_env(self.env)
+        self.assertTrue(picking_type)
+        self.assertEqual(picking_type.code, "mrp_operation")
+        self.assertEqual(picking_type.company_id, company)
+        return picking_type
+
+    def _set_tag_fixture_column(self, tag, field_name, value):
+        self.assertIn(field_name, {"product_id", "company_id"})
+        self.env.flush_all()
+        self.env.cr.execute(
+            f'UPDATE "rfid_tag" SET "{field_name}" = %s WHERE id = %s',
+            [value, tag.id],
+        )
+        tag.invalidate_recordset([field_name])
+
+    def _user_with_groups(self, login, *groups, company=None, companies=None):
+        company = company or self.env.company
+        companies = companies or company
+        return self.setup_env["res.users"].with_context(no_reset_password=True).create({
+            "name": login,
+            "login": login,
+            "company_id": company.id,
+            "company_ids": [(6, 0, companies.ids)],
+            "groups_id": [(6, 0, [
+                self.setup_env.ref("base.group_user").id,
+                *[group.id for group in groups],
+            ])],
+        })
+
+    def test_unvalidated_device_is_not_operational(self):
+        with self.assertRaisesRegex(UserError, "尚未验证"):
+            self.device._ensure_operational()
+
+    def test_inactive_device_is_not_operational(self):
+        self.device.active = False
+        with self.assertRaisesRegex(UserError, "已停用"):
+            self.device._ensure_operational()
+
+    def test_wrong_device_type_is_not_operational(self):
+        self.device.device_type = "custom"
+        with self.assertRaisesRegex(UserError, "不是 SI120X1"):
+            self.device._ensure_operational()
+
+    def test_migration_required_device_is_not_operational(self):
+        device = self.env["rfid.device.config"].new({
+            "name": "Legacy",
+            "device_type": "legacy_disabled",
+            "company_id": self.env.company.id,
+            "active": True,
+        })
+        with self.assertRaisesRegex(UserError, "重新配置"):
+            device._ensure_operational()
+
+    def test_wrong_company_device_is_not_operational(self):
+        other_company = self._create_company("RFID Other")
+        device = self.setup_env["rfid.device.config"].with_context(
+            allowed_company_ids=(self.setup_env.company | other_company).ids
+        ).create({
+            "name": "Other company SI120X1",
+            "device_type": "si120x1",
+            "company_id": other_company.id,
+            "active": True,
+        })
+        device.validation_state = "validated"
+        manager = self._user_with_groups(
+            "rfid-company-a-manager",
+            self.env.ref("xq_rfid.group_rfid_manager"),
+            company=self.env.company,
+            companies=self.env.company,
+        )
+        inaccessible_device = device.with_user(manager).with_context(
+            allowed_company_ids=[self.env.company.id]
+        )
+        operations = (
+            lambda: inaccessible_device.write_and_verify({"token": "test"}),
+            lambda: inaccessible_device.read_memory("3008", "user", 0, 1),
+        )
+        for operation in operations:
+            with self.subTest(operation=operation), self.assertRaisesRegex(
+                UserError, "无权访问"
+            ):
+                operation()
+
+    @staticmethod
+    def _compatibility_service_calls(service):
+        return (
+            lambda: service.write_rfid_tag({"token": "test"}),
+            service.read_rfid_tag,
+            lambda: service.verify_rfid_tag("RFID-TEST"),
+            service.erase_rfid_tag,
+            service.get_device_status,
+        )
+
+    def test_manager_compatibility_service_methods_fail_closed(self):
+        service = self.env["rfid.device.service"]
+        for call in self._compatibility_service_calls(service):
+            with self.subTest(call=call):
+                result = call()
+                self.assertFalse(result.get("success", result.get("connected")))
+                self.assertIn("error", result)
+
+    def test_non_manager_cannot_call_any_compatibility_service_method(self):
+        user = self._user_with_groups(
+            "rfid-compatibility-non-manager",
+            self.env.ref("xq_rfid.group_rfid_user"),
+        )
+        service = self.env["rfid.device.service"].with_user(user)
+        for call in self._compatibility_service_calls(service):
+            with self.subTest(call=call), self.assertRaisesRegex(UserError, "管理员"):
+                call()
+
+    def test_non_manager_cannot_run_any_device_hardware_action(self):
+        user = self._user_with_groups(
+            "rfid-non-manager",
+            self.env.ref("xq_rfid.group_rfid_user"),
+        )
+        for action_name in (
+            "action_test_connection",
+            "action_write_test_tag",
+            "action_read_test_tag",
+            "action_view_write_logs",
+            "action_view_read_logs",
+        ):
+            with self.subTest(action=action_name), self.assertRaisesRegex(
+                UserError, "管理员"
+            ):
+                getattr(self.device.with_user(user), action_name)()
+
+    def test_non_manager_cannot_call_canonical_hardware_operations(self):
+        user = self._user_with_groups(
+            "rfid-canonical-non-manager",
+            self.env.ref("xq_rfid.group_rfid_user"),
+        )
+        device = self.device.with_user(user)
+        operations = (
+            lambda: device.write_and_verify({"token": "test"}),
+            lambda: device.read_memory("3008", "user", 0, 1),
+        )
+        for operation in operations:
+            with self.subTest(operation=operation), self.assertRaisesRegex(
+                UserError, "管理员"
+            ):
+                operation()
+
+    def test_unvalidated_device_can_reach_connection_probe_boundary(self):
+        with self.assertRaisesRegex(UserError, "Adapter 尚未配置"):
+            self.device.action_test_connection()
+
+    def test_error_state_device_can_reach_connection_probe_boundary(self):
+        self.device.validation_state = "error"
+        with self.assertRaisesRegex(UserError, "Adapter 尚未配置"):
+            self.device.action_test_connection()
+
+    def _read_wizard(self, **values):
+        self.device.validation_state = "validated"
+        vals = {
+            "device_id": self.device.id,
+            "company_id": self.env.company.id,
+            "epc_hex": "3008",
+        }
+        vals.update(values)
+        return self.env["rfid.read.wizard"].create(vals)
+
+    def test_valid_read_reaches_canonical_adapter_boundary(self):
+        with self.assertRaisesRegex(UserError, "Adapter 尚未配置"):
+            self._read_wizard().action_read_rfid()
+
+    def test_canonical_write_propagates_adapter_failure(self):
+        self.device.validation_state = "validated"
+        with self.assertRaisesRegex(UserError, "Adapter 尚未配置"):
+            self.device.write_and_verify({"token": "test"})
+
+    def test_canonical_read_rejects_unvalidated_device(self):
+        with self.assertRaisesRegex(UserError, "尚未验证"):
+            self.device.read_memory("3008", "user", 0, 1)
+
+    def test_read_wizard_rejects_negative_offset_before_adapter(self):
+        with self.assertRaisesRegex(UserError, "不能小于 0"):
+            self._read_wizard(word_ptr=-1).action_read_rfid()
+
+    def test_read_wizard_rejects_zero_count_before_adapter(self):
+        with self.assertRaisesRegex(UserError, "1 到 128"):
+            self._read_wizard(word_count=0).action_read_rfid()
+
+    def test_read_wizard_rejects_count_above_limit_before_adapter(self):
+        with self.assertRaisesRegex(UserError, "1 到 128"):
+            self._read_wizard(word_count=129).action_read_rfid()
+
+    def test_read_wizard_rejects_invalid_epc_before_adapter(self):
+        with self.assertRaisesRegex(UserError, "十六进制"):
+            self._read_wizard(epc_hex="XYZ").action_read_rfid()
+
+    def test_read_wizard_rejects_foreign_company_device_on_action(self):
+        other_company = self._create_company("Wizard Other")
+        companies = self.env.company | other_company
+        foreign_device = self.setup_env["rfid.device.config"].with_context(
+            allowed_company_ids=companies.ids
+        ).create({
+            "name": "Wizard foreign device",
+            "device_type": "si120x1",
+            "company_id": other_company.id,
+            "active": True,
+        })
+        foreign_device.validation_state = "validated"
+        wizard = self.env["rfid.read.wizard"].with_context(
+            allowed_company_ids=companies.ids
+        ).new({
+            "company_id": self.env.company.id,
+            "device_id": foreign_device.id,
+            "epc_hex": "3008",
+        })
+        with self.assertRaisesRegex(UserError, "当前公司"):
+            wizard.action_read_rfid()
+
+    def test_allowed_company_b_device_is_operational_but_rejected_by_current_company_wizard(self):
+        other_company = self._create_company("Allowed Wizard Other")
+        companies = self.env.company | other_company
+        device = self.setup_env["rfid.device.config"].with_context(
+            allowed_company_ids=companies.ids
+        ).create({
+            "name": "Allowed company B device",
+            "device_type": "si120x1",
+            "company_id": other_company.id,
+            "active": True,
+        })
+        device.validation_state = "validated"
+        manager = self._user_with_groups(
+            "rfid-two-company-manager",
+            self.setup_env.ref("base.group_multi_company"),
+            self.setup_env.ref("xq_rfid.group_rfid_manager"),
+            company=self.env.company,
+            companies=companies,
+        )
+        allowed_device = device.with_user(manager).with_context(
+            allowed_company_ids=companies.ids
+        )
+        self.assertTrue(allowed_device._ensure_operational())
+        wizard = self.env["rfid.read.wizard"].with_user(manager).with_context(
+            allowed_company_ids=companies.ids
+        ).new({
+            "company_id": self.env.company.id,
+            "device_id": allowed_device.id,
+            "epc_hex": "3008",
+        })
+        with self.assertRaisesRegex(UserError, "当前公司"):
+            wizard.action_read_rfid()
+
+    def test_foreign_default_device_is_normalized_to_current_company(self):
+        other_company = self._create_company("Default Other")
+        companies = self.env.company | other_company
+        self.device.validation_state = "validated"
+        foreign_device = self.setup_env["rfid.device.config"].with_context(
+            allowed_company_ids=companies.ids
+        ).create({
+            "name": "Foreign default",
+            "device_type": "si120x1",
+            "company_id": other_company.id,
+            "active": True,
+        })
+        foreign_device.validation_state = "validated"
+        defaults = self.env["rfid.read.wizard"].with_context(
+            allowed_company_ids=companies.ids,
+            default_device_id=foreign_device.id,
+        ).default_get(["company_id", "device_id"])
+        self.assertEqual(defaults["company_id"], self.env.company.id)
+        self.assertEqual(defaults["device_id"], self.device.id)
+
+    def test_ineligible_same_company_defaults_are_normalized(self):
+        self.device.validation_state = "validated"
+        ineligible_values = (
+            {"name": "Inactive default", "device_type": "si120x1", "active": False},
+            {"name": "Unvalidated default", "device_type": "si120x1", "active": True},
+            {"name": "Wrong type default", "device_type": "custom", "active": True},
+        )
+        for values in ineligible_values:
+            incoming = self.env["rfid.device.config"].create({
+                **values,
+                "company_id": self.env.company.id,
+            })
+            defaults = self.env["rfid.read.wizard"].with_context(
+                default_device_id=incoming.id,
+            ).default_get(["company_id", "device_id"])
+            with self.subTest(device=incoming.name):
+                self.assertEqual(defaults["company_id"], self.env.company.id)
+                self.assertEqual(defaults["device_id"], self.device.id)
+
+    def test_non_manager_cannot_read_from_wizard(self):
+        user = self._user_with_groups(
+            "rfid-wizard-non-manager",
+            self.env.ref("xq_rfid.group_rfid_user"),
+        )
+        wizard = self._read_wizard().with_user(user)
+        with self.assertRaisesRegex(UserError, "管理员"):
+            wizard.action_read_rfid()
+
+    def test_read_wizard_has_no_reserve_bank(self):
+        selection = dict(
+            self.env["rfid.read.wizard"]._fields["mem_bank"]._description_selection(
+                self.env
+            )
+        )
+        self.assertNotIn("0x00", selection)
+
+    def test_selectable_domain_is_exact_and_company_aware(self):
+        self.assertEqual(
+            self.env["rfid.device.config"]._selectable_domain(self.env.company),
+            [
+                ("device_type", "=", "si120x1"),
+                ("active", "=", True),
+                ("validation_state", "=", "validated"),
+                ("company_id", "=", self.env.company.id),
+            ],
+        )
+
+    def test_quality_point_create_uses_each_target_company_as_manager(self):
+        other_company = self._create_company("Point Other")
+        companies = self.env.company | other_company
+        devices = self.setup_env["rfid.device.config"].with_context(
+            allowed_company_ids=companies.ids
+        ).create([
+            {
+                "name": "Main selectable",
+                "device_type": "si120x1",
+                "company_id": self.env.company.id,
+                "active": True,
+            },
+            {
+                "name": "Other selectable",
+                "device_type": "si120x1",
+                "company_id": other_company.id,
+                "active": True,
+            },
+        ])
+        devices.validation_state = "validated"
+        test_type = self.env.ref("xq_rfid.test_type_rfid_write")
+        other_team = self.setup_env["quality.alert.team"].create({
+            "name": "Other Quality Team",
+            "company_id": other_company.id,
+        })
+        main_picking_type = self._company_picking_type(self.env.company)
+        other_picking_type = self._company_picking_type(other_company)
+        points = self._manager_model("quality.point", companies).create([
+            {
+                "title": "Main point",
+                "team_id": self.quality_team.id,
+                "test_type_id": test_type.id,
+                "company_id": self.env.company.id,
+                "picking_type_ids": [(6, 0, main_picking_type.ids)],
+            },
+            {
+                "title": "Other point",
+                "team_id": other_team.id,
+                "test_type_id": test_type.id,
+                "company_id": other_company.id,
+                "picking_type_ids": [(6, 0, other_picking_type.ids)],
+            },
+        ])
+        self.assertEqual(points.env.user, self.manager)
+        self.assertEqual(
+            set(points.mapped("rfid_device_id.company_id").ids),
+            set(companies.ids),
+        )
+
+    def test_quality_point_context_defaults_use_target_company_as_manager(self):
+        other_company = self._create_company("Context Other")
+        companies = self.env.company | other_company
+        device = self.setup_env["rfid.device.config"].with_context(
+            allowed_company_ids=companies.ids
+        ).create({
+            "name": "Context selectable",
+            "device_type": "si120x1",
+            "company_id": other_company.id,
+            "active": True,
+        })
+        device.validation_state = "validated"
+        test_type = self.env.ref("xq_rfid.test_type_rfid_write")
+        team = self.setup_env["quality.alert.team"].create({
+            "name": "Context Other Quality Team",
+            "company_id": other_company.id,
+        })
+        picking_type = self._company_picking_type(other_company)
+        point = self._manager_model(
+            "quality.point",
+            companies,
+            default_company_id=other_company.id,
+            default_test_type_id=test_type.id,
+        ).create({
+            "title": "Context point",
+            "team_id": team.id,
+            "picking_type_ids": [(6, 0, picking_type.ids)],
+        })
+        self.assertEqual(point.env.user, self.manager)
+        self.assertEqual(point.company_id, other_company)
+        self.assertEqual(point.rfid_device_id, device.with_env(point.env))
+
+    def test_quality_point_normalizes_explicit_ineligible_device_as_manager(self):
+        self.device.validation_state = "validated"
+        inactive = self.setup_env["rfid.device.config"].create({
+            "name": "Inactive explicit device",
+            "device_type": "si120x1",
+            "company_id": self.env.company.id,
+            "active": False,
+        })
+        point = self._manager_model("quality.point").create({
+            "title": "Normalize explicit device",
+            "team_id": self.quality_team.id,
+            "test_type_id": self.env.ref("xq_rfid.test_type_rfid_write").id,
+            "company_id": self.env.company.id,
+            "rfid_device_id": inactive.id,
+            "picking_type_ids": [(6, 0, self.mrp_picking_type.ids)],
+        })
+        self.assertEqual(point.rfid_device_id, self.device)
+
+    def test_quality_point_normalizes_context_ineligible_device_as_manager(self):
+        self.device.validation_state = "validated"
+        unvalidated = self.setup_env["rfid.device.config"].create({
+            "name": "Unvalidated context device",
+            "device_type": "si120x1",
+            "company_id": self.env.company.id,
+            "active": True,
+        })
+        point = self._manager_model(
+            "quality.point",
+            default_company_id=self.env.company.id,
+            default_test_type_id=self.env.ref("xq_rfid.test_type_rfid_write").id,
+            default_rfid_device_id=unvalidated.id,
+        ).create({
+            "title": "Normalize context device",
+            "team_id": self.quality_team.id,
+            "picking_type_ids": [(6, 0, self.mrp_picking_type.ids)],
+        })
+        self.assertEqual(point.rfid_device_id, self.device)
+
+    def _quality_point(self, title, test_type, **values):
+        self.assertTrue(self.mrp_picking_type)
+        self.assertEqual(self.mrp_picking_type.company_id, self.env.company)
+        return self.env["quality.point"].create({
+            "title": title,
+            "team_id": self.quality_team.id,
+            "test_type_id": self.env.ref(test_type).id,
+            "picking_type_ids": [(6, 0, self.mrp_picking_type.ids)],
+            **values,
+        })
+
+    def _rfid_write_check(self, device):
+        point = self._quality_point(
+            "RFID write check",
+            "xq_rfid.test_type_rfid_write",
+            rfid_device_id=device.id,
+        )
+        return self.env["quality.check"].create({
+            "team_id": self.quality_team.id,
+            "point_id": point.id,
+        })
+
+    def test_rfid_write_quality_pass_propagates_adapter_failure(self):
+        self.device.validation_state = "validated"
+        check = self._rfid_write_check(self.device)
+        with self.assertRaisesRegex(UserError, "Adapter 尚未配置"):
+            check.do_pass()
+        self.assertEqual(check.quality_state, "none")
+
+    def _rfid_label_check(self, production=None, required=True, device=None):
+        point = self._quality_point(
+            "RFID label check",
+            "xq_rfid.test_type_rfid_label",
+            rfid_device_required=required,
+            rfid_device_id=device.id if device else False,
+        )
+        return self.env["quality.check"].create({
+            "team_id": self.quality_team.id,
+            "point_id": point.id,
+            "production_id": production.id if production else False,
+            "product_id": production.product_id.id if production else False,
+        })
+
+    def test_required_rfid_label_without_production_does_not_pass(self):
+        check = self._rfid_label_check()
+        with self.assertRaisesRegex(UserError, "缺少生产订单"):
+            check.do_pass()
+        self.assertEqual(check.quality_state, "none")
+
+    def test_required_rfid_label_without_finished_lot_does_not_pass(self):
+        product = self.env["product.product"].create({"name": "RFID no lot"})
+        production = self.env["mrp.production"].create({
+            "product_id": product.id,
+            "product_qty": 1,
+            "product_uom_id": product.uom_id.id,
+        })
+        check = self._rfid_label_check(production=production)
+        with self.assertRaisesRegex(UserError, "成品批次"):
+            check.do_pass()
+        self.assertEqual(check.quality_state, "none")
+
+    def test_required_rfid_label_without_device_does_not_pass(self):
+        product = self.env["product.product"].create({
+            "name": "RFID product",
+            "tracking": "lot",
+        })
+        production = self.env["mrp.production"].create({
+            "product_id": product.id,
+            "product_qty": 1,
+            "product_uom_id": product.uom_id.id,
+        })
+        lot = self.env["stock.lot"].create({
+            "name": "RFID-LOT-NO-DEVICE",
+            "product_id": product.id,
+        })
+        production.lot_producing_id = lot
+        check = self._rfid_label_check(production=production)
+        with self.assertRaisesRegex(UserError, "配置 RFID 设备"):
+            check.do_pass()
+        self.assertEqual(check.quality_state, "none")
+
+    def test_mixed_recordset_preflights_required_rfid_before_any_pass(self):
+        ordinary = self.env["quality.check"].create({
+            "team_id": self.quality_team.id,
+            "test_type_id": self.env.ref("quality.test_type_instructions").id,
+        })
+        required = self._rfid_label_check()
+        with self.assertRaises(UserError):
+            (ordinary | required).do_pass()
+        self.assertEqual(ordinary.quality_state, "none")
+        self.assertEqual(required.quality_state, "none")
+
+    def test_later_invalid_required_label_prevents_all_earlier_side_effects(self):
+        product = self.env["product.product"].create({
+            "name": "RFID recordset preflight product",
+            "tracking": "lot",
+        })
+        production = self.env["mrp.production"].create({
+            "product_id": product.id,
+            "product_qty": 1,
+            "product_uom_id": product.uom_id.id,
+        })
+        lot = self.env["stock.lot"].create({
+            "name": "RFID-RECORDSET-PREFLIGHT",
+            "product_id": product.id,
+        })
+        production.lot_producing_id = lot
+        self.device.validation_state = "validated"
+        valid = self._rfid_label_check(production=production, device=self.device)
+        invalid = self._rfid_label_check(device=self.device)
+        production_model = type(production)
+        device_model = type(self.device)
+        with patch.object(
+            production_model,
+            "generate_rfid_for_lot",
+            wraps=production_model.generate_rfid_for_lot,
+        ) as generate, patch.object(
+            device_model,
+            "write_and_verify",
+            wraps=device_model.write_and_verify,
+        ) as write:
+            with self.assertRaisesRegex(UserError, "缺少生产订单"):
+                (valid | invalid).do_pass()
+        generate.assert_not_called()
+        write.assert_not_called()
+        self.assertFalse(valid.rfid_tag_id)
+        self.assertFalse(invalid.rfid_tag_id)
+        self.assertEqual(valid.quality_state, "none")
+        self.assertEqual(invalid.quality_state, "none")
+
+    def _assert_label_payload_uses_finished_lot(self, existing_tag):
+        product = self.env["product.product"].create({
+            "name": "RFID label payload product",
+            "default_code": "RFID-PAYLOAD-PRODUCT",
+            "tracking": "lot",
+        })
+        production = self.env["mrp.production"].create({
+            "product_id": product.id,
+            "product_qty": 1,
+            "product_uom_id": product.uom_id.id,
+        })
+        lot = self.env["stock.lot"].create({
+            "name": "RFID-FINISHED-LOT",
+            "product_id": product.id,
+        })
+        production.lot_producing_id = lot
+        self.device.validation_state = "validated"
+        check = self._rfid_label_check(
+            production=production,
+            device=self.device,
+        )
+        if existing_tag:
+            check.rfid_tag_id = production.generate_rfid_for_lot(
+                lot_id=lot,
+                quality_check_id=check.id,
+            )
+        model_class = type(self.device)
+        original = model_class.write_and_verify
+        captured = {}
+
+        def capture_and_fail(device, payload):
+            captured.update(payload)
+            return original(device, payload)
+
+        with patch.object(model_class, "write_and_verify", capture_and_fail):
+            with self.assertRaisesRegex(UserError, "Adapter 尚未配置"):
+                check.do_pass()
+        self.assertEqual(captured["lot_number"], lot.name)
+        self.assertEqual(captured["product_code"], product.default_code)
+        self.assertEqual(captured["product_name"], product.name)
+        self.assertEqual(check.rfid_tag_id.stock_prod_lot_id, lot)
+        self.assertEqual(check.quality_state, "none")
+
+    def test_existing_tag_payload_uses_finished_lot_and_adapter_error_propagates(self):
+        self._assert_label_payload_uses_finished_lot(existing_tag=True)
+
+    def test_new_tag_payload_uses_finished_lot_and_adapter_error_propagates(self):
+        self._assert_label_payload_uses_finished_lot(existing_tag=False)
+
+    def _finished_production(self, name):
+        product = self.env["product.product"].create({
+            "name": name,
+            "tracking": "lot",
+        })
+        production = self.env["mrp.production"].create({
+            "product_id": product.id,
+            "product_qty": 1,
+            "product_uom_id": product.uom_id.id,
+        })
+        lot = self.env["stock.lot"].create({
+            "name": f"{name}-LOT",
+            "product_id": product.id,
+        })
+        production.lot_producing_id = lot
+        return production, lot
+
+    def test_existing_tag_from_different_production_fails_before_adapter_write(self):
+        production, lot = self._finished_production("RFID-PRODUCTION-MISMATCH")
+        other_production = self.env["mrp.production"].create({
+            "product_id": production.product_id.id,
+            "product_qty": 1,
+            "product_uom_id": production.product_uom_id.id,
+        })
+        tag = self.env["rfid.tag"].create({
+            "name": "RFID-PRODUCTION-MISMATCH-TAG",
+            "usage_type": "stock_prod_lot",
+            "stock_prod_lot_id": lot.id,
+            "production_id": other_production.id,
+            "company_id": production.company_id.id,
+        })
+        check = self._rfid_label_check(production=production, device=self.device)
+        check.rfid_tag_id = tag
+        with patch.object(type(self.device), "write_and_verify") as write:
+            with self.assertRaisesRegex(UserError, "生产订单"):
+                check.do_pass()
+        write.assert_not_called()
+
+    def test_existing_tag_from_different_product_fails_during_quality_preflight(self):
+        production, lot = self._finished_production("RFID-PRODUCT-MISMATCH")
+        other_product = self.env["product.product"].create({
+            "name": "RFID Other Product",
+        })
+        tag = production.generate_rfid_for_lot(lot_id=lot)
+        self._set_tag_fixture_column(tag, "product_id", other_product.id)
+        check = self._rfid_label_check(production=production, device=self.device)
+        check.rfid_tag_id = tag
+        with patch.object(
+            type(production), "generate_rfid_for_lot"
+        ) as generate, patch.object(
+            type(self.device), "write_and_verify"
+        ) as write:
+            with self.assertRaisesRegex(UserError, "产品"):
+                check.do_pass()
+        generate.assert_not_called()
+        write.assert_not_called()
+        self.assertEqual(check.rfid_tag_id, tag)
+        self.assertEqual(check.quality_state, "none")
+
+    def test_existing_tag_from_different_company_fails_during_quality_preflight(self):
+        production, lot = self._finished_production("RFID-COMPANY-MISMATCH")
+        other_company = self._create_company("RFID Tag Other Company")
+        tag = production.generate_rfid_for_lot(lot_id=lot)
+        self._set_tag_fixture_column(tag, "company_id", other_company.id)
+        check = self._rfid_label_check(production=production, device=self.device)
+        check.rfid_tag_id = tag
+        with patch.object(
+            type(production), "generate_rfid_for_lot"
+        ) as generate, patch.object(
+            type(self.device), "write_and_verify"
+        ) as write:
+            with self.assertRaisesRegex(UserError, "公司"):
+                check.do_pass()
+        generate.assert_not_called()
+        write.assert_not_called()
+        self.assertEqual(check.rfid_tag_id, tag)
+        self.assertEqual(check.quality_state, "none")
+
+    def test_existing_tag_from_different_lot_fails_before_adapter_write(self):
+        product = self.env["product.product"].create({
+            "name": "RFID mismatched tag product",
+            "tracking": "lot",
+        })
+        production = self.env["mrp.production"].create({
+            "product_id": product.id,
+            "product_qty": 1,
+            "product_uom_id": product.uom_id.id,
+        })
+        finished_lot, other_lot = self.env["stock.lot"].create([
+            {"name": "RFID-FINISHED-EXACT", "product_id": product.id},
+            {"name": "RFID-OTHER-LOT", "product_id": product.id},
+        ])
+        production.lot_producing_id = finished_lot
+        check = self._rfid_label_check(production=production, device=self.device)
+        check.rfid_tag_id = production.generate_rfid_for_lot(
+            lot_id=other_lot,
+            quality_check_id=check.id,
+        )
+        model_class = type(self.device)
+        with patch.object(model_class, "write_and_verify") as write_and_verify:
+            with self.assertRaisesRegex(UserError, "成品批次"):
+                check.do_pass()
+        write_and_verify.assert_not_called()
+        self.assertEqual(check.quality_state, "none")
+
+    def test_multi_record_non_rfid_checks_can_pass(self):
+        test_type = self.env.ref("quality.test_type_instructions")
+        checks = self.env["quality.check"].create([
+            {"team_id": self.quality_team.id, "test_type_id": test_type.id},
+            {"team_id": self.quality_team.id, "test_type_id": test_type.id},
+        ])
+        checks.do_pass()
+        self.assertEqual(set(checks.mapped("quality_state")), {"pass"})
+
+    def test_optional_rfid_label_without_production_preserves_parent_behavior(self):
+        check = self._rfid_label_check(required=False)
+        check.do_pass()
+        self.assertEqual(check.quality_state, "pass")
+
+    def test_optional_rfid_label_without_finished_lot_preserves_parent_behavior(self):
+        product = self.env["product.product"].create({"name": "Optional RFID no lot"})
+        production = self.env["mrp.production"].create({
+            "product_id": product.id,
+            "product_qty": 1,
+            "product_uom_id": product.uom_id.id,
+        })
+        check = self._rfid_label_check(production=production, required=False)
+        check.do_pass()
+        self.assertEqual(check.quality_state, "pass")
+        self.assertFalse(check.rfid_tag_id)

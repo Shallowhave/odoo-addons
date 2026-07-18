@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="rfid_tag_view_form_inherit_physical" model="ir.ui.view">
+        <field name="name">rfid.tag.view.form.inherit.physical</field>
+        <field name="model">rfid.tag</field>
+        <field name="inherit_id" ref="xq_rfid.rfid_tag_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//group[@name='main_info']" position="after">
+                <group string="物理标签信息" name="physical_info">
+                    <field name="tid"/>
+                    <field name="write_count"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+</odoo>

@@ -8,9 +8,10 @@
         <field name="arch" type="xml">
             <xpath expr="//field[@name='team_id']" position="after">
                 <field name="test_type" invisible="1"/>
-                <!-- RFID 设备选择字段 -->
+                <field name="rfid_device_required"
+                       invisible="test_type != 'rfid_label'"/>
                 <field name="rfid_device_id"
-                       invisible="test_type != 'rfid_write'"
+                       invisible="test_type != 'rfid_write' and (test_type != 'rfid_label' or not rfid_device_required)"
                        string="RFID 设备"
                        placeholder="选择RFID设备"/>
             </xpath>

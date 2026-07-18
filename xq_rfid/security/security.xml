@@ -1,18 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <record id="group_rfid_user" model="res.groups">
-        <field name="name">RFID User</field>
-    </record>
+    <data noupdate="0">
+        <!-- 基础角色：RFID 模块的访问权限 -->
+        <record id="module_category_rfid" model="ir.module.category">
+            <field name="name">RFID 标签</field>
+            <field name="description">管理 RFID 标签与产品、序列号的绑定关系。</field>
+            <field name="sequence">100</field>
+        </record>
 
-    <record id="group_rfid_manager" model="res.groups">
-        <field name="name">RFID Manager</field>
-        <field name="implied_ids" eval="[(4, ref('xq_rfid.group_rfid_user'))]"/>
-    </record>
+        <record id="group_rfid_user" model="res.groups">
+            <field name="name">普通用户</field>
+            <field name="category_id" ref="module_category_rfid"/>
+            <field name="implied_ids" eval="[(4, ref('base.group_user'))]"/>
+            <field name="comment">可以查看 RFID 标签信息，执行盘点和绑定操作。</field>
+        </record>
 
-    <record id="rfid_tag_company_rule" model="ir.rule">
-        <field name="name">RFID tags: allowed companies</field>
-        <field name="model_id" ref="model_rfid_tag"/>
-        <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
-        <field name="groups" eval="[(4, ref('xq_rfid.group_rfid_user'))]"/>
-    </record>
+        <record id="group_rfid_manager" model="res.groups">
+            <field name="name">管理员</field>
+            <field name="category_id" ref="module_category_rfid"/>
+            <field name="implied_ids" eval="[(4, ref('xq_rfid.group_rfid_user'))]"/>
+            <field name="comment">可以管理所有 RFID 设备、标签和写入操作。</field>
+        </record>
+
+        <!-- 多公司规则：只能看到本公司的 RFID 设备 -->
+        <record id="rfid_device_comp_rule" model="ir.rule">
+            <field name="name">RFID 设备多公司规则</field>
+            <field name="model_id" ref="model_rfid_device_config"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+        </record>
+        
+        <!-- 多公司规则：只能看到本公司的 RFID 操作记录 -->
+        <record id="rfid_operation_comp_rule" model="ir.rule">
+            <field name="name">RFID 操作记录多公司规则</field>
+            <field name="model_id" ref="model_rfid_operation"/>
+            <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+        </record>
+    </data>
 </odoo>

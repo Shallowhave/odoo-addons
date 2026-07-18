@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="rfid_operation_view_tree" model="ir.ui.view">
+        <field name="name">rfid.operation.tree</field>
+        <field name="model">rfid.operation</field>
+        <field name="arch" type="xml">
+            <list string="RFID 操作记录" create="false" edit="false" delete="false">
+                <field name="name"/>
+                <field name="device_id"/>
+                <field name="operation_type"/>
+                <field name="status" widget="badge" 
+                       decoration-info="status == 'draft'"
+                       decoration-warning="status in ('queued', 'processing')"
+                       decoration-success="status == 'succeeded'"
+                       decoration-danger="status == 'failed'"/>
+                <field name="quality_check_id" optional="show"/>
+                <field name="create_date"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="rfid_operation_view_form" model="ir.ui.view">
+        <field name="name">rfid.operation.form</field>
+        <field name="model">rfid.operation</field>
+        <field name="arch" type="xml">
+            <form string="RFID 操作记录" create="false" edit="false" delete="false">
+                <header>
+                    <field name="status" widget="statusbar" statusbar_visible="draft,queued,processing,succeeded"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="name"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="device_id"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="operation_type"/>
+                            <field name="quality_check_id" invisible="not quality_check_id"/>
+                        </group>
+                        <group>
+                            <field name="request_id"/>
+                            <field name="create_date"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="结果数据" invisible="not result_data and not error_message">
+                            <group>
+                                <field name="error_code" invisible="not error_code"/>
+                                <field name="error_message" invisible="not error_message"/>
+                                <field name="result_data" widget="ace" options="{'mode': 'json'}" invisible="not result_data"/>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="rfid_operation_action" model="ir.actions.act_window">
+        <field name="name">RFID 操作记录</field>
+        <field name="res_model">rfid.operation</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <menuitem id="menu_rfid_operation" name="操作记录" parent="xq_rfid.menu_rfid_config" action="rfid_operation_action" sequence="40" groups="xq_rfid.group_rfid_manager"/>
+</odoo>

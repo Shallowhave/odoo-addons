@@ -20,7 +20,8 @@
                     
                     <group>
                         <group string="设备配置">
-                            <field name="device_id" options="{'no_create': True}"/>
+                            <field name="company_id" invisible="1"/>
+                            <field name="device_id" options="{'no_create': True, 'no_open': True}"/>
                             <field name="read_time" readonly="1"/>
                         </group>
                         <group string="读取参数">

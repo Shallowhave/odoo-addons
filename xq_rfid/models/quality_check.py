@@ -71,51 +71,159 @@ class QualityCheck(models.Model):
                 record.rfid_write_content = ''
 
     def do_pass(self):
-        """
-        质检通过时自动生成 RFID 标签
-        """
-        # 如果是 RFID 标签类型的质检，先生成 RFID，再通过质检
-        if self.test_type == 'rfid_label' and self.production_id and not self.rfid_tag_id:
-            # 使用生产订单的成品批次号
-            lot = self.production_id.lot_producing_id
+        """Validate the full recordset before any RFID side effect."""
+        # If this is a callback completion from a successful operation, bypass queuing
+        complete_op_id = self.env.context.get('xq_rfid_complete_operation_id')
+        if complete_op_id:
+            op = self.env['rfid.operation'].browse(complete_op_id)
+            if op.status == 'succeeded' and op.quality_check_id.id in self.ids:
+                return super(QualityCheck, self).do_pass()
 
-            if lot:
-                try:
-                    # 调用生产订单的生成方法
-                    rfid_tag = self.production_id.generate_rfid_for_lot(
-                        lot_id=lot,
-                        quality_check_id=self.id
-                    )
+        plans = [check._plan_rfid_before_pass() for check in self]
 
-                    # 关联到当前质检
-                    self.rfid_tag_id = rfid_tag.id
+        any_async = False
+        for check, plan in zip(self, plans):
+            if check._execute_rfid_pass_plan(plan):
+                any_async = True
 
-                    # 如果质检点配置了需要 RFID 设备，则调用写入接口
-                    if self.point_id.rfid_device_required:
-                        try:
-                            self._write_to_rfid_device(rfid_tag)
-                        except Exception as e:
-                            # 设备写入失败不影响 RFID 生成，只记录日志
-                            import logging
-                            _logger = logging.getLogger(__name__)
-                            _logger.warning('RFID 设备写入失败：%s', str(e))
+        # If any check in the recordset queued an async operation, 
+        # we DO NOT call super().do_pass() yet. The frontend will poll.
+        if any_async:
+            return None
 
-                except Exception as e:
-                    # RFID 生成失败会抛出异常，阻止质检通过
-                    raise UserError(_('RFID 生成失败：%s') % str(e))
+        result = None
+        for check in self:
+            result = super(QualityCheck, check).do_pass()
+        return result
 
-        # 如果是 RFID 写入类型的质检，执行 RFID 写入操作
-        elif self.test_type == 'rfid_write':
-            try:
-                self._execute_rfid_write()
-            except Exception as e:
-                # RFID 写入失败会抛出异常，阻止质检通过
-                raise UserError(_('RFID 写入失败：%s') % str(e))
+    def _plan_rfid_before_pass(self):
+        """Return a read-only execution plan for one quality check."""
+        self.ensure_one()
+        if self.test_type == 'rfid_label':
+            hardware_required = self.point_id.rfid_device_required
+            if not self.production_id:
+                if hardware_required:
+                    raise UserError(_('RFID 标签质检缺少生产订单。'))
+                return None
+            finished_lot = self.production_id.lot_producing_id
+            if not finished_lot:
+                if hardware_required:
+                    raise UserError(_('请先设置成品批次/序列号。'))
+                return None
+            self._ensure_finished_lot_matches_production(finished_lot)
+            rfid_tag = self.rfid_tag_id or self.env['rfid.tag'].search([
+                ('stock_prod_lot_id', '=', finished_lot.id),
+            ], limit=1)
+            if rfid_tag:
+                self._ensure_rfid_tag_matches_finished_lot(rfid_tag, finished_lot)
+            device = self.point_id.rfid_device_id
+            if hardware_required:
+                self._ensure_rfid_device_ready(device)
+            return {
+                'operation': 'rfid_label',
+                'finished_lot': finished_lot,
+                'rfid_tag': rfid_tag,
+                'hardware_required': hardware_required,
+            }
+        if self.test_type == 'rfid_write':
+            device = self.point_id.rfid_device_id
+            self._ensure_rfid_device_ready(device)
+            return {
+                'operation': 'rfid_write',
+                'payload': self._prepare_rfid_write_data(),
+            }
+        return None
 
-        # 调用父类方法执行质检通过
-        res = super(QualityCheck, self).do_pass()
+    def _execute_rfid_pass_plan(self, plan):
+        self.ensure_one()
+        if not plan:
+            return False
+            
+        if plan['operation'] == 'rfid_label':
+            finished_lot = plan['finished_lot']
+            rfid_tag = plan['rfid_tag'] or self.production_id.generate_rfid_for_lot(
+                lot_id=finished_lot,
+                quality_check_id=self.id,
+            )
+            self._ensure_rfid_tag_matches_finished_lot(rfid_tag, finished_lot)
+            if not self.rfid_tag_id:
+                self.rfid_tag_id = rfid_tag
+                
+            if plan['hardware_required']:
+                return self._queue_rfid_operation(plan)
+                
+        elif plan['operation'] == 'rfid_write':
+            return self._queue_rfid_operation(plan)
+            
+        return False
+        
+    def _queue_rfid_operation(self, plan):
+        """Queues an async RFID operation instead of blocking"""
+        device = self.point_id.rfid_device_id
+        if not device:
+            raise UserError(_('请先配置 RFID 设备！'))
+            
+        operation = self.env['rfid.operation'].create_or_get_for_quality_check(
+            self, device, retry=self.env.context.get('xq_rfid_retry', False)
+        )
+        
+        if operation.status == 'draft':
+            operation.action_submit()
+            
+        return True
+        
+    @api.model
+    def get_rfid_operation_status(self, check_id):
+        """Safe RPC for UI polling"""
+        check = self.browse(check_id)
+        check.check_access('read')
+        
+        operation = self.env["rfid.operation"].search(
+            [("quality_check_id", "=", check.id)], order="id desc", limit=1
+        )
+        
+        if not operation:
+            return {'status': 'none'}
+            
+        # Trigger a sync if it's pending
+        if operation.status in ('queued', 'processing'):
+            operation.action_sync()
+            
+        return {
+            'status': operation.status,
+            'operation_id': operation.id,
+            'error_message': operation.error_message if operation.status == 'failed' else False,
+        }
 
-        return res
+    def _ensure_finished_lot_matches_production(self, finished_lot):
+        self.ensure_one()
+        if self.production_id.company_id not in self.env.companies:
+            raise UserError(_('无权访问该生产订单的公司。'))
+        if finished_lot.product_id != self.production_id.product_id:
+            raise UserError(_('成品批次产品与生产订单产品不一致。'))
+        if finished_lot.company_id != self.production_id.company_id:
+            raise UserError(_('成品批次与生产订单公司不一致。'))
+        if self.product_id and self.product_id != self.production_id.product_id:
+            raise UserError(_('质检产品与生产订单产品不一致。'))
+
+    def _ensure_rfid_device_ready(self, device):
+        if not device:
+            raise UserError(_('请先配置 RFID 设备！'))
+        device._ensure_rfid_manager()
+        device._ensure_operational()
+
+    def _ensure_rfid_tag_matches_finished_lot(self, rfid_tag, finished_lot):
+        self.ensure_one()
+        if rfid_tag.stock_prod_lot_id != finished_lot:
+            raise UserError(_('现有 RFID 标签与生产订单的成品批次不一致。'))
+        if finished_lot.product_id != self.production_id.product_id:
+            raise UserError(_('成品批次产品与生产订单产品不一致。'))
+        if rfid_tag.product_id and rfid_tag.product_id != self.production_id.product_id:
+            raise UserError(_('现有 RFID 标签关联了不同的产品。'))
+        if rfid_tag.production_id and rfid_tag.production_id != self.production_id:
+            raise UserError(_('现有 RFID 标签关联了不同的生产订单。'))
+        if rfid_tag.company_id != self.production_id.company_id:
+            raise UserError(_('现有 RFID 标签与生产订单公司不一致。'))
 
     def action_view_rfid_tag(self):
         """查看关联的 RFID 标签"""
@@ -133,86 +241,27 @@ class QualityCheck(models.Model):
             'target': 'current',
         }
 
-    def _write_to_rfid_device(self, rfid_tag):
-        """
-        写入 RFID 设备（硬件接口）
-
-        此方法为硬件对接预留接口，子类或其他模块可以重写此方法
-        实现具体的硬件写入逻辑
-
-        :param rfid_tag: RFID 标签记录
-        :return: True 表示写入成功，False 或抛出异常表示失败
-        """
-        # 调用 RFID 设备服务
-        device_service = self.env['rfid.device.service']
-
-        # 准备要写入的数据
-        write_data = {
+    def _write_to_rfid_device(self, rfid_tag, finished_lot):
+        """Delegate a validated finished-lot label to the canonical device."""
+        device = self.point_id.rfid_device_id
+        if not device:
+            raise UserError(_('请先配置 RFID 设备！'))
+        product = self.production_id.product_id
+        return device.write_and_verify({
             'rfid_number': rfid_tag.name,
-            'product_code': self.product_id.default_code or '',
-            'product_name': self.product_id.name,
-            'lot_number': self.lot_id.name,
+            'product_code': product.default_code or '',
+            'product_name': product.name,
+            'lot_number': finished_lot.name,
             'production_date': rfid_tag.production_date,
             'production_order': self.production_id.name,
-        }
+        })
 
-        # 调用设备写入方法
-        result = device_service.write_rfid_tag(write_data)
-
-        if not result.get('success'):
-            raise UserError(_('RFID 设备写入失败：%s') % result.get('error', '未知错误'))
-
-        # 记录写入日志
-        rfid_tag.message_post(
-            body=_('RFID 标签已写入硬件设备<br/>质检点: %s<br/>设备响应: %s') % (
-                self.point_id.title,
-                result.get('message', '成功')
-            )
-        )
-
-        return True
-
-    def _execute_rfid_write(self):
-        """
-        执行 RFID 写入操作
-
-        此方法处理 rfid_write 类型的质检点
-        """
-        # 检查是否配置了 RFID 设备
-        if not self.point_id.rfid_device_id:
-            raise UserError(_('请先配置 RFID 设备！'))
-
-        # 获取 RFID 设备
+    def _execute_rfid_write(self, payload=None):
+        """Execute the already validated RFID write plan."""
         device = self.point_id.rfid_device_id
-
-        # 检查设备连接状态
-        if device.connection_status != 'connected':
-            raise UserError(_('RFID 设备未连接，请先测试连接！'))
-
-        # 准备要写入的数据
-        write_data = self._prepare_rfid_write_data()
-
-        # 根据设备类型调用相应的写入服务
-        if device.device_type == 'uhf_reader18':
-            result = self._write_to_uhf_reader18(device, write_data)
-        else:
-            # 使用通用设备服务
-            device_service = self.env['rfid.device.service']
-            result = device_service.write_rfid_tag(write_data)
-
-        if not result.get('success'):
-            raise UserError(_('RFID 写入失败：%s') % result.get('error', '未知错误'))
-
-        # 记录写入日志
-        self.message_post(
-            body=_('RFID 写入成功<br/>设备: %s<br/>数据: %s<br/>响应: %s') % (
-                device.name,
-                str(write_data),
-                result.get('message', '成功')
-            )
-        )
-
-        return result
+        if not device:
+            raise UserError(_('请先配置 RFID 设备！'))
+        return device.write_and_verify(payload or self._prepare_rfid_write_data())
 
     def _prepare_rfid_write_data(self):
         """
@@ -233,66 +282,4 @@ class QualityCheck(models.Model):
         }
 
         return data
-
-    def _write_to_uhf_reader18(self, device, write_data):
-        """
-        使用 UHFReader18 设备写入 RFID
-        """
-        try:
-            # 获取 UHFReader18 服务
-            uhf_service = self.env['uhf.reader18.service']
-
-            # 准备写入的数据（转换为设备需要的格式）
-            formatted_data = self._format_data_for_uhf(write_data)
-
-            # 将字符串转换为字节数据
-            data_bytes = formatted_data.encode('utf-8')
-
-            # 将字节数据转换为字列表（每2个字节为一个字）
-            word_list = []
-            for i in range(0, len(data_bytes), 2):
-                if i + 1 < len(data_bytes):
-                    word = (data_bytes[i] << 8) | data_bytes[i + 1]
-                else:
-                    word = data_bytes[i] << 8  # 最后一个字节
-                word_list.append(word)
-
-            inventory = uhf_service.inventory_tags(device.ip_address, int(device.port))
-            epc_list = inventory.get('epc_list') or []
-            if not inventory.get('success') or not epc_list:
-                raise UserError(_('未检测到可写入的 RFID 标签，请先将目标标签放到读写器范围内。'))
-            if len(epc_list) > 1:
-                raise UserError(_('检测到多个 RFID 标签，请一次只放置一个目标标签后重试。'))
-            epc_hex = epc_list[0]['epc']
-
-            # 执行写入操作 - 使用用户存储区而不是EPC存储区
-            result = uhf_service.write_data(
-                ip=device.ip_address,
-                port=int(device.port),
-                epc_hex=epc_hex,
-                mem_bank=0x03,  # 用户存储区（User Memory）
-                word_ptr=0x00,  # 从用户存储区的开始位置写入
-                write_data=word_list
-            )
-
-            return result
-
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-
-    def _format_data_for_uhf(self, data):
-        """
-        将数据格式化为 UHFReader18 设备需要的格式
-        """
-        # 这里可以根据实际需求格式化数据
-        # 例如：将数据转换为十六进制、JSON 或其他格式
-
-        # 简单示例：将关键信息组合成字符串
-        formatted_data = f"PO:{data.get('production_order', '')}|" \
-                        f"PN:{data.get('product_name', '')}|" \
-                        f"PC:{data.get('product_code', '')}|" \
-                        f"BN:{data.get('batch_number', '')}|" \
-                        f"PD:{data.get('production_date', '')}"
-
-        return formatted_data
 
