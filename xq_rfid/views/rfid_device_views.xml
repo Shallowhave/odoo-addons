@@ -38,7 +38,12 @@
                             <field name="device_type"/>
                             <field name="migration_required" readonly="1"/>
                         </group>
-                        <group string="连接参数">
+                        <group string="Adapter 配置" invisible="device_type != 'si120x1'">
+                            <field name="adapter_device_id" required="device_type == 'si120x1'"/>
+                            <field name="protocol_family"/>
+                        </group>
+                        <group string="连接参数" invisible="device_type == 'si120x1'">
+                            <!-- Legacy direct-connection parameters -->
                             <field name="connection_string"/>
                             <field name="ip_address"/>
                             <field name="port"/>
@@ -47,13 +52,31 @@
                         </group>
                     </group>
                     <group>
+                        <group string="硬件能力" invisible="device_type != 'si120x1'">
+                            <field name="supports_epc"/>
+                            <field name="supports_tid"/>
+                            <field name="supports_user_read"/>
+                            <field name="supports_user_write"/>
+                            <field name="antenna_count"/>
+                            <field name="region"/>
+                        </group>
+                        <group string="版本信息" invisible="device_type != 'si120x1'">
+                            <field name="firmware_version"/>
+                            <field name="hardware_version"/>
+                            <field name="module_version"/>
+                        </group>
+                    </group>
+                    <group>
                         <group string="高级配置">
-                            <field name="auto_connect"/>
-                            <field name="retry_times"/>
+                            <field name="auto_connect" invisible="device_type == 'si120x1'"/>
+                            <field name="retry_times" invisible="device_type == 'si120x1'"/>
                         </group>
                         <group string="状态信息">
                             <field name="connection_status" readonly="1"/>
                             <field name="last_connected" readonly="1"/>
+                            <field name="last_connection_test_at" readonly="1" invisible="device_type != 'si120x1'"/>
+                            <field name="last_successful_operation_at" readonly="1" invisible="device_type != 'si120x1'"/>
+                            <field name="last_device_code" readonly="1" invisible="device_type != 'si120x1'"/>
                             <field name="error_message" readonly="1"
                                    invisible="not error_message"/>
                         </group>
@@ -67,7 +90,7 @@
                                 <h4>SI120X1 集成状态</h4>
                                 <p>
                                     仅已验证且属于当前公司的 SI120X1 可用于硬件操作。
-                                    Adapter 客户端将在后续任务中提供；在此之前所有硬件入口都会明确失败。
+                                    配置 <b>Adapter 设备 ID</b> 并确认协议族。
                                 </p>
                             </div>
                         </page>
@@ -86,14 +109,15 @@
                 <field name="name"/>
                 <field name="company_id"/>
                 <field name="device_type"/>
+                <field name="adapter_device_id" optional="show"/>
                 <field name="validation_state" widget="badge"/>
                 <field name="connection_status" widget="badge"
                        decoration-success="connection_status == 'connected'"
                        decoration-danger="connection_status == 'error'"
                        decoration-muted="connection_status == 'disconnected'"/>
-                <field name="write_count"/>
-                <field name="read_count"/>
-                <field name="last_connected"/>
+                <field name="write_count" optional="hide"/>
+                <field name="read_count" optional="hide"/>
+                <field name="last_connection_test_at" optional="show"/>
                 <field name="active" widget="boolean_toggle"/>
             </list>
         </field>
@@ -106,6 +130,7 @@
             <search string="RFID 设备">
                 <field name="name"/>
                 <field name="device_type"/>
+                <field name="adapter_device_id"/>
                 <field name="company_id"/>
                 <filter string="启用" name="active" domain="[('active', '=', True)]"/>
                 <filter string="已验证" name="validated" domain="[('validation_state', '=', 'validated')]"/>
@@ -129,7 +154,7 @@
         <field name="context">{'search_default_active': 1}</field>
         <field name="help" type="html">
             <p class="o_view_nocontent_smiling_face">创建第一个 RFID 设备配置</p>
-            <p>配置 SI120X1 设备；Adapter 就绪前硬件操作保持关闭。</p>
+            <p>配置 SI120X1 设备，指定其对应的 Adapter 设备 ID。</p>
         </field>
     </record>
 

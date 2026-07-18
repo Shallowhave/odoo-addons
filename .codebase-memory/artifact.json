@@ -1,11 +1,11 @@
 {
-    "schema_version": 1,
-    "commit": "d431309ed928b29a78071e24606a07432651cb55",
-    "indexed_at": "2026-07-13T09:23:09Z",
-    "project": "opt-custom-addons",
-    "nodes": 5923,
-    "edges": 6856,
-    "original_size": 9043968,
-    "compressed_size": 1430954,
+    "schema_version": 2,
+    "commit": "83daec58bd8ea651564eb43190dbd5bfa21bbc55",
+    "indexed_at": "2026-07-17T00:39:53Z",
+    "project": "opt-custom-addons-.claude-worktrees-si120x1-rfid-integration",
+    "nodes": 6697,
+    "edges": 13138,
+    "original_size": 16973824,
+    "compressed_size": 2250349,
     "compression_level": 3
 }

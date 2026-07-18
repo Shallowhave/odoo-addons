@@ -8,4 +8,6 @@ from . import mrp_production
 from . import quality_point
 from . import quality_check
 from . import quality_check_wizard
+from . import rfid_adapter_client
 from . import rfid_device
+from . import rfid_payload

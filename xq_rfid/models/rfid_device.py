@@ -64,6 +64,14 @@ class RfidDeviceConfig(models.Model):
     _order = "sequence, id"
     _check_company_auto = True
 
+    _sql_constraints = [
+        (
+            "adapter_device_id_company_uniq",
+            "unique(company_id, adapter_device_id)",
+            "每个公司的 Adapter 设备 ID 必须唯一。",
+        )
+    ]
+
     name = fields.Char(string="设备名称", required=True)
     sequence = fields.Integer(string="序号", default=10)
     active = fields.Boolean(string="启用", default=True)
@@ -99,6 +107,45 @@ class RfidDeviceConfig(models.Model):
         required=True,
         readonly=True,
     )
+
+    # ------------------------------------------------------------------
+    # Capability fields for SI120X1 / Adapter
+    # ------------------------------------------------------------------
+    adapter_device_id = fields.Char(string="Adapter 设备 ID", index=True)
+    protocol_family = fields.Selection(
+        [
+            ("unconfirmed", "未确认"),
+            ("moduleapi_http", "ModuleAPI HTTP"),
+            ("moduleapi_sdk", "ModuleAPI SDK"),
+            ("ex10_raw", "EX10 原始协议"),
+        ],
+        string="协议族",
+        default="unconfirmed",
+        readonly=True,
+    )
+    transport_type = fields.Selection(
+        [
+            ("http", "HTTP"),
+            ("tcp_transparent", "TCP 透传"),
+            ("serial", "串口"),
+            ("sdk_tcp", "SDK TCP"),
+            ("sdk_serial", "SDK 串口"),
+        ],
+        string="传输层",
+        readonly=True,
+    )
+    firmware_version = fields.Char(string="固件版本", readonly=True)
+    hardware_version = fields.Char(string="硬件版本", readonly=True)
+    module_version = fields.Char(string="模块版本", readonly=True)
+    antenna_count = fields.Integer(string="天线数量", readonly=True)
+    region = fields.Char(string="频段区域", readonly=True)
+    supports_epc = fields.Boolean(string="支持 EPC", readonly=True)
+    supports_tid = fields.Boolean(string="支持 TID", readonly=True)
+    supports_user_read = fields.Boolean(string="支持读 User 区", readonly=True)
+    supports_user_write = fields.Boolean(string="支持写 User 区", readonly=True)
+    last_connection_test_at = fields.Datetime(string="最后连接测试", readonly=True)
+    last_successful_operation_at = fields.Datetime(string="最后成功操作", readonly=True)
+    last_device_code = fields.Char(string="最后设备状态码", readonly=True)
 
     # Generic connection metadata. Hardware methods never accept connection
     # endpoints from RPC arguments; Task 10 will map records to the Adapter.
@@ -143,11 +190,19 @@ class RfidDeviceConfig(models.Model):
             self._validate_allowed_company(
                 vals.get("company_id", default_company_id or self.env.company.id)
             )
+            if vals.get("device_type", default_device_type) == "si120x1" and not vals.get("adapter_device_id"):
+                raise UserError(_("SI120X1 类型的设备必须配置 Adapter 设备 ID。"))
         return super().create(vals_list)
 
     def write(self, vals):
         _validate_device_type(vals.get("device_type"))
         self._validate_allowed_company(vals.get("company_id"))
+        if "device_type" in vals or "adapter_device_id" in vals:
+            for device in self:
+                dev_type = vals.get("device_type", device.device_type)
+                adapter_id = vals.get("adapter_device_id", device.adapter_device_id)
+                if dev_type == "si120x1" and not adapter_id:
+                    raise UserError(_("SI120X1 类型的设备必须配置 Adapter 设备 ID。"))
         return super().write(vals)
 
     @api.depends("device_type")
@@ -212,7 +267,70 @@ class RfidDeviceConfig(models.Model):
         self.ensure_one()
         self._ensure_rfid_manager()
         self._ensure_probe_ready()
-        self._raise_adapter_not_configured()
+
+        client = self.env["rfid.adapter.client"]
+
+        # 1. 测连通性
+        try:
+            conn_result = client.test_connection(self)
+        except Exception as exc:
+            self.write({
+                "validation_state": "error",
+                "connection_status": "error",
+                "error_message": str(exc),
+                "last_connection_test_at": fields.Datetime.now(),
+            })
+            raise
+
+        if conn_result.get("status") != "connected":
+            self.write({
+                "validation_state": "error",
+                "connection_status": "disconnected",
+                "error_message": _("Adapter 未连接到硬件。"),
+                "last_connection_test_at": fields.Datetime.now(),
+            })
+            raise UserError(_("Adapter 未连接到硬件。"))
+
+        # 2. 查设备能力
+        try:
+            dev_info = client.get_device_info(self)
+        except Exception as exc:
+            self.write({
+                "validation_state": "error",
+                "connection_status": "error",
+                "error_message": str(exc),
+                "last_connection_test_at": fields.Datetime.now(),
+            })
+            raise
+
+        caps = dev_info.get("capabilities", {})
+
+        # We must confirm the device matches our requirements
+        is_si120x1 = self.device_type == "si120x1"
+        is_protocol_confirmed = self.protocol_family != "unconfirmed"
+        supports_reqs = caps.get("supports_epc") and caps.get("supports_user_read") and caps.get("supports_user_write")
+
+        valid = is_si120x1 and is_protocol_confirmed and supports_reqs
+
+        self.write({
+            "connection_status": "connected",
+            "last_connected": fields.Datetime.now(),
+            "last_connection_test_at": fields.Datetime.now(),
+            "error_message": False,
+            "firmware_version": dev_info.get("firmware_version"),
+            "hardware_version": dev_info.get("hardware_version"),
+            "module_version": dev_info.get("module_version"),
+            "antenna_count": dev_info.get("antenna_count"),
+            "region": dev_info.get("region"),
+            "supports_epc": caps.get("supports_epc"),
+            "supports_tid": caps.get("supports_tid"),
+            "supports_user_read": caps.get("supports_user_read"),
+            "supports_user_write": caps.get("supports_user_write"),
+            "validation_state": "validated" if valid else "error",
+        })
+
+        if not valid:
+            raise UserError(_("设备能力不满足写后验证要求，或协议族尚未确认。"))
 
     def action_write_test_tag(self):
         self.ensure_one()
