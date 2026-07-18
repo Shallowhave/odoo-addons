@@ -6,3 +6,4 @@ from . import test_legacy_removal
 from . import test_adapter_client
 from . import test_rfid_device
 from . import test_rfid_operation
+from . import test_quality_rfid_flow

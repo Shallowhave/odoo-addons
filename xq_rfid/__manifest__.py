@@ -65,6 +65,7 @@
         'security/ir.model.access.csv',
         'data/rfid_sequence.xml',  # RFID 编号序列
         'data/ir_sequence_data.xml',
+        'data/rfid_operation_cron.xml',
         'data/quality_test_type.xml',      # 质量检查类型
         'views/rfid_menu_views.xml',       # 菜单结构（不引用 action，必须最先加载）
         'views/product_views.xml',
