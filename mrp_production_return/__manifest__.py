@@ -29,7 +29,14 @@
     'author': 'memory',
     'website': 'https://www.example.com',
     'category': 'Manufacturing/Inventory',
-    'depends': ['mrp', 'stock', 'stock_account', 'stock_unit_mgmt'],
+    'depends': [
+        'base_import',
+        'mrp',
+        'mrp_workorder',
+        'stock',
+        'stock_account',
+        'stock_unit_mgmt',
+    ],
     'data': [
         'security/ir.model.access.csv',
         'security/security.xml',
@@ -40,6 +47,15 @@
         'views/mrp_production_return_history_views.xml',
         'views/mrp_consumption_warning_views.xml',
     ],
+    'assets': {
+        'web.assets_backend': [
+            'mrp_production_return/static/src/js/**/*.js',
+            'mrp_production_return/static/src/xml/**/*.xml',
+        ],
+        'web.assets_unit_tests': [
+            'mrp_production_return/static/tests/**/*.test.js',
+        ],
+    },
     'installable': True,
     'application': False,
     'auto_install': False,

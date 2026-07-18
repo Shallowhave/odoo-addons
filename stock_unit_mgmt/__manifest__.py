@@ -40,6 +40,9 @@
         'web.assets_backend': [
             'stock_unit_mgmt/static/src/js/barcode_picking_model_patch.js',
         ],
+        'web.assets_tests': [
+            'stock_unit_mgmt/static/tests/tours/**/*.js',
+        ],
     },
     'installable': True,
     'auto_install': False,

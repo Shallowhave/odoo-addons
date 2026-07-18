@@ -9,29 +9,24 @@ class StockPicking(models.Model):
         """Get the latest quality alert description for this picking/lot/product."""
         self.ensure_one()
 
-        alert_model = self.env['quality.alert']
-        product_domain = [
-            ('picking_id', '=', self.id),
-            ('product_id', '=', move.product_id.id),
-            ('description', '!=', False),
-        ]
-        search_domains = []
         if line.lot_id:
-            search_domains.append(product_domain + [('lot_id', '=', line.lot_id.id)])
-        search_domains.append(product_domain + [('lot_id', '=', False)])
-        if line.lot_id:
-            search_domains.append([
-                ('picking_id', '=', self.id),
+            domain = [
                 ('lot_id', '=', line.lot_id.id),
                 ('description', '!=', False),
-            ])
+            ]
+        else:
+            domain = [
+                ('picking_id', '=', self.id),
+                ('product_id', '=', move.product_id.id),
+                ('lot_id', '=', False),
+                ('description', '!=', False),
+            ]
 
-        for domain in search_domains:
-            alert = alert_model.search(domain, order='id desc', limit=1)
-            if alert and alert.description:
-                note = html2plaintext(alert.description).strip()
-                if note:
-                    return note
+        alert = self.env['quality.alert'].search(domain, order='id desc', limit=1)
+        if alert.description:
+            note = html2plaintext(alert.description).strip()
+            if note:
+                return note
         return '-'
 
     def _get_quality_info(self):

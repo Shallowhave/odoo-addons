@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="mrp_production_return.MrpRegisterProductionDialog"
+       t-inherit="mrp_workorder.MrpRegisterProductionDialog"
+       t-inherit-mode="extension">
+        <xpath expr="//t[@t-set-slot='footer']/button[@t-on-click='validate']"
+               position="attributes">
+            <attribute name="t-att-disabled">state.disabled</attribute>
+        </xpath>
+    </t>
+</templates>

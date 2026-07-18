@@ -1,0 +1,4 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_freeform_delivery_wizard_manager,freeform.delivery.wizard.manager,model_freeform_delivery_wizard,stock.group_stock_manager,1,1,1,1
+access_freeform_delivery_product_line_manager,freeform.delivery.product.line.manager,model_freeform_delivery_product_line,stock.group_stock_manager,1,1,1,1
+access_freeform_delivery_quant_line_manager,freeform.delivery.quant.line.manager,model_freeform_delivery_quant_line,stock.group_stock_manager,1,1,1,1

@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="freeform_delivery_wizard_form" model="ir.ui.view">
+        <field name="name">freeform.delivery.wizard.form</field>
+        <field name="model">freeform.delivery.wizard</field>
+        <field name="groups_id" eval="[Command.link(ref('stock.group_stock_manager'))]"/>
+        <field name="arch" type="xml">
+            <form string="Free-form Customer Delivery">
+                <field name="state" invisible="1"/>
+                <field name="eligible_product_ids" invisible="1"/>
+                <field name="request_token" invisible="1"/>
+                <group invisible="state != 'select_products'">
+                    <field name="company_id" invisible="1"/>
+                    <field name="company_id" groups="base.group_multi_company"/>
+                    <field name="picking_type_id"
+                           domain="[('code', '=', 'outgoing'), ('company_id', '=', company_id)]"/>
+                    <field name="source_location_id"/>
+                    <field name="destination_location_id"/>
+                    <field name="customer_id" domain="[('parent_id', '=', False)]"/>
+                    <field name="delivery_address_id"
+                           domain="[('type', '=', 'delivery'), ('commercial_partner_id', '=', customer_id)]"/>
+                    <field name="note"/>
+                    <field name="product_line_ids">
+                        <list editable="bottom">
+                            <field name="product_id"
+                                   domain="[('id', 'in', parent.eligible_product_ids)]"/>
+                            <field name="product_uom_id" readonly="1"/>
+                        </list>
+                    </field>
+                </group>
+                <group invisible="state != 'select_quants'">
+                    <button name="action_open_quant_lines" type="object"
+                            string="Select Exact Stock" class="btn-primary"/>
+                    <field name="quant_line_ids" readonly="1">
+                        <list create="0" delete="0"
+                              default_order="product_id,lot_id,quant_id">
+                            <field name="product_id"/>
+                            <field name="location_id"/>
+                            <field name="lot_id"/>
+                            <field name="package_id"/>
+                            <field name="available_quantity"/>
+                            <field name="selected_quantity"/>
+                            <field name="product_uom_id"/>
+                        </list>
+                    </field>
+                </group>
+                <footer>
+                    <button name="action_back" type="object" string="Back"
+                            invisible="state != 'select_quants'"/>
+                    <button name="action_next" type="object" string="Next"
+                            class="btn-primary" invisible="state != 'select_products'"/>
+                    <button name="action_confirm_delivery" type="object"
+                            string="Create Delivery" class="btn-primary"
+                            invisible="state != 'select_quants'"/>
+                    <button string="Cancel" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="freeform_delivery_quant_line_list" model="ir.ui.view">
+        <field name="name">freeform.delivery.quant.line.list</field>
+        <field name="model">freeform.delivery.quant.line</field>
+        <field name="groups_id" eval="[Command.link(ref('stock.group_stock_manager'))]"/>
+        <field name="arch" type="xml">
+            <list string="Select Exact Stock" editable="bottom" create="0" delete="0"
+                  default_order="product_id,lot_id,quant_id">
+                <field name="product_id"/>
+                <field name="location_id"/>
+                <field name="lot_id"/>
+                <field name="package_id"/>
+                <field name="in_date"/>
+                <field name="on_hand_quantity"/>
+                <field name="reserved_quantity"/>
+                <field name="available_quantity"/>
+                <field name="selected_quantity"/>
+                <field name="product_uom_id"/>
+                <field name="lot_quantity"/>
+                <field name="lot_unit_name"/>
+                <field name="lot_unit_name_custom"/>
+                <field name="contract_no"/>
+                <field name="calculated_length_m"/>
+                <field name="actual_length_m"/>
+                <field name="actual_area_sqm"/>
+                <field name="is_roll_product"/>
+                <field name="product_width"/>
+                <field name="product_thickness"/>
+                <field name="product_length"/>
+                <field name="weight_per_sqm"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="freeform_delivery_quant_line_search" model="ir.ui.view">
+        <field name="name">freeform.delivery.quant.line.search</field>
+        <field name="model">freeform.delivery.quant.line</field>
+        <field name="groups_id" eval="[Command.link(ref('stock.group_stock_manager'))]"/>
+        <field name="arch" type="xml">
+            <search string="Search Exact Stock">
+                <field name="product_id"/>
+                <field name="lot_id"/>
+                <field name="location_id"/>
+                <field name="package_id"/>
+                <filter string="Selected" name="selected"
+                        domain="[('selected_quantity', '&gt;', 0)]"/>
+                <filter string="With Lot" name="with_lot"
+                        domain="[('lot_id', '!=', False)]"/>
+                <filter string="With Package" name="with_package"
+                        domain="[('package_id', '!=', False)]"/>
+                <group expand="0" string="Group By">
+                    <filter string="Product" name="group_by_product"
+                            context="{'group_by': 'product_id'}"/>
+                    <filter string="Lot" name="group_by_lot"
+                            context="{'group_by': 'lot_id'}"/>
+                    <filter string="Location" name="group_by_location"
+                            context="{'group_by': 'location_id'}"/>
+                    <filter string="Package" name="group_by_package"
+                            context="{'group_by': 'package_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_freeform_delivery_wizard" model="ir.actions.act_window">
+        <field name="name">Free-form Customer Delivery</field>
+        <field name="res_model">freeform.delivery.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="view_id" ref="freeform_delivery_wizard_form"/>
+        <field name="target">current</field>
+        <field name="groups_id" eval="[Command.link(ref('stock.group_stock_manager'))]"/>
+    </record>
+
+    <menuitem id="menu_freeform_delivery"
+              name="Free-form Customer Delivery"
+              parent="stock.menu_stock_warehouse_mgmt"
+              action="action_freeform_delivery_wizard"
+              groups="stock.group_stock_manager"
+              sequence="20"/>
+</odoo>

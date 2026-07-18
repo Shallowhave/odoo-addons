@@ -31,6 +31,14 @@ class TestMrpProductionReturnBackorder(TestMrpCommon):
         with Form(production) as production_form:
             production_form.qty_producing = qty
 
+    def _add_single_workorder(self, production):
+        return self.env['mrp.workorder'].create({
+            'name': 'Single roll operation',
+            'production_id': production.id,
+            'workcenter_id': self.workcenter_1.id,
+            'product_uom_id': production.product_uom_id.id,
+        })
+
     def _assert_backorder_wizard_action(self, action):
         self.assertIsInstance(action, dict)
         self.assertEqual(action.get('type'), 'ir.actions.act_window')
@@ -67,6 +75,23 @@ class TestMrpProductionReturnBackorder(TestMrpCommon):
         self._assert_backorder_wizard_action(action)
         self.assertEqual(backorder.state, 'progress')
         self.assertEqual(len(mo.procurement_group_id.mrp_production_ids), 2)
+
+    def test_last_workorder_defers_partial_backorder_until_confirmation(self):
+        mo = self._create_mo(qty=10)
+        workorder = self._add_single_workorder(mo)
+        workorder.button_start()
+        workorder.qty_producing = 4
+
+        action = workorder.action_open_manufacturing_order()
+
+        self.assertEqual(workorder.state, 'done')
+        self.assertEqual(mo.product_qty, 10)
+        self.assertEqual(mo.procurement_group_id.mrp_production_ids, mo)
+
+        self._confirm_backorder(action)
+        backorder = (mo.procurement_group_id.mrp_production_ids - mo).sorted('id')
+        self.assertEqual(len(backorder), 1)
+        self.assertEqual(backorder.product_qty, 6)
 
     def test_close_without_backorder_opens_component_return_wizard(self):
         mo = self._create_mo(qty=10)

@@ -297,7 +297,7 @@ class StockMoveLine(models.Model):
             if not purchase_defaults and not product_defaults:
                 continue
 
-            if not vals.get('lot_unit_name'):
+            if 'lot_unit_name' not in vals:
                 default_unit_name = (
                     purchase_defaults.get('lot_unit_name')
                     or product_defaults.get('lot_unit_name')
@@ -308,7 +308,7 @@ class StockMoveLine(models.Model):
             unit_name = vals.get('lot_unit_name')
             if (
                 unit_name == 'custom'
-                and not vals.get('lot_unit_name_custom')
+                and 'lot_unit_name_custom' not in vals
             ):
                 custom_unit_name = (
                     purchase_defaults.get('lot_unit_name_custom')
@@ -317,7 +317,7 @@ class StockMoveLine(models.Model):
                 if custom_unit_name:
                     vals['lot_unit_name_custom'] = custom_unit_name
 
-            if not vals.get('lot_quantity'):
+            if 'lot_quantity' not in vals:
                 default_lot_quantity = (
                     purchase_defaults.get('lot_quantity')
                     or product_defaults.get('lot_quantity')
@@ -1064,7 +1064,7 @@ class StockMoveLine(models.Model):
         # 为每个要创建的记录从制造订单获取合同号
         for vals in vals_list:
             move_id = vals.get('move_id')
-            if move_id and not vals.get('contract_no'):
+            if move_id and 'contract_no' not in vals:
                 try:
                     move = self.env['stock.move'].browse(move_id)
                     if move.exists():
@@ -1100,15 +1100,32 @@ class StockMoveLine(models.Model):
                         # **关键修复**：如果无法从制造订单获取，尝试从源库存记录获取（调拨场景）
                         if not contract_no and move.location_id and move.location_id.usage == 'internal':
                             # 这是内部调拨，尝试从源位置的库存记录获取合同号
-                            location_id = vals.get('location_id') or (move.location_id.id if move.location_id else None)
-                            lot_id = vals.get('lot_id')
-                            product_id = vals.get('product_id') or (move.product_id.id if move.product_id else None)
-                            
-                            if location_id and lot_id and product_id:
+                            location_id = vals.get(
+                                'location_id',
+                                move.location_id.id if move.location_id else False,
+                            )
+                            move_lot = getattr(move, 'restrict_lot_id', False)
+                            move_owner = getattr(move, 'restrict_partner_id', False)
+                            lot_id = vals.get('lot_id', move_lot.id if move_lot else False)
+                            package_id = vals.get('package_id', False)
+                            owner_id = vals.get('owner_id', move_owner.id if move_owner else False)
+                            product_id = vals.get(
+                                'product_id',
+                                move.product_id.id if move.product_id else False,
+                            )
+                            company_id = vals.get(
+                                'company_id',
+                                move.company_id.id if move.company_id else False,
+                            )
+
+                            if location_id and product_id:
                                 source_quant = self.env['stock.quant'].search([
                                     ('location_id', '=', location_id),
-                                    ('lot_id', '=', lot_id),
-                                    ('product_id', '=', product_id)
+                                    ('lot_id', '=', lot_id or False),
+                                    ('package_id', '=', package_id or False),
+                                    ('owner_id', '=', owner_id or False),
+                                    ('product_id', '=', product_id),
+                                    ('company_id', '=', company_id or False),
                                 ], limit=1, order='id desc')
                                 
                                 if source_quant and source_quant.contract_no:
@@ -1116,7 +1133,8 @@ class StockMoveLine(models.Model):
                                     _logger.info(
                                         f"[合同号创建] 从源库存记录获取合同号: move_id={move_id}, "
                                         f"合同号={contract_no}, source_quant_id={source_quant.id}, "
-                                        f"location_id={location_id}, lot_id={lot_id}, product_id={product_id}"
+                                        f"location_id={location_id}, lot_id={lot_id}, package_id={package_id}, "
+                                        f"owner_id={owner_id}, product_id={product_id}, company_id={company_id}"
                                     )
                         
                         if contract_no:
@@ -1361,7 +1379,7 @@ class StockMoveLine(models.Model):
         # **关键修复**：从采购订单行复制附加单位数量和名称到库存移动行
         # 如果采购订单行填写了附加单位数量，需要复制到入库的库存移动行
         # 参考提交 01300f3558a86de843aa39adc1cf3f3437f1c5c8 的正常逻辑
-        for record in result:
+        for record, create_vals in zip(result, vals_list):
             if record.move_id and record.move_id.purchase_line_id:
                 # 检查库存移动行是否已经有附加单位数量和名称
                 # 如果已经有值，则保留（用户可能已经手动填写）
@@ -1374,7 +1392,10 @@ class StockMoveLine(models.Model):
                         update_vals = {}
                         
                         # 检查 lot_quantity（如果库存移动行没有值，则从采购订单行复制）
-                        if not record.lot_quantity or record.lot_quantity == 0:
+                        if (
+                            'lot_quantity' not in create_vals
+                            and (not record.lot_quantity or record.lot_quantity == 0)
+                        ):
                             # 尝试从采购订单行获取附加单位数量
                             # 注意：采购订单行可能没有 lot_quantity 字段，需要安全获取
                             purchase_lot_quantity = None
@@ -1390,7 +1411,10 @@ class StockMoveLine(models.Model):
                                 )
                         
                         # 检查 lot_unit_name（如果库存移动行没有值，则从采购订单行复制）
-                        if not record.lot_unit_name:
+                        if (
+                            'lot_unit_name' not in create_vals
+                            and not record.lot_unit_name
+                        ):
                             # 尝试从采购订单行获取附加单位名称
                             purchase_lot_unit_name = None
                             if hasattr(purchase_line, 'lot_unit_name'):
@@ -1491,6 +1515,50 @@ class StockMoveLine(models.Model):
             quants.invalidate_recordset(fields_to_recompute)
             quants._compute_lot_unit_info()
 
+    def _get_inferred_contract_no(self):
+        self.ensure_one()
+        move = self.move_id
+        if not move:
+            return False
+        if move.production_id and move.production_id.contract_no:
+            return move.production_id.contract_no
+        if (
+            move.raw_material_production_id
+            and move.raw_material_production_id.contract_no
+        ):
+            return move.raw_material_production_id.contract_no
+
+        production = self.env['mrp.production'].search(
+            [('move_finished_ids', 'in', [move.id])],
+            limit=1,
+        )
+        if production and production.contract_no:
+            return production.contract_no
+        if not move.location_id or move.location_id.usage != 'internal':
+            return False
+        if not self.product_id or not self.location_id:
+            return False
+
+        source_quant = self.env['stock.quant'].search(
+            [
+                ('product_id', '=', self.product_id.id),
+                ('company_id', '=', self.company_id.id or False),
+                ('location_id', '=', self.location_id.id),
+                ('lot_id', '=', self.lot_id.id or False),
+                ('package_id', '=', self.package_id.id or False),
+                ('owner_id', '=', self.owner_id.id or False),
+            ],
+            limit=1,
+            order='id desc',
+        )
+        return source_quant.contract_no if source_quant else False
+
+    def _apply_inferred_contract_numbers(self):
+        for record in self.exists():
+            contract_no = record._get_inferred_contract_no()
+            if contract_no and contract_no != record.contract_no:
+                super(StockMoveLine, record).write({'contract_no': contract_no})
+
     def write(self, vals):
         """重写 write 方法，在更新记录时验证批次号
         扫码模块可能会先创建空记录，然后通过 write 方法更新批次号
@@ -1502,6 +1570,7 @@ class StockMoveLine(models.Model):
         from odoo.tools import float_compare
         _logger = logging.getLogger(__name__)
         vals = self._normalize_done_quantity_vals(vals)
+        infer_contract_numbers = 'contract_no' not in vals
         old_quant_values = self._get_unit_info_quant_values()
 
         # 更新前检查是否启用了增强条码验证。批次产品保留实际数量。
@@ -1595,82 +1664,6 @@ class StockMoveLine(models.Model):
                 except Exception:
                     pass
         
-        # **关键修复**：从制造订单获取合同号（如果 vals 中没有合同号）
-        # 如果 vals 中没有合同号，尝试从制造订单获取
-        # 注意：如果 self 中有多个记录，它们可能来自不同的制造订单，需要分别处理
-        if 'contract_no' not in vals:
-            # 收集所有需要设置合同号的记录
-            records_to_update = []
-            for record in self:
-                if record.exists() and record.move_id:
-                    try:
-                        move = record.move_id
-                        # 优先从成品制造订单获取（production_id）
-                        # 如果没有，则从原材料制造订单获取（raw_material_production_id）
-                        contract_no = None
-                        if move.production_id and move.production_id.contract_no:
-                            contract_no = move.production_id.contract_no
-                            _logger.info(
-                                f"[合同号更新] 从 production_id 获取合同号: record_id={record.id}, move_id={move.id}, "
-                                f"production_id={move.production_id.id}, 合同号={contract_no}"
-                            )
-                        elif move.raw_material_production_id and move.raw_material_production_id.contract_no:
-                            contract_no = move.raw_material_production_id.contract_no
-                            _logger.info(
-                                f"[合同号更新] 从 raw_material_production_id 获取合同号: record_id={record.id}, move_id={move.id}, "
-                                f"raw_material_production_id={move.raw_material_production_id.id}, 合同号={contract_no}"
-                            )
-                        
-                        # **关键修复**：如果无法从移动的 production_id 获取，尝试通过制造订单的 move_finished_ids 反向查找
-                        if not contract_no:
-                            # 尝试查找包含此移动的制造订单（通过 move_finished_ids）
-                            production = self.env['mrp.production'].search([
-                                ('move_finished_ids', 'in', [move.id])
-                            ], limit=1)
-                            if production and production.contract_no:
-                                contract_no = production.contract_no
-                                _logger.info(
-                                    f"[合同号更新] 通过 move_finished_ids 反向查找获取合同号: record_id={record.id}, move_id={move.id}, "
-                                    f"production_id={production.id}, 合同号={contract_no}"
-                                )
-                        
-                        # **关键修复**：如果无法从制造订单获取，尝试从源库存记录获取（调拨场景）
-                        if not contract_no and move.location_id and move.location_id.usage == 'internal':
-                            # 这是内部调拨，尝试从源位置的库存记录获取合同号
-                            if record.location_id and record.lot_id and record.product_id:
-                                source_quant = self.env['stock.quant'].search([
-                                    ('location_id', '=', record.location_id.id),
-                                    ('lot_id', '=', record.lot_id.id),
-                                    ('product_id', '=', record.product_id.id)
-                                ], limit=1, order='id desc')
-                                
-                                if source_quant and source_quant.contract_no:
-                                    contract_no = source_quant.contract_no
-                                    _logger.info(
-                                        f"[合同号更新] 从源库存记录获取合同号: record_id={record.id}, move_id={move.id}, "
-                                        f"合同号={contract_no}, source_quant_id={source_quant.id}"
-                                    )
-                        
-                        if contract_no and contract_no != record.contract_no:
-                            # 只有在合同号不同时才更新
-                            records_to_update.append((record, contract_no))
-                            _logger.info(
-                                f"[合同号更新] 设置合同号: record_id={record.id}, move_id={move.id}, "
-                                f"合同号={contract_no}, production_id={move.production_id.id if move.production_id else None}, "
-                                f"raw_material_production_id={move.raw_material_production_id.id if move.raw_material_production_id else None}"
-                            )
-                    except Exception as e:
-                        _logger.warning(f"[合同号更新] 获取合同号时出错: {str(e)}")
-            
-            # 如果只有一个记录需要更新，且所有记录都来自同一个制造订单，则统一设置
-            if records_to_update:
-                # 检查所有记录是否来自同一个制造订单（同一个 move_id 或同一个制造订单）
-                if len(records_to_update) == 1 or len(set([r[1] for r in records_to_update])) == 1:
-                    # 所有记录都有相同的合同号，统一设置
-                    vals['contract_no'] = records_to_update[0][1]
-                # 如果有多个记录但合同号不同，需要在 write 后单独处理
-                # 这种情况比较少见，暂时不处理
-        
         # **关键修复**：在批次号验证之前，先检查每个记录是否已经有包裹
         # 这样可以提前检测到包裹操作，避免在循环中重复检测
         # 放入包裹时，可能先设置了包裹，然后再更新批次号
@@ -1709,7 +1702,9 @@ class StockMoveLine(models.Model):
             # **关键修复**：直接调用父类方法，跳过所有批次号验证
             # 扫描顺序的设置将在 write 之后进行，这样可以确保所有记录都已保存
             result = super(StockMoveLine, self).write(vals)
-            
+            if infer_contract_numbers:
+                self._apply_inferred_contract_numbers()
+
             # **关键修复**：在 write 之后，验证 lot_quantity 和 lot_unit_name 是否正确保存
             # 如果 vals 中包含这些字段，但在 write 后被清空，需要重新设置
             if 'lot_quantity' in vals or 'lot_unit_name' in vals:
@@ -2248,7 +2243,9 @@ class StockMoveLine(models.Model):
         
         # 调用父类的 write 方法
         result = super(StockMoveLine, self).write(vals)
-        
+        if infer_contract_numbers:
+            self._apply_inferred_contract_numbers()
+
         # 调用父类 write 后只记录增强验证状态，不再把批次产品修正为 1。
         from odoo.tools import float_compare
         if not self.env.context.get('skip_quantity_fix'):

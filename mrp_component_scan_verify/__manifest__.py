@@ -18,6 +18,7 @@
     'category': 'Manufacturing',
     'depends': [
         'base',
+        'base_import',
         'mrp',
         'quality_control',
         'quality_mrp',
@@ -35,10 +36,12 @@
             'mrp_component_scan_verify/static/src/components/**/*.xml',
             'mrp_component_scan_verify/static/src/components/**/*.js',
         ],
+        'web.assets_unit_tests': [
+            'mrp_component_scan_verify/static/tests/**/*.test.js',
+        ],
     },
     'installable': True,
     'auto_install': False,
     'application': False,
     'license': 'LGPL-3',
 }
-

@@ -1,11 +1,11 @@
 {
-    "schema_version": 1,
-    "commit": "d431309ed928b29a78071e24606a07432651cb55",
-    "indexed_at": "2026-07-13T09:23:09Z",
+    "schema_version": 2,
+    "commit": "ed3b6e0f450afa102a2079c7308a3c775242d8d9",
+    "indexed_at": "2026-07-17T01:14:25Z",
     "project": "opt-custom-addons",
-    "nodes": 5923,
-    "edges": 6856,
-    "original_size": 9043968,
-    "compressed_size": 1430954,
+    "nodes": 0,
+    "edges": 0,
+    "original_size": 1572864,
+    "compressed_size": 244263,
     "compression_level": 3
 }
