@@ -5,3 +5,4 @@ from . import test_device_security
 from . import test_legacy_removal
 from . import test_adapter_client
 from . import test_rfid_device
+from . import test_rfid_operation

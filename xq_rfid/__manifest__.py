@@ -64,6 +64,7 @@
         'security/security.xml',
         'security/ir.model.access.csv',
         'data/rfid_sequence.xml',  # RFID 编号序列
+        'data/ir_sequence_data.xml',
         'data/quality_test_type.xml',      # 质量检查类型
         'views/rfid_menu_views.xml',       # 菜单结构（不引用 action，必须最先加载）
         'views/product_views.xml',
@@ -71,7 +72,9 @@
         'views/stock_picking_views.xml',
         'views/stock_lot_views.xml',
         'views/rfid_tag_views.xml',        # RFID 标签视图（包含 action 和菜单项）
+        'views/rfid_tag_extension_views.xml',
         'views/rfid_device_views.xml',     # RFID 设备配置视图（包含 action 和菜单项）
+        'views/rfid_operation_views.xml',
         'views/quality_point_views.xml',   # 质量控制点视图扩展
         'views/mrp_production_views.xml',  # 生产订单视图
         'views/quality_check_wizard_views.xml',  # 质检向导视图
