@@ -1,4 +1,4 @@
-from odoo import _, fields, models
+from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
 
@@ -53,6 +53,7 @@ class FreeformDeliveryQuantLine(models.TransientModel):
         required=True,
         ondelete="cascade",
     )
+    selected = fields.Boolean(string="Use Stock")
     selected_quantity = fields.Float(string="Selected Quantity")
     product_uom_id = fields.Many2one("uom.uom", readonly=True, required=True)
 
@@ -105,14 +106,43 @@ class FreeformDeliveryQuantLine(models.TransientModel):
     product_length = fields.Float(readonly=True, digits=(12, 2))
     weight_per_sqm = fields.Float(readonly=True, digits=(12, 2))
 
+    def _apply_selection_values(self, values):
+        values = dict(values)
+        if "selected" in values:
+            if values["selected"]:
+                values.setdefault("selected_quantity", self.available_quantity)
+            else:
+                values["selected_quantity"] = 0.0
+        elif "selected_quantity" in values:
+            values["selected"] = bool(values["selected_quantity"])
+        return values
+
     def write(self, values):
-        if set(values) - {"selected_quantity"}:
+        if set(values) - {"selected", "selected_quantity"}:
             raise UserError(
                 _(
-                    "Only the selected quantity can be changed on generated stock rows."
+                    "Only the stock selection and selected quantity can be changed "
+                    "on generated stock rows."
                 )
             )
-        return super().write(values)
+        for line in self:
+            super(FreeformDeliveryQuantLine, line).write(
+                line._apply_selection_values(values)
+            )
+        return True
+
+    @api.onchange("selected")
+    def _onchange_selected(self):
+        for line in self:
+            if line.selected:
+                line.selected_quantity = line.available_quantity
+            else:
+                line.selected_quantity = 0.0
+
+    @api.onchange("selected_quantity")
+    def _onchange_selected_quantity(self):
+        for line in self:
+            line.selected = bool(line.selected_quantity)
 
     def _snapshot_identity(self):
         self.ensure_one()

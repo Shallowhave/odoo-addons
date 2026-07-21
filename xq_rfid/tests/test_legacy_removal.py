@@ -8,6 +8,9 @@ from odoo.modules.migration import VALID_MIGRATE_PARAMS
 
 ADDON = Path(__file__).resolve().parents[1]
 MIGRATION = ADDON / "migrations/18.0.2.0/pre-disable-uhf-reader18.py"
+GROUP_MEMBERSHIP_MIGRATION = (
+    ADDON / "migrations/18.0.2.0/pre-clean-rfid-user-type-memberships.py"
+)
 FORBIDDEN_ROOTS = [
     ADDON / "models",
     ADDON / "wizard",
@@ -32,6 +35,16 @@ def _legacy_offenders():
 
 def _load_migration():
     spec = importlib.util.spec_from_file_location("pre_disable_uhf_reader18", MIGRATION)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_group_membership_migration():
+    spec = importlib.util.spec_from_file_location(
+        "pre_clean_rfid_user_type_memberships",
+        GROUP_MEMBERSHIP_MIGRATION,
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -86,6 +99,32 @@ class TestLegacyRemoval(unittest.TestCase):
         missing = [name for name in manifest.get("data", []) if not (ADDON / name).is_file()]
         self.assertEqual(missing, [])
 
+    def test_cron_data_uses_only_odoo_18_fields(self):
+        cron_data = (ADDON / "data/rfid_operation_cron.xml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn('name="numbercall"', cron_data)
+        self.assertNotIn('name="doall"', cron_data)
+
+    def test_rfid_tag_extension_targets_existing_form_architecture(self):
+        from lxml import etree
+
+        base_root = etree.parse(str(ADDON / "views/rfid_tag_views.xml"))
+        extension_root = etree.parse(
+            str(ADDON / "views/rfid_tag_extension_views.xml")
+        )
+        extension = extension_root.xpath(
+            "/odoo/record[@id='rfid_tag_view_form_inherit_physical']"
+        )[0]
+        inherit_ref = extension.xpath("./field[@name='inherit_id']")[0].get("ref")
+        self.assertEqual(inherit_ref, "xq_rfid.rfid_tag_form_view")
+
+        expression = extension.xpath("./field[@name='arch']/xpath")[0].get("expr")
+        form_arch = base_root.xpath(
+            "/odoo/record[@id='rfid_tag_form_view']/field[@name='arch']/form"
+        )[0]
+        self.assertTrue(form_arch.xpath(expression))
+
 
 class TestMigration(unittest.TestCase):
     def test_signature_is_accepted_by_installed_odoo_loader(self):
@@ -128,6 +167,31 @@ class TestMigration(unittest.TestCase):
                 "旧 UHFReader18 配置已停用；必须按 SI120X1 实机接口重新配置并验证。",
                 "uhf_reader18",
             ],
+        )
+
+
+class TestGroupMembershipMigration(unittest.TestCase):
+    def test_signature_is_accepted_by_installed_odoo_loader(self):
+        signature = inspect.signature(_load_group_membership_migration().migrate)
+        self.assertIn(tuple(signature.parameters), VALID_MIGRATE_PARAMS)
+
+    def test_portal_and_public_users_lose_only_rfid_groups(self):
+        cursor = FakeCursor()
+
+        _load_group_membership_migration().migrate(cursor, "18.0.1.0.0")
+
+        query, params = cursor.calls[-1]
+        normalized_query = " ".join(query.split())
+        self.assertIn("DELETE FROM res_groups_users_rel", normalized_query)
+        self.assertIn("rfid_membership.uid = user_type_membership.uid", normalized_query)
+        self.assertIn("rfid_group.name = ANY(%s)", normalized_query)
+        self.assertIn("user_type_group.name = ANY(%s)", normalized_query)
+        self.assertEqual(
+            params,
+            (
+                ["group_rfid_user", "group_rfid_manager"],
+                ["group_portal", "group_public"],
+            ),
         )
 
 

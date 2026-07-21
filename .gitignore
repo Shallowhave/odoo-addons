@@ -65,3 +65,5 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Added by code-review-graph
+.code-review-graph/

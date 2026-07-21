@@ -6,6 +6,15 @@
         <field name="groups_id" eval="[Command.link(ref('stock.group_stock_manager'))]"/>
         <field name="arch" type="xml">
             <form string="Free-form Customer Delivery">
+                <header>
+                    <button name="action_back" type="object" string="Back"
+                            invisible="state != 'select_quants'"/>
+                    <button name="action_next" type="object" string="Next"
+                            class="btn-primary" invisible="state != 'select_products'"/>
+                    <button name="action_confirm_delivery" type="object"
+                            string="Create Delivery" class="btn-primary"
+                            invisible="state != 'select_quants'"/>
+                </header>
                 <field name="state" invisible="1"/>
                 <field name="eligible_product_ids" invisible="1"/>
                 <field name="request_token" invisible="1"/>
@@ -18,7 +27,7 @@
                     <field name="destination_location_id"/>
                     <field name="customer_id" domain="[('parent_id', '=', False)]"/>
                     <field name="delivery_address_id"
-                           domain="[('type', '=', 'delivery'), ('commercial_partner_id', '=', customer_id)]"/>
+                           domain="['&amp;', ('commercial_partner_id', '=', customer_id), '|', ('type', '=', 'delivery'), ('id', '=', customer_id)]"/>
                     <field name="note"/>
                     <field name="product_line_ids">
                         <list editable="bottom">
@@ -29,11 +38,11 @@
                     </field>
                 </group>
                 <group invisible="state != 'select_quants'">
-                    <button name="action_open_quant_lines" type="object"
-                            string="Select Exact Stock" class="btn-primary"/>
-                    <field name="quant_line_ids" readonly="1">
-                        <list create="0" delete="0"
+                    <field name="quant_line_ids">
+                        <list editable="bottom" create="0" delete="0"
+                              open_form_view="0"
                               default_order="product_id,lot_id,quant_id">
+                            <field name="selected"/>
                             <field name="product_id"/>
                             <field name="location_id"/>
                             <field name="lot_id"/>
@@ -44,16 +53,6 @@
                         </list>
                     </field>
                 </group>
-                <footer>
-                    <button name="action_back" type="object" string="Back"
-                            invisible="state != 'select_quants'"/>
-                    <button name="action_next" type="object" string="Next"
-                            class="btn-primary" invisible="state != 'select_products'"/>
-                    <button name="action_confirm_delivery" type="object"
-                            string="Create Delivery" class="btn-primary"
-                            invisible="state != 'select_quants'"/>
-                    <button string="Cancel" special="cancel"/>
-                </footer>
             </form>
         </field>
     </record>
@@ -64,7 +63,8 @@
         <field name="groups_id" eval="[Command.link(ref('stock.group_stock_manager'))]"/>
         <field name="arch" type="xml">
             <list string="Select Exact Stock" editable="bottom" create="0" delete="0"
-                  default_order="product_id,lot_id,quant_id">
+                  open_form_view="0" default_order="product_id,lot_id,quant_id">
+                <field name="selected"/>
                 <field name="product_id"/>
                 <field name="location_id"/>
                 <field name="lot_id"/>

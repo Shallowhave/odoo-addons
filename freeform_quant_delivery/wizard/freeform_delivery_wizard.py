@@ -58,6 +58,12 @@ class FreeformDeliveryWizard(models.TransientModel):
         default=lambda self: str(uuid.uuid4()),
     )
 
+    @api.depends_context("lang")
+    def _compute_display_name(self):
+        display_name = self.env._("Free-form Customer Delivery")
+        for wizard in self:
+            wizard.display_name = display_name
+
     @api.depends("company_id", "picking_type_id", "source_location_id")
     def _compute_eligible_product_ids(self):
         Quant = self.env["stock.quant"]
@@ -97,6 +103,28 @@ class FreeformDeliveryWizard(models.TransientModel):
             domain.append(("product_id", "in", products.ids))
         return domain
 
+    def _default_delivery_address(self):
+        self.ensure_one()
+        if not self.customer_id:
+            return self.env["res.partner"]
+        address_id = self.customer_id.address_get(["delivery"])["delivery"]
+        return self.env["res.partner"].browse(address_id)
+
+    @api.onchange("customer_id")
+    def _onchange_customer_id(self):
+        for wizard in self:
+            wizard.delivery_address_id = wizard._default_delivery_address()
+
+    @api.model_create_multi
+    def create(self, values_list):
+        for values in values_list:
+            if values.get("customer_id") and not values.get("delivery_address_id"):
+                customer = self.env["res.partner"].browse(values["customer_id"])
+                values["delivery_address_id"] = customer.address_get(
+                    ["delivery"]
+                )["delivery"]
+        return super().create(values_list)
+
     def _check_manager_access(self):
         if not self.env.user.has_group("stock.group_stock_manager"):
             raise AccessError(
@@ -119,8 +147,8 @@ class FreeformDeliveryWizard(models.TransientModel):
             or self.destination_location_id.usage != "customer"
         ):
             raise UserError(_("The destination location must be a customer location."))
-        if self.delivery_address_id.type != "delivery":
-            raise UserError(_("Select a delivery address for the customer."))
+        if not self.customer_id or not self.delivery_address_id:
+            raise UserError(_("Select a customer and delivery address."))
         if (
             self.delivery_address_id.commercial_partner_id
             != self.customer_id.commercial_partner_id
@@ -128,6 +156,11 @@ class FreeformDeliveryWizard(models.TransientModel):
             raise UserError(
                 _("The delivery address must belong to the selected customer.")
             )
+        if (
+            self.delivery_address_id != self.customer_id
+            and self.delivery_address_id.type != "delivery"
+        ):
+            raise UserError(_("Select a delivery address for the customer."))
 
     def _get_eligible_quants(self):
         self.ensure_one()
@@ -525,32 +558,6 @@ class FreeformDeliveryWizard(models.TransientModel):
                     "form",
                 )
             ],
-            "target": "current",
-        }
-
-    def action_open_quant_lines(self):
-        self.ensure_one()
-        self._check_manager_access()
-        if self.state != "select_quants":
-            raise UserError(_("Advance to stock selection first."))
-        return {
-            "name": _("Select Exact Stock"),
-            "type": "ir.actions.act_window",
-            "res_model": "freeform.delivery.quant.line",
-            "view_mode": "list",
-            "views": [
-                (
-                    self.env.ref(
-                        "freeform_quant_delivery.freeform_delivery_quant_line_list"
-                    ).id,
-                    "list",
-                )
-            ],
-            "search_view_id": self.env.ref(
-                "freeform_quant_delivery.freeform_delivery_quant_line_search"
-            ).id,
-            "domain": [("wizard_id", "=", self.id)],
-            "context": {"default_wizard_id": self.id},
             "target": "current",
         }
 

@@ -97,6 +97,14 @@ class TestFreeformDeliveryWizardFlow(FreeformDeliveryCommon):
         self.assertTrue(
             form_arch.xpath("//field[@name='request_token'][@invisible='1']")
         )
+        quant_list = form_arch.xpath("//field[@name='quant_line_ids']/list")[0]
+        self.assertEqual(quant_list.get("editable"), "bottom")
+        self.assertTrue(quant_list.xpath("./field[@name='selected']"))
+        selected_quantity = quant_list.xpath(
+            "./field[@name='selected_quantity']"
+        )[0]
+        self.assertIsNone(selected_quantity.get("readonly"))
+        self.assertFalse(form_arch.xpath("//button[@name='action_open_quant_lines']"))
 
     def test_manager_menu_contract(self):
         menu = self.env.ref("freeform_quant_delivery.menu_freeform_delivery")
@@ -172,29 +180,23 @@ class TestFreeformDeliveryWizardFlow(FreeformDeliveryCommon):
                 f"{{'group_by': '{field_name}'}}",
             )
 
-    def test_action_open_quant_lines_requires_step_two_and_manager(self):
+    def test_selecting_stock_defaults_full_quantity_and_allows_partial_quantity(self):
         wizard = self._new_wizard([self.product])
-        with self.assertRaises(UserError):
-            wizard.action_open_quant_lines()
-
         wizard.action_next()
-        with self.assertRaises(AccessError):
-            wizard.with_user(self.stock_user).action_open_quant_lines()
+        line = wizard.quant_line_ids
 
-        action = wizard.action_open_quant_lines()
-        list_view = self.env.ref(
-            "freeform_quant_delivery.freeform_delivery_quant_line_list"
-        )
-        search_view = self.env.ref(
-            "freeform_quant_delivery.freeform_delivery_quant_line_search"
-        )
-        self.assertEqual(action["res_model"], "freeform.delivery.quant.line")
-        self.assertEqual(action["view_mode"], "list")
-        self.assertEqual(action["views"], [(list_view.id, "list")])
-        self.assertEqual(action["search_view_id"], search_view.id)
-        self.assertEqual(action["domain"], [("wizard_id", "=", wizard.id)])
-        self.assertEqual(action["context"], {"default_wizard_id": wizard.id})
-        self.assertEqual(action["target"], "current")
+        line.selected = True
+        line._onchange_selected()
+        self.assertEqual(line.selected_quantity, line.available_quantity)
+
+        line.selected_quantity = 4.0
+        line._onchange_selected_quantity()
+        self.assertTrue(line.selected)
+        self.assertEqual(line.selected_quantity, 4.0)
+
+        line.selected = False
+        line._onchange_selected()
+        self.assertEqual(line.selected_quantity, 0.0)
 
     def test_confirmation_requires_step_two_without_stock_side_effects(self):
         wizard = self._new_wizard([self.product])
@@ -446,6 +448,30 @@ class TestFreeformDeliveryWizardFlow(FreeformDeliveryCommon):
         )
         self.assertEqual(self.tracked_quant.available_quantity, 3.0)
         self.assertRecordValues(line, [expected])
+
+    def test_customer_change_prefers_delivery_address_and_clears_with_customer(self):
+        wizard = self.env["freeform.delivery.wizard"].new({})
+        wizard.customer_id = self.customer
+        wizard._onchange_customer_id()
+        self.assertEqual(wizard.delivery_address_id, self.delivery_address)
+
+        wizard.customer_id = False
+        wizard._onchange_customer_id()
+        self.assertFalse(wizard.delivery_address_id)
+
+    def test_customer_without_delivery_child_uses_customer_as_address(self):
+        customer = self.env["res.partner"].create({"name": "Customer Without Address"})
+        wizard = self.env["freeform.delivery.wizard"].create(
+            {
+                "company_id": self.company.id,
+                "picking_type_id": self.picking_type.id,
+                "customer_id": customer.id,
+                "product_line_ids": [Command.create({"product_id": self.product.id})],
+            }
+        )
+        self.assertEqual(wizard.delivery_address_id, customer)
+        wizard.action_next()
+        self.assertEqual(wizard.state, "select_quants")
 
     def test_invalid_delivery_address_is_rejected(self):
         invalid_address = self.env["res.partner"].create(
