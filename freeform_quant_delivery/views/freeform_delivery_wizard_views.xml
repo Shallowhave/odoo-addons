@@ -22,7 +22,7 @@
                     <field name="company_id" invisible="1"/>
                     <field name="company_id" groups="base.group_multi_company"/>
                     <field name="picking_type_id"
-                           domain="[('code', '=', 'outgoing'), ('company_id', '=', company_id)]"/>
+                           domain="[('code', '=', 'outgoing'), ('company_id', '=', company_id), ('use_create_lots', '=', False)]"/>
                     <field name="source_location_id"/>
                     <field name="destination_location_id"/>
                     <field name="customer_id" domain="[('parent_id', '=', False)]"/>
@@ -47,8 +47,14 @@
                             <field name="location_id"/>
                             <field name="lot_id"/>
                             <field name="package_id"/>
+                            <field name="show_roll_weight" column_invisible="True"/>
                             <field name="available_quantity"/>
-                            <field name="selected_quantity"/>
+                            <field name="roll_weight_kg" invisible="not show_roll_weight"/>
+                            <field name="selected_weight_kg"
+                                   invisible="not selected or not show_roll_weight"
+                                   sum="Selected Total Weight (kg)"/>
+                            <field name="selected_quantity"
+                                   sum="Selected Total Quantity"/>
                             <field name="product_uom_id"/>
                         </list>
                     </field>
@@ -72,8 +78,14 @@
                 <field name="in_date"/>
                 <field name="on_hand_quantity"/>
                 <field name="reserved_quantity"/>
+                <field name="show_roll_weight" column_invisible="True"/>
                 <field name="available_quantity"/>
-                <field name="selected_quantity"/>
+                <field name="roll_weight_kg" invisible="not show_roll_weight"/>
+                <field name="selected_weight_kg"
+                       invisible="not selected or not show_roll_weight"
+                       sum="Selected Total Weight (kg)"/>
+                <field name="selected_quantity"
+                       sum="Selected Total Quantity"/>
                 <field name="product_uom_id"/>
                 <field name="lot_quantity"/>
                 <field name="lot_unit_name"/>

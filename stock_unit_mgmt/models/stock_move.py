@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from odoo import models, fields, api
+from odoo.tools import float_compare, float_round
 
 
 class StockMove(models.Model):
@@ -40,6 +41,48 @@ class StockMove(models.Model):
         """计算总发货重量"""
         for move in self:
             move.total_delivery_weight = sum(move.move_line_ids.mapped('delivery_weight') or [0.0])
+
+    def _set_quantity_done_prepare_vals(self, qty):
+        """Keep one lot-tracked manufactured roll on one move line.
+
+        Odoo normally preserves the planned quantity on the existing line and
+        creates another line for overproduction. MRP then assigns the same lot
+        to both lines, which makes one physical roll appear twice in move
+        history. Only collapse the unambiguous case where a manufactured,
+        lot-tracked product already has exactly one identified move line.
+        """
+        self.ensure_one()
+        move_lines = self.move_line_ids.filtered(
+            lambda line: line.state not in ('done', 'cancel')
+        )
+        can_reuse_single_lot_line = (
+            self.production_id
+            and not self.picking_id
+            and self.product_id.tracking == 'lot'
+            and len(move_lines) == 1
+            and len(self.move_line_ids) == 1
+            and move_lines.lot_id
+            and move_lines.product_id == self.product_id
+            and float_compare(
+                qty,
+                0.0,
+                precision_rounding=self.product_uom.rounding,
+            ) > 0
+        )
+        if not can_reuse_single_lot_line:
+            return super()._set_quantity_done_prepare_vals(qty)
+
+        move_line = move_lines
+        line_qty = self.product_uom._compute_quantity(
+            qty,
+            move_line.product_uom_id,
+            round=False,
+        )
+        line_qty = float_round(
+            line_qty,
+            precision_rounding=move_line.product_uom_id.rounding,
+        )
+        return [(1, move_line.id, {'quantity': line_qty})]
 
     def _action_done(self, cancel_backorder=False):
         """完成库存移动时，将单位信息传递到库存数量记录"""

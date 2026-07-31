@@ -97,6 +97,13 @@ class TestFreeformDeliveryWizardFlow(FreeformDeliveryCommon):
         self.assertTrue(
             form_arch.xpath("//field[@name='request_token'][@invisible='1']")
         )
+        picking_type_field = form_arch.xpath(
+            "//field[@name='picking_type_id']"
+        )[0]
+        self.assertIn(
+            "('use_create_lots', '=', False)",
+            picking_type_field.get("domain"),
+        )
         quant_list = form_arch.xpath("//field[@name='quant_line_ids']/list")[0]
         self.assertEqual(quant_list.get("editable"), "bottom")
         self.assertTrue(quant_list.xpath("./field[@name='selected']"))
@@ -104,6 +111,26 @@ class TestFreeformDeliveryWizardFlow(FreeformDeliveryCommon):
             "./field[@name='selected_quantity']"
         )[0]
         self.assertIsNone(selected_quantity.get("readonly"))
+        self.assertTrue(
+            quant_list.xpath(
+                "./field[@name='show_roll_weight'][@column_invisible='True']"
+            )
+        )
+        roll_weight = quant_list.xpath("./field[@name='roll_weight_kg']")[0]
+        self.assertEqual(roll_weight.get("invisible"), "not show_roll_weight")
+        selected_weight = quant_list.xpath(
+            "./field[@name='selected_weight_kg']"
+        )[0]
+        self.assertEqual(
+            selected_weight.get("invisible"),
+            "not selected or not show_roll_weight",
+        )
+        self.assertEqual(
+            selected_weight.get("sum"), "Selected Total Weight (kg)"
+        )
+        self.assertEqual(
+            selected_quantity.get("sum"), "Selected Total Quantity"
+        )
         self.assertFalse(form_arch.xpath("//button[@name='action_open_quant_lines']"))
 
     def test_manager_menu_contract(self):
@@ -126,6 +153,7 @@ class TestFreeformDeliveryWizardFlow(FreeformDeliveryCommon):
         self.assertEqual(
             [field.get("name") for field in list_arch.xpath("./field")],
             [
+                "selected",
                 "product_id",
                 "location_id",
                 "lot_id",
@@ -133,7 +161,10 @@ class TestFreeformDeliveryWizardFlow(FreeformDeliveryCommon):
                 "in_date",
                 "on_hand_quantity",
                 "reserved_quantity",
+                "show_roll_weight",
                 "available_quantity",
+                "roll_weight_kg",
+                "selected_weight_kg",
                 "selected_quantity",
                 "product_uom_id",
                 "lot_quantity",
@@ -149,6 +180,22 @@ class TestFreeformDeliveryWizardFlow(FreeformDeliveryCommon):
                 "product_length",
                 "weight_per_sqm",
             ],
+        )
+        selected_weight = list_arch.xpath(
+            "./field[@name='selected_weight_kg']"
+        )[0]
+        self.assertEqual(
+            selected_weight.get("invisible"),
+            "not selected or not show_roll_weight",
+        )
+        self.assertEqual(
+            selected_weight.get("sum"), "Selected Total Weight (kg)"
+        )
+        selected_quantity = list_arch.xpath(
+            "./field[@name='selected_quantity']"
+        )[0]
+        self.assertEqual(
+            selected_quantity.get("sum"), "Selected Total Quantity"
         )
 
         search_view = self.env.ref(
@@ -180,6 +227,116 @@ class TestFreeformDeliveryWizardFlow(FreeformDeliveryCommon):
                 f"{{'group_by': '{field_name}'}}",
             )
 
+    def test_roll_weight_uses_available_square_meters_and_thickness(self):
+        line = self.env["freeform.delivery.quant.line"].new(
+            {
+                "product_uom_id": self.env.ref("uom.uom_square_meter").id,
+                "available_quantity": 1500.0,
+                "product_thickness": 12,
+            }
+        )
+
+        self.assertTrue(line.show_roll_weight)
+        self.assertEqual(line.roll_weight_kg, 25.2)
+
+        line.product_uom_id = self.env.ref("uom.uom_square_foot")
+        line.available_quantity = 1076.39104
+        self.assertTrue(line.show_roll_weight)
+        self.assertAlmostEqual(line.roll_weight_kg, 1.68, places=2)
+
+        line.product_thickness = -12
+        self.assertFalse(line.show_roll_weight)
+        self.assertEqual(line.roll_weight_kg, 0.0)
+
+    def test_roll_weight_uses_product_specific_area_uom(self):
+        category = self.env["uom.category"].create(
+            {"name": "Film Roll Product Units"}
+        )
+        roll_uom = self.env["uom.uom"].create(
+            {
+                "name": "卷",
+                "category_id": category.id,
+                "uom_type": "reference",
+                "rounding": 0.01,
+            }
+        )
+        self.env["uom.uom"].create(
+            {
+                "name": "平米",
+                "category_id": category.id,
+                "uom_type": "smaller",
+                "factor": 1680.0,
+                "rounding": 0.01,
+            }
+        )
+        line = self.env["freeform.delivery.quant.line"].new(
+            {
+                "product_uom_id": roll_uom.id,
+                "available_quantity": 1.0,
+                "product_thickness": 125,
+            }
+        )
+
+        self.assertTrue(line.show_roll_weight)
+        self.assertEqual(line.roll_weight_kg, 294.0)
+
+        line.product_uom_id = self.env.ref("uom.product_uom_unit")
+        self.assertFalse(line.show_roll_weight)
+        self.assertEqual(line.roll_weight_kg, 0.0)
+
+    def test_roll_weight_uses_explicit_roll_area_snapshot_only_for_rolls(self):
+        line = self.env["freeform.delivery.quant.line"].new(
+            {
+                "product_uom_id": self.env.ref("uom.product_uom_unit").id,
+                "available_quantity": 1.0,
+                "actual_area_sqm": 774.38,
+                "is_roll_product": True,
+                "product_thickness": 42,
+            }
+        )
+
+        self.assertTrue(line.show_roll_weight)
+        self.assertEqual(line.roll_weight_kg, 45.53)
+        self.assertEqual(line.selected_weight_kg, 0.0)
+
+        line.selected = True
+        line.selected_quantity = 1.0
+        self.assertEqual(line.selected_weight_kg, 45.53)
+
+        line.is_roll_product = False
+        self.assertFalse(line.show_roll_weight)
+        self.assertEqual(line.roll_weight_kg, 0.0)
+        self.assertEqual(line.selected_weight_kg, 0.0)
+
+    def test_selected_totals_exclude_unchecked_lines(self):
+        line_values = {
+            "product_uom_id": self.env.ref("uom.product_uom_unit").id,
+            "available_quantity": 774.38,
+            "actual_area_sqm": 774.38,
+            "is_roll_product": True,
+            "product_thickness": 42,
+        }
+        selected_line = self.env["freeform.delivery.quant.line"].new(
+            {
+                **line_values,
+                "selected": True,
+                "selected_quantity": 774.38,
+            }
+        )
+        unchecked_line = self.env["freeform.delivery.quant.line"].new(
+            {
+                **line_values,
+                "selected": False,
+                "selected_quantity": 0.0,
+            }
+        )
+        lines = selected_line | unchecked_line
+
+        selected_line.selected_quantity = 387.19
+
+        self.assertEqual(sum(lines.mapped("selected_weight_kg")), 22.77)
+        self.assertEqual(sum(lines.mapped("selected_quantity")), 387.19)
+
     def test_selecting_stock_defaults_full_quantity_and_allows_partial_quantity(self):
         wizard = self._new_wizard([self.product])
         wizard.action_next()
@@ -189,8 +346,11 @@ class TestFreeformDeliveryWizardFlow(FreeformDeliveryCommon):
         line._onchange_selected()
         self.assertEqual(line.selected_quantity, line.available_quantity)
 
+        line.selected = False
+        line._onchange_selected()
         line.selected_quantity = 4.0
         line._onchange_selected_quantity()
+        line._onchange_selected()
         self.assertTrue(line.selected)
         self.assertEqual(line.selected_quantity, 4.0)
 
@@ -355,6 +515,8 @@ class TestFreeformDeliveryWizardFlow(FreeformDeliveryCommon):
             "on_hand_quantity": self.tracked_quant.quantity,
             "reserved_quantity": self.tracked_quant.reserved_quantity,
             "available_quantity": self.tracked_quant.available_quantity,
+            "show_roll_weight": True,
+            "roll_weight_kg": 45.53,
             "lot_quantity": self.tracked_quant.lot_quantity,
             "lot_unit_name": self.tracked_quant.lot_unit_name,
             "lot_unit_name_custom": self.tracked_quant.lot_unit_name_custom,
@@ -593,6 +755,26 @@ class TestFreeformDeliveryWizardFlow(FreeformDeliveryCommon):
         wizard.picking_type_id = internal_type
         with self.assertRaises(UserError):
             wizard.action_next()
+
+    def test_outgoing_type_that_can_create_lots_is_rejected(self):
+        unsafe_picking_type = self.env["stock.picking.type"].create(
+            {
+                "name": "Unsafe Free-form Deliveries",
+                "sequence_code": "UFD",
+                "code": "outgoing",
+                "company_id": self.company.id,
+                "default_location_src_id": self.source_location.id,
+                "default_location_dest_id": self.destination_location.id,
+                "use_existing_lots": True,
+                "use_create_lots": True,
+            }
+        )
+        wizard = self._new_wizard([self.tracked_product])
+        wizard.picking_type_id = unsafe_picking_type
+
+        with self.assertRaises(UserError):
+            wizard.action_next()
+        self.assertEqual(wizard.state, "select_products")
 
     def test_non_storable_product_is_rejected(self):
         service = self.env["product.product"].create(

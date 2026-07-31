@@ -544,6 +544,28 @@ msgid "Selected Quantity"
 msgstr "本次选择数量"
 
 #. module: freeform_quant_delivery
+#: model:ir.model.fields,field_description:freeform_quant_delivery.field_freeform_delivery_quant_line__selected_weight_kg
+msgid "Selected Weight (kg)"
+msgstr "已选重量 (kg)"
+
+#. module: freeform_quant_delivery
+#: model_terms:ir.ui.view,arch_db:freeform_quant_delivery.freeform_delivery_quant_line_list
+#: model_terms:ir.ui.view,arch_db:freeform_quant_delivery.freeform_delivery_wizard_form
+msgid "Selected Total Quantity"
+msgstr "已选数量合计"
+
+#. module: freeform_quant_delivery
+#: model_terms:ir.ui.view,arch_db:freeform_quant_delivery.freeform_delivery_quant_line_list
+#: model_terms:ir.ui.view,arch_db:freeform_quant_delivery.freeform_delivery_wizard_form
+msgid "Selected Total Weight (kg)"
+msgstr "已选重量合计 (kg)"
+
+#. module: freeform_quant_delivery
+#: model:ir.model.fields,field_description:freeform_quant_delivery.field_freeform_delivery_quant_line__roll_weight_kg
+msgid "Single Roll Weight (kg)"
+msgstr "单卷重量 (kg)"
+
+#. module: freeform_quant_delivery
 #. odoo-python
 #: code:addons/freeform_quant_delivery/wizard/freeform_delivery_wizard.py:0
 msgid "Selected products must have available stock in the source location."
@@ -677,6 +699,14 @@ msgstr "作业类型必须是出库交货类型。"
 #: code:addons/freeform_quant_delivery/wizard/freeform_delivery_wizard.py:0
 msgid "The operation type must belong to the current company."
 msgstr "作业类型必须属于当前公司。"
+
+#. module: freeform_quant_delivery
+#. odoo-python
+#: code:addons/freeform_quant_delivery/wizard/freeform_delivery_wizard.py:0
+msgid ""
+"The operation type must not allow creating new lots or serial numbers for "
+"free-form deliveries."
+msgstr "自由发货使用的作业类型不能允许创建新批次或序列号。"
 
 #. module: freeform_quant_delivery
 #. odoo-python

@@ -52,6 +52,8 @@ class FreeformDeliveryCommon(TransactionCase):
                 "company_id": cls.company.id,
                 "default_location_src_id": cls.source_location.id,
                 "default_location_dest_id": cls.destination_location.id,
+                "use_existing_lots": True,
+                "use_create_lots": False,
             }
         )
 

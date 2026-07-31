@@ -1,5 +1,10 @@
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
+from odoo.tools import float_round
+
+
+FILM_DENSITY_G_CM3 = 1.4
+PRODUCT_AREA_UOM_NAME = "平米"
 
 
 class FreeformDeliveryProductLine(models.TransientModel):
@@ -80,6 +85,23 @@ class FreeformDeliveryQuantLine(models.TransientModel):
     available_quantity = fields.Float(
         readonly=True, digits="Product Unit of Measure"
     )
+    roll_weight_kg = fields.Float(
+        string="Single Roll Weight (kg)",
+        compute="_compute_roll_weight_kg",
+        readonly=True,
+        digits=(16, 2),
+        help=(
+            "Theoretical roll weight calculated from available square meters, "
+            "film thickness, and a density of 1.4 g/cm3."
+        ),
+    )
+    selected_weight_kg = fields.Float(
+        string="Selected Weight (kg)",
+        compute="_compute_selected_weight_kg",
+        readonly=True,
+        digits=(16, 2),
+    )
+    show_roll_weight = fields.Boolean(compute="_compute_roll_weight_kg")
     lot_quantity = fields.Float(readonly=True, digits=(16, 2))
     lot_unit_name = fields.Selection(
         [
@@ -106,11 +128,98 @@ class FreeformDeliveryQuantLine(models.TransientModel):
     product_length = fields.Float(readonly=True, digits=(12, 2))
     weight_per_sqm = fields.Float(readonly=True, digits=(12, 2))
 
+    @api.depends(
+        "actual_area_sqm",
+        "available_quantity",
+        "is_roll_product",
+        "product_thickness",
+        "product_uom_id",
+        "product_uom_id.factor",
+        "product_uom_id.name",
+    )
+    def _compute_roll_weight_kg(self):
+        square_meter = self.env.ref(
+            "uom.uom_square_meter",
+            raise_if_not_found=False,
+        )
+        area_uom_by_category = {}
+        if square_meter:
+            area_uom_by_category[square_meter.category_id.id] = square_meter
+
+        custom_categories = self.product_uom_id.category_id.filtered(
+            lambda category: category.id not in area_uom_by_category
+        )
+        if custom_categories:
+            # Quick unit setup creates this explicit UoM in each product category.
+            product_area_uoms = (
+                self.env["uom.uom"]
+                .with_context(lang="zh_CN")
+                .search(
+                    [
+                        ("category_id", "in", custom_categories.ids),
+                        ("name", "=", PRODUCT_AREA_UOM_NAME),
+                    ],
+                    order="category_id, id",
+                )
+            )
+            for area_uom in product_area_uoms:
+                area_uom_by_category.setdefault(area_uom.category_id.id, area_uom)
+
+        for line in self:
+            area_uom = area_uom_by_category.get(line.product_uom_id.category_id.id)
+            if area_uom:
+                area_sqm = line.product_uom_id._compute_quantity(
+                    line.available_quantity,
+                    area_uom,
+                    round=False,
+                )
+            elif line.is_roll_product:
+                area_sqm = line.actual_area_sqm
+            else:
+                area_sqm = 0.0
+
+            line.show_roll_weight = bool(area_sqm > 0 and line.product_thickness > 0)
+            if not line.show_roll_weight:
+                line.roll_weight_kg = 0.0
+                continue
+            line.roll_weight_kg = round(
+                area_sqm
+                * line.product_thickness
+                * FILM_DENSITY_G_CM3
+                / 1000.0,
+                2,
+            )
+
+    @api.depends(
+        "available_quantity",
+        "roll_weight_kg",
+        "selected",
+        "selected_quantity",
+    )
+    def _compute_selected_weight_kg(self):
+        for line in self:
+            if (
+                not line.selected
+                or line.selected_quantity <= 0
+                or line.available_quantity <= 0
+            ):
+                line.selected_weight_kg = 0.0
+                continue
+            line.selected_weight_kg = float_round(
+                line.roll_weight_kg
+                * line.selected_quantity
+                / line.available_quantity,
+                precision_digits=2,
+            )
+
     def _apply_selection_values(self, values):
         values = dict(values)
         if "selected" in values:
             if values["selected"]:
-                values.setdefault("selected_quantity", self.available_quantity)
+                values.setdefault(
+                    "selected_quantity",
+                    self.selected_quantity or self.available_quantity,
+                )
             else:
                 values["selected_quantity"] = 0.0
         elif "selected_quantity" in values:
@@ -135,7 +244,8 @@ class FreeformDeliveryQuantLine(models.TransientModel):
     def _onchange_selected(self):
         for line in self:
             if line.selected:
-                line.selected_quantity = line.available_quantity
+                if not line.selected_quantity:
+                    line.selected_quantity = line.available_quantity
             else:
                 line.selected_quantity = 0.0
 

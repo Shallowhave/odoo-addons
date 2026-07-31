@@ -1,78 +1,131 @@
 from odoo import models, fields, api, _
+from odoo.tools.misc import formatLang
 
 
 class StockPicking(models.Model):
     _inherit = 'stock.picking'
+
+    def _get_report_move_line_groups(self):
+        """Group tracked report lines without changing stock history."""
+        self.ensure_one()
+        groups = {}
+
+        for move in self.move_ids_without_package:
+            for line in move.move_line_ids:
+                uom = line.product_uom_id or move.product_id.uom_id
+                if line.lot_id:
+                    key = (move.product_id.id, line.lot_id.id, uom.id)
+                else:
+                    # Untracked lines have no physical identity to aggregate by.
+                    key = ('line', line.id)
+
+                if key not in groups:
+                    groups[key] = {
+                        'move': move,
+                        'product': move.product_id,
+                        'lot': line.lot_id,
+                        'uom': uom,
+                        'lines': self.env['stock.move.line'],
+                        'quantity': 0.0,
+                        'package_names': [],
+                    }
+
+                group = groups[key]
+                group['lines'] |= line
+                group['quantity'] += float(line.quantity or 0.0)
+
+                package = line.result_package_id or line.package_id
+                if package and package.name not in group['package_names']:
+                    group['package_names'].append(package.name)
+
+        return list(groups.values())
+
+    @api.model
+    def _get_delivery_line_length(self, line):
+        """Return the physical length represented by one move line."""
+        quantity = float(line.quantity or 0.0)
+        product_tmpl = line.product_id.product_tmpl_id
+        width_mm = float(getattr(product_tmpl, 'product_width', 0.0) or 0.0)
+        uom_name = (
+            line.product_uom_id.name or line.product_id.uom_id.name or ''
+        ).lower()
+        is_area_uom = any(
+            token in uom_name for token in ('平米', '平方米', 'sqm', 'm²')
+        )
+        is_length_uom = (
+            '米' in uom_name or uom_name in ('m', 'meter', 'meters')
+        ) and not is_area_uom
+
+        if is_length_uom:
+            return quantity
+        if is_area_uom:
+            return quantity / (width_mm / 1000.0) if width_mm else None
+
+        product_length = float(
+            getattr(product_tmpl, 'product_length', 0.0) or 0.0
+        )
+        return product_length * quantity if product_length else None
+
+    @api.model
+    def _format_delivery_report_number(self, value):
+        return formatLang(self.env, value, digits=2, grouping=False)
+
+    def _get_delivery_order_reference(self):
+        self.ensure_one()
+        if getattr(self, 'is_freeform_quant_delivery', False):
+            return self.name
+        return self.origin or self.name
+
+    def _get_delivery_report_customer(self):
+        self.ensure_one()
+        freeform_customer = getattr(self, 'freeform_customer_id', False)
+        return (
+            freeform_customer
+            or self.partner_id.commercial_partner_id
+            or self.partner_id
+        )
 
     def _get_lot_serial_info(self):
         """获取批次/序列号信息"""
         lot_info = []
         total_length = 0.0
         total_quantity = 0.0
-        
-        for move in self.move_ids_without_package:
-            if move.move_line_ids:
-                for line in move.move_line_ids:
-                    if line.lot_id:
-                        # 安全获取产品模板的自定义属性
-                        product_tmpl = move.product_id.product_tmpl_id
-                        
-                        # 使用 try-except 安全获取自定义字段
-                        try:
-                            thickness = getattr(product_tmpl, 'product_thickness', None)
-                            thickness = thickness if thickness else '-'
-                        except:
-                            thickness = '-'
-                            
-                        try:
-                            width = getattr(product_tmpl, 'product_width', None)
-                            width = width if width else '-'
-                        except:
-                            width = '-'
-                            
-                        # 按本次交付移动行计算长度，避免使用整批库存 quant 长度。
-                        length = '-'
-                        length_value = 0.0
-                        try:
-                            delivered_qty = float(line.quantity or 0.0)
-                            width_value = getattr(product_tmpl, 'product_width', 0.0) or 0.0
-                            uom_name = (line.product_uom_id.name or move.product_id.uom_id.name or '').lower()
-                            is_area_uom = any(token in uom_name for token in ('平米', '平方米', 'sqm', 'm²'))
-                            is_length_uom = ('米' in uom_name or uom_name in ('m', 'meter', 'meters')) and not is_area_uom
-                            if is_length_uom:
-                                length_value = delivered_qty
-                            elif is_area_uom and width_value:
-                                length_value = delivered_qty / (width_value / 1000.0)
-                            elif getattr(product_tmpl, 'product_length', False):
-                                length_value = float(product_tmpl.product_length) * delivered_qty
-                            if length_value:
-                                length = length_value
-                        except Exception:
-                            length = '-'
-                        
-                        # 获取包裹信息
-                        package_name = '-'
-                        if line.result_package_id:
-                            package_name = line.result_package_id.name
-                        elif line.package_id:
-                            package_name = line.package_id.name
-                        
-                        # 累加汇总值
-                        total_length += length_value
-                        total_quantity += float(line.quantity) if line.quantity else 0.0
-                        
-                        lot_info.append({
-                            'product': move.product_id.name,
-                            'product_code': move.product_id.default_code or '',
-                            'lot_name': line.lot_id.name,
-                            'quantity': line.quantity,
-                            'uom': move.product_id.uom_id.name,
-                            'thickness': thickness,
-                            'width': width,
-                            'length': length,
-                            'package_name': package_name,
-                        })
-        
+
+        for group in self._get_report_move_line_groups():
+            if not group['lot']:
+                continue
+
+            product = group['product']
+            product_tmpl = product.product_tmpl_id
+            line_lengths = [
+                self._get_delivery_line_length(line)
+                for line in group['lines']
+            ]
+            measured_lengths = [
+                length for length in line_lengths if length is not None
+            ]
+            length_value = sum(measured_lengths)
+            has_length = bool(measured_lengths)
+
+            total_length += length_value
+            total_quantity += group['quantity']
+
+            lot_info.append({
+                'product': product.name,
+                'product_code': product.default_code or '',
+                'lot_name': group['lot'].name,
+                'quantity': group['quantity'],
+                'uom': group['uom'].name,
+                'thickness': getattr(product_tmpl, 'product_thickness', False) or '-',
+                'width': getattr(product_tmpl, 'product_width', False) or '-',
+                'length': length_value if has_length else '-',
+                'length_display': (
+                    self._format_delivery_report_number(length_value)
+                    if has_length else '-'
+                ),
+                'package_name': ', '.join(group['package_names']) or '-',
+            })
+
         # 将汇总信息添加到返回结果中
         return {
             'lot_info': lot_info,

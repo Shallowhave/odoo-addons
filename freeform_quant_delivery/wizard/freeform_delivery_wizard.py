@@ -140,6 +140,13 @@ class FreeformDeliveryWizard(models.TransientModel):
             raise UserError(_("The operation type must belong to the current company."))
         if self.picking_type_id.code != "outgoing":
             raise UserError(_("The operation type must be an outgoing delivery."))
+        if self.picking_type_id.use_create_lots:
+            raise UserError(
+                _(
+                    "The operation type must not allow creating new lots or serial "
+                    "numbers for free-form deliveries."
+                )
+            )
         if not self.source_location_id or self.source_location_id.usage != "internal":
             raise UserError(_("The source location must be an internal location."))
         if (

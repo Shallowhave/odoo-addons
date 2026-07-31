@@ -288,6 +288,20 @@ class StockMoveLine(models.Model):
         return defaults
 
     @api.model
+    def _is_purchase_receipt_values(self, vals):
+        """Return whether values belong to a purchase receipt move line."""
+        move_id = vals.get('move_id')
+        if not move_id:
+            return False
+
+        move = self.env['stock.move'].browse(move_id).exists()
+        return bool(
+            move
+            and move.purchase_line_id
+            and move.picking_type_id.code == 'incoming'
+        )
+
+    @api.model
     def _apply_default_lot_unit_values(self, vals_list):
         """在 create 前补齐附加单位默认值，不覆盖传入的人工值。"""
         for vals in vals_list:
@@ -297,7 +311,12 @@ class StockMoveLine(models.Model):
             if not purchase_defaults and not product_defaults:
                 continue
 
-            if 'lot_unit_name' not in vals:
+            is_purchase_receipt = self._is_purchase_receipt_values(vals)
+
+            if (
+                'lot_unit_name' not in vals
+                or (is_purchase_receipt and not vals.get('lot_unit_name'))
+            ):
                 default_unit_name = (
                     purchase_defaults.get('lot_unit_name')
                     or product_defaults.get('lot_unit_name')
@@ -308,7 +327,13 @@ class StockMoveLine(models.Model):
             unit_name = vals.get('lot_unit_name')
             if (
                 unit_name == 'custom'
-                and 'lot_unit_name_custom' not in vals
+                and (
+                    'lot_unit_name_custom' not in vals
+                    or (
+                        is_purchase_receipt
+                        and not vals.get('lot_unit_name_custom')
+                    )
+                )
             ):
                 custom_unit_name = (
                     purchase_defaults.get('lot_unit_name_custom')

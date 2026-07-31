@@ -1,3 +1,4 @@
+from odoo import fields
 from odoo.tests import TransactionCase, tagged
 
 
@@ -96,6 +97,77 @@ class TestStockMoveLineMetadata(TransactionCase):
         self.assertEqual(values["lot_unit_name"], "custom")
         self.assertEqual(values["lot_unit_name_custom"], "Default Layer")
         self.assertEqual(values["lot_quantity"], 1.0)
+
+    def test_purchase_receipt_empty_unit_uses_product_default_without_weight(self):
+        self.product.product_tmpl_id.write(
+            {
+                "default_unit_config": "kg",
+                "quick_unit_name": False,
+            }
+        )
+        vendor = self.env["res.partner"].create({"name": "Unit Default Vendor"})
+        purchase = self.env["purchase.order"].create(
+            {
+                "partner_id": vendor.id,
+                "company_id": self.company.id,
+            }
+        )
+        purchase_line = self.env["purchase.order.line"].create(
+            {
+                "order_id": purchase.id,
+                "name": self.product.display_name,
+                "product_id": self.product.id,
+                "product_qty": 1.0,
+                "product_uom": self.product.uom_id.id,
+                "price_unit": 1.0,
+                "date_planned": fields.Datetime.now(),
+            }
+        )
+        incoming_type = self.env["stock.picking.type"].search(
+            [
+                ("code", "=", "incoming"),
+                ("company_id", "=", self.company.id),
+            ],
+            limit=1,
+        )
+        self.assertTrue(incoming_type)
+        picking = self.env["stock.picking"].create(
+            {
+                "picking_type_id": incoming_type.id,
+                "location_id": incoming_type.default_location_src_id.id,
+                "location_dest_id": self.destination_location.id,
+                "company_id": self.company.id,
+            }
+        )
+        purchase_move = self.env["stock.move"].create(
+            {
+                "name": self.product.display_name,
+                "product_id": self.product.id,
+                "product_uom_qty": 1.0,
+                "product_uom": self.product.uom_id.id,
+                "location_id": picking.location_id.id,
+                "location_dest_id": picking.location_dest_id.id,
+                "company_id": self.company.id,
+                "picking_id": picking.id,
+                "purchase_line_id": purchase_line.id,
+            }
+        )
+        values = {
+            "move_id": purchase_move.id,
+            "product_id": self.product.id,
+            "product_uom_id": self.product.uom_id.id,
+            "location_id": picking.location_id.id,
+            "location_dest_id": picking.location_dest_id.id,
+            "company_id": self.company.id,
+            "lot_unit_name": False,
+            "lot_quantity": 0.0,
+            "quantity": 1.0,
+        }
+
+        move_line = self.env["stock.move.line"].create(values)
+
+        self.assertEqual(move_line.lot_unit_name, "kg")
+        self.assertEqual(move_line.lot_quantity, 0.0)
 
     def test_explicit_false_contract_skips_fallback(self):
         package = self.env["stock.quant.package"].create(

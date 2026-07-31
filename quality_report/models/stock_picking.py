@@ -32,18 +32,18 @@ class StockPicking(models.Model):
     def _get_quality_info(self):
         """Get quality note content from quality alerts for report printing."""
         quality_info = []
-        for move in self.move_ids_without_package:
-            if move.move_line_ids:
-                for line in move.move_line_ids:
-                    quality_note = self._get_quality_alert_note(move, line)
-                    quality_info.append({
-                        'product': move.product_id.name,
-                        'product_code': move.product_id.default_code or '',
-                        'lot_name': line.lot_id.name if line.lot_id else '-',
-                        'quality_note': quality_note,
-                        'quantity': line.quantity,
-                        'uom': line.product_uom_id.name or move.product_id.uom_id.name,
-                    })
+        for group in self._get_report_move_line_groups():
+            line = group['lines'][0]
+            move = group['move']
+            quality_note = self._get_quality_alert_note(move, line)
+            quality_info.append({
+                'product': group['product'].name,
+                'product_code': group['product'].default_code or '',
+                'lot_name': group['lot'].name if group['lot'] else '-',
+                'quality_note': quality_note,
+                'quantity': group['quantity'],
+                'uom': group['uom'].name,
+            })
         return quality_info
 
     can_print_quality_report = fields.Boolean(
