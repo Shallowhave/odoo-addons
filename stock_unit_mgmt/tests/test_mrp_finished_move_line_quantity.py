@@ -50,7 +50,7 @@ class TestMrpFinishedMoveLineQuantity(TransactionCase):
         move_line.write(
             {
                 "product_uom_id": uom.id,
-                "lot_id": lot.id,
+                "lot_id": lot.id if lot else False,
                 "quantity": quantity,
             }
         )
@@ -71,6 +71,30 @@ class TestMrpFinishedMoveLineQuantity(TransactionCase):
                 "qty_producing": 2020.0,
             }
         )
+
+        self.production._post_inventory(cancel_backorder=True)
+
+        self.assertEqual(finished_move.state, "done")
+        self.assertEqual(finished_move.move_line_ids, move_line)
+        self.assertEqual(move_line.lot_id, self.lot)
+        self.assertEqual(move_line.quantity, 2020.0)
+
+    def test_overproduction_reuses_line_before_production_lot_is_applied(self):
+        finished_move, move_line = self._get_or_create_finished_move_line(
+            self.production,
+            False,
+            2000.0,
+            self.product.uom_id,
+        )
+        self.production.with_context(
+            skip_mrp_auto_lot_selectable_check=True
+        ).write(
+            {
+                "lot_producing_id": self.lot.id,
+                "qty_producing": 2020.0,
+            }
+        )
+        self.assertFalse(move_line.lot_id)
 
         self.production._post_inventory(cancel_backorder=True)
 

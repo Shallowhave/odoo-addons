@@ -48,21 +48,47 @@ class StockMove(models.Model):
         Odoo normally preserves the planned quantity on the existing line and
         creates another line for overproduction. MRP then assigns the same lot
         to both lines, which makes one physical roll appear twice in move
-        history. Only collapse the unambiguous case where a manufactured,
-        lot-tracked product already has exactly one identified move line.
+        history. Odoo applies ``lot_producing_id`` after updating the move
+        quantity, so the existing line can still be unidentified at this
+        point. Reuse it when the production order already provides the lot.
         """
         self.ensure_one()
         move_lines = self.move_line_ids.filtered(
             lambda line: line.state not in ('done', 'cancel')
         )
+        move_line = (
+            move_lines
+            if len(move_lines) == 1
+            else self.env['stock.move.line']
+        )
+        production_lot = self.production_id.lot_producing_id
+        is_main_finished_move = (
+            self.production_id
+            and self.product_id == self.production_id.product_id
+        )
+        production_lot_matches_product = (
+            not production_lot
+            or production_lot.product_id == self.product_id
+        )
+        effective_lot = move_line.lot_id or (
+            production_lot
+            if is_main_finished_move and production_lot_matches_product
+            else False
+        )
+        lot_is_compatible = not (
+            move_line.lot_id
+            and production_lot
+            and move_line.lot_id != production_lot
+        )
         can_reuse_single_lot_line = (
             self.production_id
             and not self.picking_id
             and self.product_id.tracking == 'lot'
-            and len(move_lines) == 1
+            and move_line
             and len(self.move_line_ids) == 1
-            and move_lines.lot_id
-            and move_lines.product_id == self.product_id
+            and effective_lot
+            and lot_is_compatible
+            and move_line.product_id == self.product_id
             and float_compare(
                 qty,
                 0.0,
@@ -72,7 +98,6 @@ class StockMove(models.Model):
         if not can_reuse_single_lot_line:
             return super()._set_quantity_done_prepare_vals(qty)
 
-        move_line = move_lines
         line_qty = self.product_uom._compute_quantity(
             qty,
             move_line.product_uom_id,
