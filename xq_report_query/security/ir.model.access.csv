@@ -1,0 +1,3 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_xq_report_query_wizard_user,xq.report.query.wizard user,model_xq_report_query_wizard,base.group_user,1,1,1,1
+access_xq_report_query_line_user,xq.report.query.line user,model_xq_report_query_line,base.group_user,1,0,0,0

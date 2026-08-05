@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="rule_xq_report_query_wizard_owner" model="ir.rule">
+        <field name="name">报表查询向导仅限创建人</field>
+        <field name="model_id" ref="model_xq_report_query_wizard"/>
+        <field name="domain_force">[('create_uid', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+
+    <record id="rule_xq_report_query_line_owner" model="ir.rule">
+        <field name="name">报表查询结果仅限创建人</field>
+        <field name="model_id" ref="model_xq_report_query_line"/>
+        <field name="domain_force">[('owner_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+</odoo>
