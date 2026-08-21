@@ -287,6 +287,24 @@ class MrpProductionReturnWizard(models.TransientModel):
                     f'实时剩余数量：{current_remaining} {line.product_uom_id.name}\n'
                     f'您输入的返回数量：{line.return_qty} {line.product_uom_id.name}'
                 )
+        return valid_lines
+
+    def _lock_source_moves(self, lines):
+        """Serialize returns for the same source moves."""
+        move_ids = sorted(lines.mapped('move_id').ids)
+        self.env.cr.execute(
+            'SELECT id FROM stock_move '
+            'WHERE id IN %s ORDER BY id FOR UPDATE',
+            [tuple(move_ids)],
+        )
+        if [row[0] for row in self.env.cr.fetchall()] != move_ids:
+            raise ValidationError('一个或多个源库存移动已不存在，请关闭向导后重试')
+        # Odoo uses REPEATABLE READ. A no-op update makes a stale concurrent
+        # transaction raise SerializationFailure and retry with a fresh snapshot.
+        self.env.cr.execute(
+            'UPDATE stock_move SET write_date = write_date WHERE id IN %s',
+            [tuple(move_ids)],
+        )
 
     def _get_quantity_field_name(self):
         """Return the done quantity field for the installed Odoo version."""
@@ -385,11 +403,12 @@ class MrpProductionReturnWizard(models.TransientModel):
         """确认返回剩余组件 - 优化版本"""
         self.ensure_one()
         
-        # 验证数据
+        valid_lines = self._validate_data()
+        self._lock_source_moves(valid_lines)
         self._validate_data()
         
         try:
-            processed_histories = self.env['mrp.production.return.history']
+            validation_action = False
             # 处理每个组件行
             for line in self.component_line_ids:
                 if line.return_qty > 0:
@@ -410,18 +429,20 @@ class MrpProductionReturnWizard(models.TransientModel):
                     history = self.env['mrp.production.return.history'].sudo().with_context(
                         from_return_wizard=True
                     ).create(history_vals)
-                    processed_histories |= history
 
                     # 根据策略处理。只有实际调拨完成后才标记历史为 done。
                     wizard = self.with_company(self.production_id.company_id)
                     if self.return_strategy == 'scrap':
-                        validation_action = wizard._process_scrap_return(history, line)
+                        current_action = wizard._process_scrap_return(history, line)
                     else:
-                        validation_action = wizard._process_location_return(history, line)
-                    if validation_action:
-                        return validation_action
+                        current_action = wizard._process_location_return(history, line)
+                    if current_action and not validation_action:
+                        validation_action = current_action
                     if history.picking_id and history.picking_id.state == 'done':
                         history.sudo().with_context(from_return_wizard=True).action_done()
+
+            if validation_action:
+                return validation_action
             
             # 发送通知
             if self.send_notification:
