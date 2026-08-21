@@ -34,9 +34,15 @@
               /* 调整列宽比例，让内容更靠左，左侧更窄 */
               .label-table td[style*="width: 13%"] { width: 12% !important; padding-left: 1px; padding-right: 1px; }
               .label-table td[style*="width: 87%"] { width: 88% !important; padding-left: 2px; padding-right: 1px; }
-              /* 调整条形码宽度，确保不超出并居中，优化打印质量 */
-              .label-table .barcode { max-width: 98% !important; margin: 0 auto; display: block; }
-              .label-table .barcode img, .label-table .barcode svg { 
+              /* 固定物理尺寸并使用高分辨率源图，避免标签机放大低分辨率条码。 */
+              .label-barcode { width: 88mm; max-width: 100%; margin: 0 auto; }
+              .label-barcode img {
+                display: block;
+                width: 88mm;
+                max-width: 100%;
+                height: auto;
+                margin: 0 auto;
+                image-rendering: pixelated !important;
                 image-rendering: -webkit-optimize-contrast !important;
                 image-rendering: crisp-edges !important;
                 -webkit-print-color-adjust: exact !important;
@@ -56,7 +62,8 @@
                 .label-table td, .label-table th { font-size: 10pt !important; padding: 2px 1px !important; }
                 .label-table strong { font-size: 10pt !important; }
                 .sub-en { font-size: 9pt !important; }
-                .label-table .barcode img, .label-table .barcode svg { 
+                .label-barcode img {
+                  image-rendering: pixelated !important;
                   image-rendering: -webkit-optimize-contrast !important;
                   image-rendering: crisp-edges !important;
                   -webkit-print-color-adjust: exact !important;
@@ -66,14 +73,14 @@
               /* 打印时隐藏页眉页脚 */
               @media print {
                 .header, .footer, .o_standard_footer { display: none !important; }
-                @page { margin: 0; }
+                @page { size: 100mm 100mm; margin: 0; }
               }
             </style>
 
             <div class="page" style="width: 100mm; height: 100mm; margin: 0; padding: 0; box-sizing: border-box;">
               <div class="label-page">
                 <!-- 统一获取副产品移动信息（在模板开头获取一次，后续复用） -->
-                <t t-set="byproduct_move_id" t-value="context.get('byproduct_move_id', False)"/>
+                <t t-set="byproduct_move_id" t-value="env.context.get('byproduct_move_id', False)"/>
                 <t t-set="byproduct_move" t-value="False"/>
                 <t t-if="byproduct_move_id">
                   <t t-set="byproduct_move" t-value="env['stock.move'].browse(byproduct_move_id)"/>
@@ -231,8 +238,8 @@
                     </t>
                     <div style="text-align: center; margin-bottom: 2px;"><span t-esc="(lot and lot.name) or '-'"/></div>
                     <t t-if="lot">
-                      <div style="text-align: center; width: 100%; overflow: hidden; box-sizing: border-box; padding: 0;">
-                        <span t-field="lot.name" t-options-widget="'barcode'" t-options-width="330" t-options-height="72" t-options-type="'Code128'" t-options-display_value="True" style="display: block; margin: 0 auto; max-width: 97%; image-rendering: crisp-edges; -webkit-print-color-adjust: exact; print-color-adjust: exact;"/>
+                      <div class="label-barcode">
+                        <span t-field="lot.name" t-options-widget="'barcode'" t-options-width="900" t-options-height="180" t-options-type="'Code128'" t-options-display_value="False"/>
                       </div>
                     </t>
                   </td>
@@ -269,4 +276,3 @@
     </record>
   </data>
 </odoo>
-
